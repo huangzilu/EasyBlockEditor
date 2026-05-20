@@ -1,14 +1,8 @@
 package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.config.EBEClientConfig;
-import com.l1ght.ebe.data.io.FileManager;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
-import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
-import dev.vfyjxf.taffy.style.FlexDirection;
-import net.minecraft.network.chat.Component;
+import net.minecraft.client.Minecraft;
 
 import javax.swing.JFileChooser;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -44,8 +38,10 @@ public class ImportDialog {
 
                 try {
                     Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
-                    onFileSelected.accept(dest);
-                } catch (Exception ignored) {}
+                    Minecraft.getInstance().execute(() -> onFileSelected.accept(dest));
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }).start();
     }

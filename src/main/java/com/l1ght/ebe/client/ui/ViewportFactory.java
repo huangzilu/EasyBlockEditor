@@ -13,12 +13,16 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 
 @OnlyIn(Dist.CLIENT)
 public class ViewportFactory {
+
+    private static final Logger LOG = LoggerFactory.getLogger("EBE/Viewport");
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
@@ -47,32 +51,37 @@ public class ViewportFactory {
     }
 
     public static void loadFromModel(BuildingModel model) {
-        if (currentScene == null) return;
+        if (currentScene == null) {
+            LOG.error("loadFromModel: currentScene is null");
+            return;
+        }
 
         currentWorld = new TrackedDummyWorld();
         currentScene.createScene(currentWorld);
 
+        int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
-            loadRegion(region);
+            int count = loadRegion(region);
+            totalBlocksAdded += count;
+            LOG.info("Loaded region '{}' (offset={},{},{} size={},{},{}) : {} non-air blocks",
+                    region.getName(), region.getOffsetX(), region.getOffsetY(), region.getOffsetZ(),
+                    region.getSizeX(), region.getSizeY(), region.getSizeZ(), count);
         }
+
+        LOG.info("Total blocks added to world: {}", totalBlocksAdded);
+        LOG.info("Filled blocks in world: {}", currentWorld.getFilledBlocks().size());
 
         refreshRenderedCore();
 
         if (!model.getRegions().isEmpty()) {
             var meta = model.getMetadata();
-            float cx = meta.getSizeX() / 2f;
-            float cy = meta.getSizeY() / 2f;
-            float cz = meta.getSizeZ() / 2f;
-            currentScene.setCenter(new org.joml.Vector3f(cx, cy, cz));
-            currentScene.setZoom(Math.max(8, Math.max(meta.getSizeX(), Math.max(meta.getSizeY(), meta.getSizeZ()))));
-        } else {
-            currentScene.setCenter(new org.joml.Vector3f(0, 0, 0));
-            currentScene.setZoom(8);
+            LOG.info("Model metadata size: {}x{}x{}", meta.getSizeX(), meta.getSizeY(), meta.getSizeZ());
         }
     }
 
-    private static void loadRegion(Region region) {
+    private static int loadRegion(Region region) {
         var container = region.getBlocks();
+        int count = 0;
         for (int y = 0; y < region.getSizeY(); y++) {
             for (int z = 0; z < region.getSizeZ(); z++) {
                 for (int x = 0; x < region.getSizeX(); x++) {
@@ -83,10 +92,12 @@ public class ViewportFactory {
                         int wy = y + region.getOffsetY();
                         int wz = z + region.getOffsetZ();
                         currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
+                        count++;
                     }
                 }
             }
         }
+        return count;
     }
 
     private static BlockState resolveBlockState(Object obj) {
@@ -100,8 +111,13 @@ public class ViewportFactory {
                 var idStr = bracketIdx >= 0 ? s.substring(0, bracketIdx) : s;
                 var loc = ResourceLocation.parse(idStr);
                 var block = BuiltInRegistries.BLOCK.getOptional(loc);
-                return block.map(b -> b.defaultBlockState()).orElse(Blocks.AIR.defaultBlockState());
+                if (block.isEmpty()) {
+                    LOG.warn("Unknown block ID: {}", s);
+                    return Blocks.AIR.defaultBlockState();
+                }
+                return block.get().defaultBlockState();
             } catch (Exception e) {
+                LOG.warn("Failed to resolve block state: {}", s, e);
                 return Blocks.AIR.defaultBlockState();
             }
         }
@@ -212,6 +228,7 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
+        LOG.info("refreshRenderedCore: {} positions from filledBlocks", positions.size());
         currentScene.setRenderedCore(positions);
     }
 

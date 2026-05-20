@@ -16,6 +16,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 
 import java.nio.file.Files;
@@ -31,11 +32,12 @@ public class EditorUI {
     private static final EditorSession session = new EditorSession();
     private static final Map<EditorTool, Button> toolButtons = new EnumMap<>(EditorTool.class);
     private static UIElement rootElement;
+    private static UIElement contentArea;
 
     private static UIElement leftPanel;
     private static UIElement rightPanel;
-    private static UIElement leftCollapseBtn;
-    private static UIElement rightCollapseBtn;
+    private static Button leftCollapseBtn;
+    private static Button rightCollapseBtn;
     private static UIElement blockIndicatorPanel;
     private static boolean leftPanelVisible = true;
     private static boolean rightPanelVisible = true;
@@ -50,7 +52,8 @@ public class EditorUI {
         rootElement.setId("root");
 
         rootElement.addChild(buildMenuBar());
-        rootElement.addChild(buildContentArea());
+        contentArea = buildContentArea();
+        rootElement.addChild(contentArea);
         rootElement.addChild(buildBottomBar());
 
         var stylesheet = StylesheetManager.INSTANCE.getStylesheetSafe(getThemeStylesheet());
@@ -118,7 +121,27 @@ public class EditorUI {
 
         for (var child : tree.getChildren()) {
             var item = new Button();
-            item.setText(Component.translatable(child.getKey()));
+            var key = child.getKey();
+            var text = Component.translatable(key);
+            boolean isChecked = false;
+
+            if (key.equals("ebe.editor.panel.files") || key.equals("ebe.editor.panel.layers")) {
+                isChecked = leftPanelVisible;
+            } else if (key.equals("ebe.editor.panel.properties") || key.equals("ebe.editor.panel.materials") || key.equals("ebe.editor.panel.history")) {
+                isChecked = rightPanelVisible;
+            } else if (key.equals("ebe.editor.block_indicator")) {
+                isChecked = blockIndicatorVisible;
+            }
+
+            if (isChecked) {
+                var check = Component.literal("✓ ").withStyle(ChatFormatting.GREEN);
+                text = check.append(text);
+                item.style(s -> s.background(Sprites.RECT_RD_DARK));
+            } else {
+                text = Component.literal("  ").append(text);
+            }
+
+            item.setText(text);
             item.layout(l -> l.widthPercent(100).height(18).paddingHorizontal(8));
             var action = child.getContent();
             if (action != null) {
@@ -139,17 +162,17 @@ public class EditorUI {
         var root = new MenuTreeNode("file");
         root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> session.newProject(name)));
         root.child("ebe.editor.open", () -> ImportDialog.show(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception ignored) {}
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
         }));
-        root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception ignored) {} });
+        root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception e) { e.printStackTrace(); } });
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            try { session.saveAs(name); } catch (Exception ignored) {}
+            try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.import", () -> ImportDialog.show(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception ignored) {}
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            try { session.saveAs(name); } catch (Exception ignored) {}
+            try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
         }));
         return root;
     }
@@ -201,7 +224,7 @@ public class EditorUI {
 
         leftCollapseBtn = buildCollapseButton(true);
         leftPanel = buildLeftPanel();
-        var viewport = buildViewport();
+        var viewport = ViewportFactory.create3DViewport();
         rightPanel = buildRightPanel();
         rightCollapseBtn = buildCollapseButton(false);
 
@@ -218,7 +241,7 @@ public class EditorUI {
         return content;
     }
 
-    private static UIElement buildCollapseButton(boolean isLeft) {
+    private static Button buildCollapseButton(boolean isLeft) {
         var btn = new Button();
         btn.setText(Component.literal(isLeft ? "◀" : "▶"));
         btn.layout(l -> l.width(14).heightPercent(100));
@@ -233,34 +256,24 @@ public class EditorUI {
 
     private static void toggleLeftPanel() {
         leftPanelVisible = !leftPanelVisible;
-        leftPanel.setVisible(leftPanelVisible);
-        leftCollapseBtn.setVisible(leftPanelVisible);
-        var btn = UIUtils.findById(rootElement, "leftCollapseBtn");
-        if (btn instanceof Button b) {
-            b.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
-            b.setVisible(true);
-        }
+        leftPanel.setDisplay(leftPanelVisible);
+        leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
     }
 
     private static void toggleRightPanel() {
         rightPanelVisible = !rightPanelVisible;
-        rightPanel.setVisible(rightPanelVisible);
-        rightCollapseBtn.setVisible(rightPanelVisible);
-        var btn = UIUtils.findById(rootElement, "rightCollapseBtn");
-        if (btn instanceof Button b) {
-            b.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
-            b.setVisible(true);
-        }
+        rightPanel.setDisplay(rightPanelVisible);
+        rightCollapseBtn.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
     }
 
     private static void toggleBlockIndicator() {
         blockIndicatorVisible = !blockIndicatorVisible;
         if (blockIndicatorPanel != null) {
-            blockIndicatorPanel.setVisible(blockIndicatorVisible);
+            blockIndicatorPanel.setDisplay(blockIndicatorVisible);
         }
     }
 
-    // ========== Block Indicator (overlaid on viewport) ==========
+    // ========== Block Indicator ==========
 
     private static UIElement buildBlockIndicator() {
         var panel = new UIElement();
@@ -347,11 +360,11 @@ public class EditorUI {
         var tabView = new TabView();
         tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).flex(1).widthPercent(100));
         var header = tabView.tabHeaderContainer;
-        var content = tabView.tabContentContainer;
+        var tvContent = tabView.tabContentContainer;
         tabView.removeChild(header);
-        tabView.removeChild(content);
+        tabView.removeChild(tvContent);
         tabView.addChild(header);
-        tabView.addChild(content);
+        tabView.addChild(tvContent);
         return tabView;
     }
 
@@ -421,10 +434,6 @@ public class EditorUI {
         return container;
     }
 
-    private static UIElement buildViewport() {
-        return ViewportFactory.create3DViewport();
-    }
-
     // ========== File Tree ==========
 
     private static TreeList<FileTreeNode> createFileTree() {
@@ -465,7 +474,9 @@ public class EditorUI {
         try {
             session.load(file);
             ViewportFactory.loadFromModel(session.getModel());
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     // ========== Bottom Bar ==========
