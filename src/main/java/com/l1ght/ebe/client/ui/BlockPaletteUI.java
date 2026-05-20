@@ -63,80 +63,102 @@ public class BlockPaletteUI {
     private static void initReflection() {
         if (reflectionInitialized) return;
         try {
-            iconField = CreativeModeTab.class.getDeclaredField("icon");
-            iconField.setAccessible(true);
+            for (var field : CreativeModeTab.class.getDeclaredFields()) {
+                var type = field.getType();
+                if (iconField == null && type == Supplier.class) {
+                    try {
+                        field.setAccessible(true);
+                        var testVal = field.get(BuiltInRegistries.CREATIVE_MODE_TAB.iterator().next());
+                        if (testVal instanceof Supplier<?> supplier && supplier.get() instanceof ItemStack) {
+                            iconField = field;
+                            LOG.info("Found icon field by type: {}", field.getName());
+                        }
+                    } catch (Exception ignored) {}
+                } else if (displayNameField == null && type == Component.class) {
+                    try {
+                        field.setAccessible(true);
+                        displayNameField = field;
+                        LOG.info("Found displayName field by type: {}", field.getName());
+                    } catch (Exception ignored) {}
+                } else if (displayItemsGeneratorField == null && !type.isPrimitive() && !type.isArray()) {
+                    var iface = type.isInterface() ? type : null;
+                    if (iface == null && type.getInterfaces().length > 0) {
+                        for (var ifc : type.getInterfaces()) {
+                            if (ifc.getSimpleName().contains("Generator") || ifc.getMethod("accept") != null) {
+                                iface = ifc;
+                                break;
+                            }
+                        }
+                    }
+                    if (type.getDeclaringClass() == CreativeModeTab.class || (type.isInterface() && type.getSimpleName().contains("Display"))) {
+                        try {
+                            field.setAccessible(true);
+                            displayItemsGeneratorField = field;
+                            LOG.info("Found displayItemsGenerator field by type: {}", field.getName());
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
 
-            displayNameField = CreativeModeTab.class.getDeclaredField("displayName");
-            displayNameField.setAccessible(true);
-
-            displayItemsGeneratorField = CreativeModeTab.class.getDeclaredField("displayItemsGenerator");
-            displayItemsGeneratorField.setAccessible(true);
-
-            for (var inner : CreativeModeTab.class.getDeclaredClasses()) {
-                var name = inner.getSimpleName();
-                LOG.info("Found inner class: {}", name);
-                if (name.equals("ItemDisplayParameters")) {
-                    itemDisplayParamsClass = inner;
-                } else if (name.equals("Output")) {
-                    outputClass = inner;
-                } else if (name.equals("TabVisibility")) {
-                    visibilityClass = inner;
+            if (displayItemsGeneratorField == null) {
+                for (var field : CreativeModeTab.class.getDeclaredFields()) {
+                    var type = field.getType();
+                    if (type.isInterface() && type != Supplier.class && type != Component.class) {
+                        try {
+                            field.setAccessible(true);
+                            for (var method : type.getMethods()) {
+                                if (method.getName().equals("accept") && method.getParameterCount() == 2) {
+                                    displayItemsGeneratorField = field;
+                                    outputClass = method.getParameterTypes()[1];
+                                    itemDisplayParamsClass = method.getParameterTypes()[0];
+                                    LOG.info("Found displayItemsGenerator via interface method: field={}, paramsClass={}, outputClass={}",
+                                            field.getName(), itemDisplayParamsClass.getName(), outputClass.getName());
+                                    break;
+                                }
+                            }
+                        } catch (Exception ignored) {}
+                        if (displayItemsGeneratorField != null) break;
+                    }
                 }
             }
 
             if (itemDisplayParamsClass == null) {
-                try {
-                    itemDisplayParamsClass = Class.forName("net.minecraft.world.item.CreativeModeTab$ItemDisplayParameters");
-                } catch (ClassNotFoundException ignored) {}
-            }
-
-            if (outputClass == null) {
-                try {
-                    outputClass = Class.forName("net.minecraft.world.item.CreativeModeTab$Output");
-                } catch (ClassNotFoundException ignored) {}
-            }
-
-            if (visibilityClass == null) {
-                try {
-                    visibilityClass = Class.forName("net.minecraft.world.item.CreativeModeTab$TabVisibility");
-                } catch (ClassNotFoundException ignored) {}
-            }
-
-            if (itemDisplayParamsClass == null) {
                 for (var method : CreativeModeTab.class.getDeclaredMethods()) {
-                    if (method.getName().equals("buildContents") && method.getParameterCount() == 1) {
-                        itemDisplayParamsClass = method.getParameterTypes()[0];
-                        LOG.info("Found ItemDisplayParameters via buildContents method: {}", itemDisplayParamsClass.getName());
-                        break;
+                    if (method.getParameterCount() == 1) {
+                        var paramType = method.getParameterTypes()[0];
+                        if (paramType.getDeclaringClass() == CreativeModeTab.class || paramType.getSimpleName().contains("Display")) {
+                            itemDisplayParamsClass = paramType;
+                            LOG.info("Found ItemDisplayParameters via method param: {}", paramType.getName());
+                            break;
+                        }
                     }
                 }
             }
 
             if (outputClass == null && displayItemsGeneratorField != null) {
-                try {
-                    var generatorType = displayItemsGeneratorField.getType();
-                    for (var method : generatorType.getMethods()) {
-                        if (method.getName().equals("accept") && method.getParameterCount() == 2) {
-                            outputClass = method.getParameterTypes()[1];
-                            LOG.info("Found Output via DisplayItemsGenerator: {}", outputClass.getName());
-                            break;
-                        }
+                var genType = displayItemsGeneratorField.getType();
+                for (var method : genType.getMethods()) {
+                    if (method.getName().equals("accept") && method.getParameterCount() == 2) {
+                        outputClass = method.getParameterTypes()[1];
+                        LOG.info("Found Output via generator method: {}", outputClass.getName());
+                        break;
                     }
-                } catch (Exception ignored) {}
+                }
             }
 
             if (visibilityClass == null && outputClass != null) {
                 for (var method : outputClass.getMethods()) {
                     if (method.getName().equals("accept") && method.getParameterCount() == 2) {
                         visibilityClass = method.getParameterTypes()[1];
-                        LOG.info("Found TabVisibility via Output.accept: {}", visibilityClass.getName());
+                        LOG.info("Found TabVisibility via output method: {}", visibilityClass.getName());
                         break;
                     }
                 }
             }
 
             reflectionInitialized = true;
-            LOG.info("CreativeModeTab reflection initialized: params={}, output={}, visibility={}",
+            LOG.info("CreativeModeTab reflection result: icon={}, displayName={}, generator={}, params={}, output={}, visibility={}",
+                    iconField != null, displayNameField != null, displayItemsGeneratorField != null,
                     itemDisplayParamsClass != null, outputClass != null, visibilityClass != null);
         } catch (Exception e) {
             LOG.error("Failed to init CreativeModeTab reflection", e);
@@ -516,7 +538,7 @@ public class BlockPaletteUI {
             if (filter.isEmpty()) {
                 tabView.setDisplay(true);
                 searchResultsContainer.setDisplay(false);
-                searchResultsContainer.getChildren().forEach(UIElement::removeSelf);
+                new ArrayList<>(searchResultsContainer.getChildren()).forEach(UIElement::removeSelf);
                 return;
             }
 
@@ -534,7 +556,7 @@ public class BlockPaletteUI {
             }
 
             tabView.setDisplay(false);
-            searchResultsContainer.getChildren().forEach(UIElement::removeSelf);
+            new ArrayList<>(searchResultsContainer.getChildren()).forEach(UIElement::removeSelf);
             var searchContent = buildScrolledGrid(filtered);
             searchResultsContainer.addChild(searchContent);
             searchResultsContainer.setDisplay(true);

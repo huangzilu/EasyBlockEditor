@@ -16,8 +16,14 @@ import net.minecraft.world.level.block.state.properties.Property;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.InflaterInputStream;
 
 public class SchematicReaders {
 
@@ -70,16 +76,7 @@ public class SchematicReaders {
     }
 
     public static BuildingModel readLitematic(Path file) throws Exception {
-        CompoundTag root = null;
-        try {
-            root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
-        } catch (Exception e) {
-            try {
-                root = NbtIo.read(file);
-            } catch (Exception e2) {
-                LOG.error("Failed to read litematic from {}: compressed and uncompressed both failed", file, e2);
-            }
-        }
+        var root = readNbtAnyFormat(file);
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
 
         int version = root.getInt("Version");
@@ -179,16 +176,7 @@ public class SchematicReaders {
     }
 
     public static BuildingModel readNbtStructure(Path file) throws Exception {
-        CompoundTag root = null;
-        try {
-            root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
-        } catch (Exception e) {
-            try {
-                root = NbtIo.read(file);
-            } catch (Exception e2) {
-                LOG.error("Failed to read NBT structure from {}: compressed and uncompressed both failed", file, e2);
-            }
-        }
+        var root = readNbtAnyFormat(file);
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
 
         var model = new BuildingModel();
@@ -266,5 +254,57 @@ public class SchematicReaders {
             LOG.warn("Failed to resolve block state from JSON: {}", id, e);
             return Blocks.STONE.defaultBlockState();
         }
+    }
+
+    private static CompoundTag readNbtAnyFormat(Path file) {
+        CompoundTag result = null;
+
+        try {
+            result = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+            if (result != null) {
+                LOG.debug("Read NBT from {} using GZIP format", file.getFileName());
+                return result;
+            }
+        } catch (Exception ignored) {}
+
+        try (var fis = Files.newInputStream(file);
+             var bis = new BufferedInputStream(fis)) {
+            bis.mark(2);
+            byte[] header = new byte[2];
+            int read = bis.read(header);
+            bis.reset();
+
+            if (read >= 2 && (header[0] & 0xFF) == 0x1F && (header[1] & 0xFF) == 0x8B) {
+                try (var gzis = new GZIPInputStream(bis);
+                     var dis = new DataInputStream(gzis)) {
+                    result = NbtIo.read(dis, NbtAccounter.unlimitedHeap());
+                    if (result != null) {
+                        LOG.debug("Read NBT from {} using manual GZIP format", file.getFileName());
+                        return result;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try (var fis = Files.newInputStream(file);
+             var iis = new InflaterInputStream(fis);
+             var dis = new DataInputStream(iis)) {
+            result = NbtIo.read(dis, NbtAccounter.unlimitedHeap());
+            if (result != null) {
+                LOG.debug("Read NBT from {} using Zlib/Deflate format", file.getFileName());
+                return result;
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            result = NbtIo.read(file);
+            if (result != null) {
+                LOG.debug("Read NBT from {} using uncompressed format", file.getFileName());
+                return result;
+            }
+        } catch (Exception ignored) {}
+
+        LOG.error("Failed to read NBT from {}: all formats (GZIP, Zlib, uncompressed) failed", file);
+        return null;
     }
 }
