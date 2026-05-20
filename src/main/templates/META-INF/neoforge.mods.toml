@@ -1,0 +1,29 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="L1ghT"
+description='''
+EasyBlockEditor is a building editor mod inspired by Litematica, developed with the LDLib2 framework.
+It serves as both a building editor and a building management platform.
+Core concept: Provide an in-game full-screen 3D UI editor, allowing players to design, edit, manage, and share buildings in a non-destructive way.
+Enjoy the fun of immersive building editing and collaboration!
+'''
+
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="[${neo_version},)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"

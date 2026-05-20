@@ -1,0 +1,35 @@
+# Build
+build/
+out/
+
+# Gradle
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.eclipse/
+.settings/
+.classpath
+.project
+.vscode/
+
+# Minecraft
+run/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.bak
+
+# Reference / non-project directories
+.trae/
+docs/
+LDLib2源代码及参考项目/
+Litematica投影模组neoforge/
+
