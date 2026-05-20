@@ -140,6 +140,9 @@
   "ebe.editor.palette.selected_none": "Selected: None",
   "ebe.editor.palette.search": "Search blocks...",
   "ebe.editor.palette.close": "Close",
+  "ebe.editor.palette.tab_all": "All",
+  "ebe.editor.indicator.inspected": "Inspected",
+  "ebe.editor.indicator.active": "Active",
   "ebe.editor.status.ready": "Ready",
   "ebe.editor.panel.no_layers": "No layers",
   "itemGroup.ebe": "EasyBlockEditor"

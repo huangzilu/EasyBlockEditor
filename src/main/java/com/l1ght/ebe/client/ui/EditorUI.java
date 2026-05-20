@@ -297,56 +297,85 @@ public class EditorUI {
         panel.setId("blockIndicatorPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .right(4).bottom(4)
-                .minWidth(180).maxWidth(320)
-                .flexDirection(FlexDirection.ROW).alignItems(AlignItems.START).gapAll(6)
+                .minWidth(200).maxWidth(360)
+                .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingHorizontal(8).paddingVertical(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
 
+        var inspectedRow = buildIndicatorRow(
+                "inspectedBlockIcon", "inspectedBlockLabel", "inspectedBlockNbtLabel",
+                Component.translatable("ebe.editor.indicator.inspected"),
+                0xFFFFD700);
+        panel.addChild(inspectedRow);
+
+        var separator = new UIElement();
+        separator.layout(l -> l.widthPercent(100).height(1));
+        separator.style(s -> s.background(Sprites.RECT_DARK));
+        panel.addChild(separator);
+
+        var activeRow = buildIndicatorRow(
+                "activeBlockIcon", "activeBlockLabel", "activeBlockNbtLabel",
+                Component.translatable("ebe.editor.indicator.active"),
+                0xFF70FF70);
+        panel.addChild(activeRow);
+
+        return panel;
+    }
+
+    private static UIElement buildIndicatorRow(String iconId, String nameId, String nbtId, Component title, int nameColor) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.START).gapAll(6));
+
         var iconWrap = new UIElement();
-        iconWrap.setId("activeBlockSceneWrap");
+        iconWrap.setId(iconId);
         iconWrap.layout(l -> l.width(24).height(24));
         iconWrap.style(s -> s.backgroundTexture(
                 new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
                         net.minecraft.world.item.Items.AIR)));
-        panel.addChild(iconWrap);
+        row.addChild(iconWrap);
 
         var infoCol = new UIElement();
         infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1).minWidth(140));
 
+        var titleLabel = new Label();
+        titleLabel.setText(title);
+        titleLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(8));
+        infoCol.addChild(titleLabel);
+
         var nameLabel = new Label();
-        nameLabel.setId("activeBlockLabel");
+        nameLabel.setId(nameId);
         nameLabel.setText(Component.translatable("ebe.editor.palette.selected_none"));
-        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(11)
+        nameLabel.textStyle(ts -> ts.textColor(nameColor).textShadow(false).fontSize(11)
                 .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
         nameLabel.layout(l -> l.widthPercent(100));
         infoCol.addChild(nameLabel);
 
         var nbtLabel = new Label();
-        nbtLabel.setId("activeBlockNbtLabel");
+        nbtLabel.setId(nbtId);
         nbtLabel.setText(Component.literal(""));
         nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(9)
                 .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
         nbtLabel.layout(l -> l.widthPercent(100));
         infoCol.addChild(nbtLabel);
 
-        panel.addChild(infoCol);
-        return panel;
+        row.addChild(infoCol);
+        return row;
     }
 
     public static void updateActiveBlockIndicator() {
         var bs = state.getActiveBlockState();
-        updateBlockIndicatorDisplay(bs);
+        updateIndicatorRow("activeBlockIcon", "activeBlockLabel", "activeBlockNbtLabel", bs);
     }
 
     public static void updateBlockInspection() {
         var bs = state.getInspectedBlockState();
-        updateBlockIndicatorDisplay(bs);
+        updateIndicatorRow("inspectedBlockIcon", "inspectedBlockLabel", "inspectedBlockNbtLabel", bs);
     }
 
-    private static void updateBlockIndicatorDisplay(net.minecraft.world.level.block.state.BlockState bs) {
-        var iconWrap = UIUtils.findById(rootElement, "activeBlockSceneWrap");
-        var nameLabel = UIUtils.findById(rootElement, "activeBlockLabel");
-        var nbtLabel = UIUtils.findById(rootElement, "activeBlockNbtLabel");
+    private static void updateIndicatorRow(String iconId, String nameId, String nbtId, net.minecraft.world.level.block.state.BlockState bs) {
+        var iconWrap = UIUtils.findById(rootElement, iconId);
+        var nameLabel = UIUtils.findById(rootElement, nameId);
+        var nbtLabel = UIUtils.findById(rootElement, nbtId);
 
         if (bs != null && !bs.isAir()) {
             if (iconWrap != null) {
@@ -354,7 +383,7 @@ public class EditorUI {
                         new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(bs.getBlock().asItem())));
             }
             if (nameLabel instanceof Label l) {
-                l.setText(Component.translatable("ebe.editor.palette.selected", bs.getBlock().getName()));
+                l.setText(bs.getBlock().getName());
             }
             if (nbtLabel instanceof Label l) {
                 var props = bs.getValues();

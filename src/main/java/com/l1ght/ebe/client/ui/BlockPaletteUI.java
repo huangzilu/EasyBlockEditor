@@ -323,8 +323,24 @@ public class BlockPaletteUI {
         var tabView = new TabView();
         tabView.layout(l -> l.widthPercent(100).flex(1));
         tabView.setId("browseTabView");
+        tabView.tabScroller(s -> s.scrollerStyle(style -> style.horizontalScrollDisplay(com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay.ALWAYS)));
 
         var tabMap = buildTabMap();
+
+        List<ItemStack> allBlocks = new ArrayList<>();
+        for (var items : tabMap.values()) allBlocks.addAll(items);
+        if (!allBlocks.isEmpty()) {
+            var allTab = new Tab();
+            allTab.layout(l -> l.width(22).height(22).paddingAll(3));
+            var allIcon = new UIElement();
+            allIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            allIcon.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+            allIcon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                allIcon.style(s2 -> s2.tooltips(Component.translatable("ebe.editor.palette.tab_all")));
+            });
+            allTab.addChild(allIcon);
+            tabView.addTab(allTab, buildScrolledGrid(allBlocks));
+        }
 
         for (var entry : tabMap.entrySet()) {
             var tab = entry.getKey();
@@ -332,25 +348,20 @@ public class BlockPaletteUI {
             if (tabItems.isEmpty()) continue;
 
             var tabBtn = new Tab();
-            tabBtn.layout(l -> l.height(20).paddingHorizontal(6));
+            tabBtn.layout(l -> l.width(22).height(22).paddingAll(3));
 
             if (tab != null) {
                 var iconStack = tab.getIconItem();
+                var iconEl = new UIElement();
+                iconEl.layout(l -> l.widthPercent(100).heightPercent(100));
                 if (iconStack != null && !iconStack.isEmpty()) {
-                    var iconEl = new UIElement();
-                    iconEl.layout(l -> l.width(16).height(16));
                     iconEl.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
-                    tabBtn.addChild(iconEl);
                 }
-                var tabLabel = new Label();
-                tabLabel.setText(tab.getDisplayName());
-                tabLabel.textStyle(ts -> ts.textShadow(false).fontSize(9));
-                tabBtn.addChild(tabLabel);
-            } else {
-                var tabLabel = new Label();
-                tabLabel.setText(Component.literal("All"));
-                tabLabel.textStyle(ts -> ts.textShadow(false).fontSize(9));
-                tabBtn.addChild(tabLabel);
+                var tabName = tab.getDisplayName();
+                iconEl.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                    iconEl.style(s2 -> s2.tooltips(tabName));
+                });
+                tabBtn.addChild(iconEl);
             }
 
             var content = buildScrolledGrid(tabItems);

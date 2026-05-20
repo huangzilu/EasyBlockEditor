@@ -88,7 +88,7 @@ public class ViewportFactory {
         var core = getSceneCore();
         if (core != null) {
             core.add(pos);
-            currentScene.needCompileCache();
+            if (currentScene != null) currentScene.needCompileCache();
         } else {
             refreshRenderedCore();
         }
@@ -98,7 +98,7 @@ public class ViewportFactory {
         var core = getSceneCore();
         if (core != null) {
             core.remove(pos);
-            currentScene.needCompileCache();
+            if (currentScene != null) currentScene.needCompileCache();
         } else {
             refreshRenderedCore();
         }
@@ -158,8 +158,8 @@ public class ViewportFactory {
         LOG.info("Total blocks: {}, using {} renderer",
                 totalBlocksAdded, totalBlocksAdded > FBO_THRESHOLD ? "FBO" : "immediate");
 
-        currentScene.createScene(currentWorld, totalBlocksAdded > FBO_THRESHOLD, null);
-        currentScene.useCacheBuffer(true);
+        currentScene.createScene(currentWorld, false, null);
+        currentScene.useCacheBuffer(totalBlocksAdded > FBO_THRESHOLD);
 
         refreshRenderedCore(autoCamera);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
@@ -308,7 +308,12 @@ public class ViewportFactory {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        currentScene.needCompileCache();
+        var core = getSceneCore();
+        if (core == null) {
+            refreshRenderedCore();
+        } else if (currentScene != null) {
+            currentScene.needCompileCache();
+        }
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);
