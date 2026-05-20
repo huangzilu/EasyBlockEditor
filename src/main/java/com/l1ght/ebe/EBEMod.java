@@ -3,6 +3,7 @@ package com.l1ght.ebe;
 import com.l1ght.ebe.command.EBECommands;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.config.EBEServerConfig;
+import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.item.ArchitectToolboxItem;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -49,6 +50,13 @@ public class EBEMod {
 
         EBEClientConfig.register(modContainer);
         EBEServerConfig.register(modContainer);
+
+        try {
+            new FileManager(EBEClientConfig.schematicDir.get()).ensureDir();
+            LOGGER.info("EasyBlockEditor schematic directory ready");
+        } catch (Exception e) {
+            LOGGER.error("Failed to create schematic directory", e);
+        }
 
         NeoForge.EVENT_BUS.register(this);
     }

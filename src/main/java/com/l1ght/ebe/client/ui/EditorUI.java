@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.config.EBEClientConfig;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -26,6 +27,7 @@ import java.util.Comparator;
 public class EditorUI {
 
     private static final EditorState state = new EditorState();
+    private static final EditorSession session = new EditorSession();
     private static UIElement rootElement;
 
     public static ModularUI createModularUI() {
@@ -43,6 +45,10 @@ public class EditorUI {
 
     public static EditorState getState() {
         return state;
+    }
+
+    public static EditorSession getSession() {
+        return session;
     }
 
     private static UIElement buildMenuBar() {
@@ -76,12 +82,29 @@ public class EditorUI {
     }
 
     private static UIElement openDropdown;
+    private static UIElement openMenuAnchor;
+    private static Menu<String, Runnable> pendingMenu;
+    private static int menuPositionFrame = 0;
 
-    private static void openMenu(UIElement anchor, MenuTreeNode tree) {
+    private static void closeMenu() {
         if (openDropdown != null) {
             openDropdown.removeSelf();
             openDropdown = null;
         }
+        if (openMenuAnchor != null) {
+            openMenuAnchor.removeClass("menu-active");
+            openMenuAnchor = null;
+        }
+        pendingMenu = null;
+    }
+
+    private static void openMenu(UIElement anchor, MenuTreeNode tree) {
+        if (openDropdown != null && openMenuAnchor == anchor) {
+            closeMenu();
+            return;
+        }
+
+        closeMenu();
 
         UIElementProvider<String> uiProvider = key -> {
             var label = new Label();
@@ -92,27 +115,53 @@ public class EditorUI {
 
         var menu = new Menu<>(tree, uiProvider);
         menu.setId("__dropdown_menu__");
-        menu.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(anchor.getPositionX())
-                .top(anchor.getPositionY() + anchor.getSizeHeight()));
+        menu.style(s -> s.zIndex(1000));
+        menu.layout(l -> l.positionType(TaffyPosition.ABSOLUTE).left(-9999).top(-9999));
         menu.setOnNodeClicked(node -> {
             var action = node.getContent();
             if (action != null) {
                 action.run();
             }
+            closeMenu();
         });
-        menu.setOnClose(() -> openDropdown = null);
+        menu.setOnClose(() -> closeMenu());
 
-        anchor.addChild(menu);
+        rootElement.addChild(menu);
+
+        openMenuAnchor = anchor;
+        anchor.addClass("menu-active");
+        pendingMenu = menu;
+        menuPositionFrame = 0;
+
+        menu.addEventListener(UIEvents.TICK, e -> {
+            if (pendingMenu == menu) {
+                menuPositionFrame++;
+                if (menuPositionFrame >= 2) {
+                    float x = openMenuAnchor.getPositionX();
+                    float y = openMenuAnchor.getPositionY() + openMenuAnchor.getSizeHeight();
+                    if (x > 0 || y > 0) {
+                        menu.layout(l -> l.left(x).top(y));
+                        pendingMenu = null;
+                    }
+                }
+            }
+        });
+
         openDropdown = menu;
     }
 
     private static MenuTreeNode buildFileMenu() {
         var root = new MenuTreeNode("file");
-        root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {}));
+        root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {
+            session.newProject(name);
+        }));
         root.child("ebe.editor.open");
-        root.child("ebe.editor.save");
-        root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, "untitled", name -> {}));
+        root.child("ebe.editor.save", () -> {
+            try { session.save(); } catch (Exception ignored) {}
+        });
+        root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
+            try { session.saveAs(name); } catch (Exception ignored) {}
+        }));
         root.child("ebe.editor.import");
         root.child("ebe.editor.export");
         return root;
@@ -170,13 +219,26 @@ public class EditorUI {
         return content;
     }
 
+    private static TabView createTopTabView() {
+        var tabView = new TabView();
+        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).flex(1).widthPercent(100));
+
+        var header = tabView.tabHeaderContainer;
+        var content = tabView.tabContentContainer;
+        tabView.removeChild(header);
+        tabView.removeChild(content);
+        tabView.addChild(header);
+        tabView.addChild(content);
+
+        return tabView;
+    }
+
     private static UIElement buildLeftPanel() {
         var panel = new UIElement();
-        panel.layout(l -> l.width(200).flexDirection(FlexDirection.COLUMN));
+        panel.layout(l -> l.widthPercent(15).minWidth(120).maxWidth(300).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
 
-        var tabView = new TabView();
-        tabView.layout(l -> l.flex(1).widthPercent(100));
+        var tabView = createTopTabView();
 
         var filesTab = new Tab();
         filesTab.setText(Component.translatable("ebe.editor.panel.files"));
@@ -229,7 +291,7 @@ public class EditorUI {
     }
 
     private static FileTreeNode buildFileSystemTree() {
-        var dir = Path.of("config/ebe/client/schematics");
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
         var root = FileTreeNode.ofDirectory(dir);
         if (Files.exists(dir)) {
             try (var stream = Files.list(dir)) {
@@ -258,11 +320,10 @@ public class EditorUI {
 
     private static UIElement buildRightPanel() {
         var panel = new UIElement();
-        panel.layout(l -> l.width(250).flexDirection(FlexDirection.COLUMN));
+        panel.layout(l -> l.widthPercent(18).minWidth(150).maxWidth(350).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
 
-        var tabView = new TabView();
-        tabView.layout(l -> l.flex(1).widthPercent(100));
+        var tabView = createTopTabView();
 
         var propsTab = new Tab();
         propsTab.setText(Component.translatable("ebe.editor.panel.properties"));
