@@ -1,6 +1,7 @@
 package com.l1ght.ebe.item;
 
-import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.client.ui.EditorScreen;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResultHolder;
@@ -17,6 +18,7 @@ public class ArchitectToolboxItem extends Item {
     @Override
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand usedHand) {
         if (level.isClientSide()) {
+            Minecraft.getInstance().setScreen(new EditorScreen());
             return InteractionResultHolder.sidedSuccess(player.getItemInHand(usedHand), true);
         }
         return InteractionResultHolder.sidedSuccess(player.getItemInHand(usedHand), false);

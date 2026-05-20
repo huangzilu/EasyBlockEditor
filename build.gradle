@@ -120,6 +120,8 @@ configurations {
 
 dependencies {
     implementation files("libs/ldlib2-neoforge-1.21.1-2.2.6-all.jar")
+    compileOnly files("libs/taffy-1.1.4.jar")
+    compileOnly files("libs/yoga-1.0.0.jar")
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'

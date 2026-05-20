@@ -125,5 +125,6 @@
   "ebe.error.invalid_format": "Invalid format",
   "ebe.error.load_failed": "Failed to load file",
   "ebe.error.save_failed": "Failed to save file",
+  "ebe.screen.editor": "EasyBlock Editor",
   "itemGroup.ebe": "EasyBlockEditor"
 }

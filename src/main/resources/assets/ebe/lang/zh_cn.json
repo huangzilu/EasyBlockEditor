@@ -125,5 +125,6 @@
   "ebe.error.invalid_format": "无效格式",
   "ebe.error.load_failed": "加载文件失败",
   "ebe.error.save_failed": "保存文件失败",
+  "ebe.screen.editor": "建筑编辑器",
   "itemGroup.ebe": "EasyBlockEditor"
 }
