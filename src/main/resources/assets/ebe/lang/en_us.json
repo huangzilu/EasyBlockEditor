@@ -133,6 +133,7 @@
   "ebe.editor.settings.projection": "Projection",
   "ebe.editor.settings.printer": "Printer",
   "ebe.editor.block_palette": "Block Palette",
+  "ebe.editor.block_indicator": "Block Indicator",
   "ebe.editor.palette.inventory": "Inventory Blocks",
   "ebe.editor.palette.browse_all": "Browse All Blocks",
   "ebe.editor.palette.selected": "Selected: %s",

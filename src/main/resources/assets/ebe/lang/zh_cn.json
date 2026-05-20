@@ -133,6 +133,7 @@
   "ebe.editor.settings.projection": "投影",
   "ebe.editor.settings.printer": "打印机",
   "ebe.editor.block_palette": "方块面板",
+  "ebe.editor.block_indicator": "方块指示器",
   "ebe.editor.palette.inventory": "背包方块",
   "ebe.editor.palette.browse_all": "浏览所有方块",
   "ebe.editor.palette.selected": "已选: %s",

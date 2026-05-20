@@ -2,11 +2,11 @@ package com.l1ght.ebe.data.io;
 
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -17,6 +17,11 @@ public class SchematicReaders {
     public static BuildingModel readLitematic(Path file) throws Exception {
         var root = NbtIo.read(file);
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
+
+        int version = root.getInt("Version");
+        if (version < 1 || version > 7) {
+            throw new IllegalArgumentException("Unsupported litematic version: " + version);
+        }
 
         var model = new BuildingModel();
         var meta = root.getCompound("Metadata");
@@ -37,50 +42,72 @@ public class SchematicReaders {
         for (var regionName : regions.getAllKeys()) {
             var regionTag = regions.getCompound(regionName);
 
-            var pos = regionTag.getCompound("Position");
-            int ox = pos.getInt("x");
-            int oy = pos.getInt("y");
-            int oz = pos.getInt("z");
+            var posTag = regionTag.getCompound("Position");
+            int posX = posTag.getInt("x");
+            int posY = posTag.getInt("y");
+            int posZ = posTag.getInt("z");
 
-            var size = regionTag.getCompound("Size");
-            int sx = Math.abs(size.getInt("x"));
-            int sy = Math.abs(size.getInt("y"));
-            int sz = Math.abs(size.getInt("z"));
+            var sizeTag = regionTag.getCompound("Size");
+            int sizeX = sizeTag.getInt("x");
+            int sizeY = sizeTag.getInt("y");
+            int sizeZ = sizeTag.getInt("z");
 
-            var region = model.addRegion(regionName, ox, oy, oz, sx, sy, sz);
+            int endX = posX + sizeX - Integer.signum(sizeX);
+            int endY = posY + sizeY - Integer.signum(sizeY);
+            int endZ = posZ + sizeZ - Integer.signum(sizeZ);
+
+            int minX = Math.min(posX, endX);
+            int minY = Math.min(posY, endY);
+            int minZ = Math.min(posZ, endZ);
+            int absSizeX = Math.abs(sizeX);
+            int absSizeY = Math.abs(sizeY);
+            int absSizeZ = Math.abs(sizeZ);
 
             var paletteTag = regionTag.getList("BlockStatePalette", 10);
             BlockState[] palette = new BlockState[paletteTag.size()];
             for (int i = 0; i < paletteTag.size(); i++) {
-                var entry = paletteTag.getCompound(i);
-                palette[i] = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), entry);
+                palette[i] = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), paletteTag.getCompound(i));
             }
 
-            var dataArray = regionTag.getByteArray("BlockStates");
-            int bitsPerEntry = Math.max(2, Integer.SIZE - Integer.numberOfLeadingZeros(palette.length - 1));
-            long[] packed = new long[(dataArray.length + 7) / 8];
-            for (int i = 0; i < dataArray.length; i++) {
-                packed[i / 8] |= ((long) dataArray[i] & 0xFFL) << ((i % 8) * 8);
+            var blockStatesTag = regionTag.get("BlockStates");
+            if (blockStatesTag == null) continue;
+
+            long[] packed;
+            if (blockStatesTag instanceof net.minecraft.nbt.LongArrayTag longArrayTag) {
+                packed = longArrayTag.getAsLongArray();
+            } else {
+                continue;
             }
 
-            int idx = 0;
-            int entriesPerLong = 64 / bitsPerEntry;
-            long mask = (1L << bitsPerEntry) - 1L;
+            int bitsPerEntry = Math.max(2, Integer.SIZE - Integer.numberOfLeadingZeros(Math.max(0, palette.length - 1)));
+            long maxEntryValue = (1L << bitsPerEntry) - 1L;
+            long totalVolume = (long) absSizeX * absSizeY * absSizeZ;
 
-            for (int y = 0; y < sy; y++) {
-                for (int z = 0; z < sz; z++) {
-                    for (int x = 0; x < sx; x++) {
-                        int longIdx = idx / entriesPerLong;
-                        int bitOffset = (idx % entriesPerLong) * bitsPerEntry;
-                        int paletteIdx = longIdx < packed.length
-                                ? (int) ((packed[longIdx] >>> bitOffset) & mask) : 0;
+            var region = model.addRegion(regionName, minX, minY, minZ, absSizeX, absSizeY, absSizeZ);
+
+            int sizeLayer = absSizeX * absSizeZ;
+            for (int y = 0; y < absSizeY; y++) {
+                for (int z = 0; z < absSizeZ; z++) {
+                    for (int x = 0; x < absSizeX; x++) {
+                        int index = y * sizeLayer + z * absSizeX + x;
+                        long startOffset = (long) index * bitsPerEntry;
+                        int startArrIdx = (int) (startOffset >> 6);
+                        int endArrIdx = (int) (((long) (index + 1) * bitsPerEntry - 1) >> 6);
+                        int startBitOffset = (int) (startOffset & 0x3F);
+
+                        int paletteIdx;
+                        if (startArrIdx == endArrIdx) {
+                            paletteIdx = (int) (packed[startArrIdx] >>> startBitOffset & maxEntryValue);
+                        } else {
+                            int endOffset = 64 - startBitOffset;
+                            paletteIdx = (int) ((packed[startArrIdx] >>> startBitOffset | packed[endArrIdx] << endOffset) & maxEntryValue);
+                        }
 
                         BlockState bs = paletteIdx < palette.length ? palette[paletteIdx] : Blocks.AIR.defaultBlockState();
                         if (!bs.isAir()) {
-                            var id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
-                            region.setWorldBlock(x + ox, y + oy, z + oz, id);
+                            var id = BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
+                            region.setWorldBlock(x + minX, y + minY, z + minZ, id);
                         }
-                        idx++;
                     }
                 }
             }
@@ -129,7 +156,7 @@ public class SchematicReaders {
             int paletteIdx = block.getInt("state");
             BlockState bs = paletteIdx < palette.length ? palette[paletteIdx] : Blocks.AIR.defaultBlockState();
             if (!bs.isAir()) {
-                var id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
+                var id = BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
                 region.setWorldBlock(pos[0], pos[1], pos[2], id);
             }
         }
