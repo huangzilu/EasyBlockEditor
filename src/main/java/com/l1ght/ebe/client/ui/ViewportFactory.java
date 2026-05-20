@@ -19,7 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -41,7 +40,6 @@ public class ViewportFactory {
     private static Vector3f savedCenter = new Vector3f(3, 2, 3);
 
     private static Field sceneCoreField;
-    private static Method sceneNeedCompileCacheMethod;
     private static boolean sceneReflectionInit = false;
 
     @SuppressWarnings("unchecked")
@@ -51,29 +49,35 @@ public class ViewportFactory {
         try {
             return (Set<BlockPos>) sceneCoreField.get(currentScene);
         } catch (Exception e) {
+            LOG.warn("Failed to get Scene.core", e);
             return null;
-        }
-    }
-
-    private static void triggerCacheRecompile() {
-        if (!sceneReflectionInit) initSceneReflection();
-        if (sceneNeedCompileCacheMethod == null || currentScene == null) return;
-        try {
-            sceneNeedCompileCacheMethod.invoke(currentScene);
-        } catch (Exception e) {
-            LOG.warn("Failed to trigger cache recompile", e);
         }
     }
 
     private static void initSceneReflection() {
         if (sceneReflectionInit) return;
         try {
-            sceneCoreField = Scene.class.getDeclaredField("core");
-            sceneCoreField.setAccessible(true);
-            sceneNeedCompileCacheMethod = Scene.class.getDeclaredMethod("needCompileCache");
-            sceneNeedCompileCacheMethod.setAccessible(true);
-            LOG.info("Scene reflection initialized: core={}, needCompileCache={}",
-                    sceneCoreField != null, sceneNeedCompileCacheMethod != null);
+            for (var field : Scene.class.getDeclaredFields()) {
+                if (java.util.Set.class.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    var testVal = field.get(currentScene);
+                    if (testVal instanceof java.util.Set<?> set && !set.isEmpty()) {
+                        var first = set.iterator().next();
+                        if (first instanceof BlockPos) {
+                            sceneCoreField = field;
+                            LOG.info("Found Scene.core field: {}", field.getName());
+                            break;
+                        }
+                    } else if (testVal instanceof java.util.Set<?>) {
+                        sceneCoreField = field;
+                        LOG.info("Found Scene.core field (empty set): {}", field.getName());
+                        break;
+                    }
+                }
+            }
+            if (sceneCoreField == null) {
+                LOG.warn("Could not find Scene.core field by type, incremental updates disabled");
+            }
         } catch (Exception e) {
             LOG.warn("Scene reflection failed, will use full refresh", e);
         }
@@ -84,7 +88,7 @@ public class ViewportFactory {
         var core = getSceneCore();
         if (core != null) {
             core.add(pos);
-            triggerCacheRecompile();
+            currentScene.needCompileCache();
         } else {
             refreshRenderedCore();
         }
@@ -94,7 +98,7 @@ public class ViewportFactory {
         var core = getSceneCore();
         if (core != null) {
             core.remove(pos);
-            triggerCacheRecompile();
+            currentScene.needCompileCache();
         } else {
             refreshRenderedCore();
         }
@@ -304,7 +308,7 @@ public class ViewportFactory {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        triggerCacheRecompile();
+        currentScene.needCompileCache();
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);

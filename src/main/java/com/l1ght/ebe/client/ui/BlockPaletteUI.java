@@ -29,14 +29,10 @@ import net.neoforged.api.distmarker.OnlyIn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 
 @OnlyIn(Dist.CLIENT)
 public class BlockPaletteUI {
@@ -57,111 +53,8 @@ public class BlockPaletteUI {
     private static final int SLOTS_PER_ROW = 9;
     private static final int GRID_WIDTH = SLOT_SIZE * SLOTS_PER_ROW + SLOTS_PER_ROW - 1;
 
-    private static Field iconField;
-    private static Field displayNameField;
-    private static Field displayItemsGeneratorField;
-    private static Class<?> itemDisplayParamsClass;
-    private static Class<?> outputClass;
-    private static Class<?> visibilityClass;
-    private static boolean reflectionInitialized = false;
-    private static boolean reflectionFailed = false;
-
-    private static void initReflection() {
-        if (reflectionInitialized) return;
-        try {
-            for (var field : CreativeModeTab.class.getDeclaredFields()) {
-                var type = field.getType();
-                if (iconField == null && type == Supplier.class) {
-                    try {
-                        field.setAccessible(true);
-                        var firstTab = BuiltInRegistries.CREATIVE_MODE_TAB.iterator().next();
-                        var testVal = field.get(firstTab);
-                        if (testVal instanceof Supplier<?> supplier && supplier.get() instanceof ItemStack) {
-                            iconField = field;
-                            LOG.info("Found icon field: {}", field.getName());
-                        }
-                    } catch (Exception ignored) {}
-                } else if (displayNameField == null && type == Component.class) {
-                    try {
-                        field.setAccessible(true);
-                        displayNameField = field;
-                        LOG.info("Found displayName field: {}", field.getName());
-                    } catch (Exception ignored) {}
-                }
-            }
-
-            for (var field : CreativeModeTab.class.getDeclaredFields()) {
-                var type = field.getType();
-                if (type == Supplier.class || type == Component.class || type.isPrimitive()) continue;
-                if (iconField != null && field == iconField) continue;
-                if (displayNameField != null && field == displayNameField) continue;
-                if (displayItemsGeneratorField != null) continue;
-
-                try {
-                    field.setAccessible(true);
-                    for (var method : type.getMethods()) {
-                        if (method.getName().equals("accept") && method.getParameterCount() == 2) {
-                            displayItemsGeneratorField = field;
-                            itemDisplayParamsClass = method.getParameterTypes()[0];
-                            outputClass = method.getParameterTypes()[1];
-                            LOG.info("Found generator field: {}, params={}, output={}",
-                                    field.getName(), itemDisplayParamsClass.getName(), outputClass.getName());
-                            break;
-                        }
-                    }
-                } catch (Exception ignored) {}
-                if (displayItemsGeneratorField != null) break;
-            }
-
-            if (outputClass != null) {
-                for (var method : outputClass.getMethods()) {
-                    if (method.getName().equals("accept") && method.getParameterCount() == 2) {
-                        visibilityClass = method.getParameterTypes()[1];
-                        LOG.info("Found visibility class: {}", visibilityClass.getName());
-                        break;
-                    }
-                }
-            }
-
-            reflectionInitialized = true;
-            boolean ok = iconField != null && displayNameField != null && displayItemsGeneratorField != null
-                    && itemDisplayParamsClass != null && outputClass != null && visibilityClass != null;
-            reflectionFailed = !ok;
-            LOG.info("Reflection result: icon={} displayName={} generator={} params={} output={} visibility={} failed={}",
-                    iconField != null, displayNameField != null, displayItemsGeneratorField != null,
-                    itemDisplayParamsClass != null, outputClass != null, visibilityClass != null, reflectionFailed);
-        } catch (Exception e) {
-            LOG.error("Failed to init CreativeModeTab reflection", e);
-            reflectionInitialized = true;
-            reflectionFailed = true;
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Supplier<ItemStack> getTabIcon(CreativeModeTab tab) {
-        if (iconField == null) return null;
-        try {
-            return (Supplier<ItemStack>) iconField.get(tab);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static Component getTabDisplayName(CreativeModeTab tab) {
-        if (displayNameField == null) {
-            var key = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab);
-            return Component.literal(key != null ? key.getPath() : "?");
-        }
-        try {
-            return (Component) displayNameField.get(tab);
-        } catch (Exception e) {
-            var key = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab);
-            return Component.literal(key != null ? key.getPath() : "?");
-        }
-    }
-
-    private static Object createItemDisplayParams() {
-        if (itemDisplayParamsClass == null) return null;
+    private static List<ItemStack> getTabBlockItems(CreativeModeTab tab) {
+        List<ItemStack> result = new ArrayList<>();
         try {
             var mc = Minecraft.getInstance();
             var featureFlags = mc.level != null ? mc.level.enabledFeatures() : FeatureFlagSet.of();
@@ -170,98 +63,32 @@ public class BlockPaletteUI {
                     ? mc.level.registryAccess()
                     : mc.getConnection().registryAccess();
 
-            for (var ctor : itemDisplayParamsClass.getConstructors()) {
-                var params = ctor.getParameterTypes();
-                try {
-                    if (params.length == 3 && params[0] == FeatureFlagSet.class && params[1] == boolean.class) {
-                        return ctor.newInstance(featureFlags, hasPermissions, registryAccess);
-                    } else if (params.length == 2 && params[0] == FeatureFlagSet.class && params[1] == boolean.class) {
-                        return ctor.newInstance(featureFlags, hasPermissions);
-                    }
-                } catch (Exception ignored) {}
-            }
-        } catch (Exception e) {
-            LOG.error("Failed to create ItemDisplayParameters", e);
-        }
-        return null;
-    }
-
-    private static List<ItemStack> getTabBlockItems(CreativeModeTab tab, Object params) {
-        List<ItemStack> result = new ArrayList<>();
-        if (params == null || outputClass == null || displayItemsGeneratorField == null || visibilityClass == null) return result;
-
-        try {
-            var generator = displayItemsGeneratorField.get(tab);
-            if (generator == null) return result;
-
-            Object parentOnlyVal = null;
-            Object parentAndSearchVal = null;
-            for (var f : visibilityClass.getFields()) {
-                var name = f.getName();
-                if (name.contains("PARENT_ONLY") || name.contains("ONLY")) {
-                    parentOnlyVal = f.get(null);
-                } else if (name.contains("PARENT_AND_SEARCH") || name.contains("BOTH")) {
-                    parentAndSearchVal = f.get(null);
-                }
-            }
-
-            final Object pOnly = parentOnlyVal;
-            final Object pAndSearch = parentAndSearchVal;
-
-            var output = Proxy.newProxyInstance(
-                    outputClass.getClassLoader(),
-                    new Class[]{outputClass},
-                    (proxy, method, args) -> {
-                        if (method.getName().equals("accept") && args.length == 2) {
-                            var stack = (ItemStack) args[0];
-                            var vis = args[1];
-                            boolean ok = (pOnly != null && vis == pOnly)
-                                    || (pAndSearch != null && vis == pAndSearch)
-                                    || (pOnly == null && pAndSearch == null);
-                            if (ok && stack.getItem() instanceof BlockItem) {
-                                result.add(stack.copy());
-                            }
-                        } else if (method.getName().equals("accept") && args.length == 1) {
-                            var stack = (ItemStack) args[0];
-                            if (stack.getItem() instanceof BlockItem) {
-                                result.add(stack.copy());
-                            }
-                        }
-                        return null;
-                    });
-
-            for (var m : generator.getClass().getMethods()) {
-                if (m.getName().equals("accept") && m.getParameterCount() == 2) {
-                    m.setAccessible(true);
-                    m.invoke(generator, params, output);
-                    break;
+            var params = new CreativeModeTab.ItemDisplayParameters(featureFlags, hasPermissions, registryAccess);
+            tab.buildContents(params);
+            for (var stack : tab.getDisplayItems()) {
+                if (stack.getItem() instanceof BlockItem) {
+                    result.add(stack.copy());
                 }
             }
         } catch (Exception e) {
             LOG.error("Failed to get tab items for {}", BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab), e);
         }
-
         return result;
     }
 
     private static Map<CreativeModeTab, List<ItemStack>> buildTabMap() {
-        initReflection();
-
         Map<CreativeModeTab, List<ItemStack>> tabMap = new LinkedHashMap<>();
-        var params = createItemDisplayParams();
 
-        if (params != null && !reflectionFailed) {
-            for (var tab : BuiltInRegistries.CREATIVE_MODE_TAB) {
-                if (tab.getType() != CreativeModeTab.Type.CATEGORY) continue;
-                var items = getTabBlockItems(tab, params);
-                if (!items.isEmpty()) {
-                    tabMap.put(tab, items);
-                }
+        for (var tab : BuiltInRegistries.CREATIVE_MODE_TAB) {
+            if (tab.getType() != CreativeModeTab.Type.CATEGORY) continue;
+            var items = getTabBlockItems(tab);
+            if (!items.isEmpty()) {
+                tabMap.put(tab, items);
             }
         }
 
         if (tabMap.isEmpty()) {
-            LOG.warn("Tab reflection failed, falling back to simple block list");
+            LOG.warn("No tab items found, falling back to simple block list");
             List<ItemStack> allBlocks = new ArrayList<>();
             BuiltInRegistries.BLOCK.forEach(block -> {
                 var item = block.asItem();
@@ -508,19 +335,15 @@ public class BlockPaletteUI {
             tabBtn.layout(l -> l.height(20).paddingHorizontal(6));
 
             if (tab != null) {
-                var iconSupplier = getTabIcon(tab);
-                if (iconSupplier != null) {
-                    var iconStack = iconSupplier.get();
-                    if (iconStack != null && !iconStack.isEmpty()) {
-                        var iconEl = new UIElement();
-                        iconEl.layout(l -> l.width(16).height(16));
-                        iconEl.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
-                        tabBtn.addChild(iconEl);
-                    }
+                var iconStack = tab.getIconItem();
+                if (iconStack != null && !iconStack.isEmpty()) {
+                    var iconEl = new UIElement();
+                    iconEl.layout(l -> l.width(16).height(16));
+                    iconEl.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
+                    tabBtn.addChild(iconEl);
                 }
-                var tabName = getTabDisplayName(tab);
                 var tabLabel = new Label();
-                tabLabel.setText(tabName);
+                tabLabel.setText(tab.getDisplayName());
                 tabLabel.textStyle(ts -> ts.textShadow(false).fontSize(9));
                 tabBtn.addChild(tabLabel);
             } else {
