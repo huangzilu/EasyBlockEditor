@@ -24,7 +24,7 @@ It serves as both a **building editor** and a **building management platform**. 
 
 - Minecraft 1.21.1
 - NeoForge 21.1.x
-- LDLib2 (optional, for full features)
+- [LDLib2](https://github.com/Low-Drag-MC/LDLib2) (required)
 
 ## Installation
 
