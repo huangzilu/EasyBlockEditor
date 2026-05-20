@@ -7,7 +7,7 @@ import java.util.stream.Stream;
 
 public class FileManager {
     private final Path schematicDir;
-    private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(".ebe", ".litematic", ".schem", ".nbt", ".schematic");
+    public static final Set<String> SUPPORTED_EXTENSIONS = Set.of(".ebe", ".litematic", ".schem", ".nbt", ".schematic");
 
     public FileManager(String dir) {
         this.schematicDir = Path.of(dir);

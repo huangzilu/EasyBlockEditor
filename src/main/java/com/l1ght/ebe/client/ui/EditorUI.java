@@ -155,15 +155,21 @@ public class EditorUI {
         root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {
             session.newProject(name);
         }));
-        root.child("ebe.editor.open");
+        root.child("ebe.editor.open", () -> ImportDialog.show(rootElement, file -> {
+            try { session.load(file); } catch (Exception ignored) {}
+        }));
         root.child("ebe.editor.save", () -> {
             try { session.save(); } catch (Exception ignored) {}
         });
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception ignored) {}
         }));
-        root.child("ebe.editor.import");
-        root.child("ebe.editor.export");
+        root.child("ebe.editor.import", () -> ImportDialog.show(rootElement, file -> {
+            try { session.load(file); } catch (Exception ignored) {}
+        }));
+        root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
+            try { session.saveAs(name); } catch (Exception ignored) {}
+        }));
         return root;
     }
 
