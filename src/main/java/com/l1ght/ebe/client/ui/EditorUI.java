@@ -6,14 +6,13 @@ import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Menu;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TreeList;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
+import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
-import com.lowdragmc.lowdraglib2.gui.ui.utils.UIElementProvider;
 import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
@@ -21,13 +20,16 @@ import net.minecraft.network.chat.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
 
 public class EditorUI {
 
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
+    private static final Map<EditorTool, Button> toolButtons = new EnumMap<>(EditorTool.class);
     private static UIElement rootElement;
 
     public static ModularUI createModularUI() {
@@ -39,8 +41,18 @@ public class EditorUI {
         rootElement.addChild(buildContentArea());
         rootElement.addChild(buildBottomBar());
 
-        var ui = UI.of(rootElement, Collections.emptyList(), screenSize -> screenSize);
+        var stylesheet = StylesheetManager.INSTANCE.getStylesheetSafe(getThemeStylesheet());
+        var ui = UI.of(rootElement, List.of(stylesheet), screenSize -> screenSize);
         return ModularUI.of(ui);
+    }
+
+    private static net.minecraft.resources.ResourceLocation getThemeStylesheet() {
+        var theme = EBEClientConfig.theme.get();
+        return switch (theme) {
+            case "mc" -> StylesheetManager.MC;
+            case "modern" -> StylesheetManager.MODERN;
+            default -> StylesheetManager.GDP;
+        };
     }
 
     public static EditorState getState() {
@@ -75,7 +87,7 @@ public class EditorUI {
         btn.layout(l -> l.height(18).paddingHorizontal(8));
         btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) {
-                openMenu(btn, menuTree);
+                toggleMenu(btn, menuTree);
             }
         });
         return btn;
@@ -83,8 +95,6 @@ public class EditorUI {
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
-    private static Menu<String, Runnable> pendingMenu;
-    private static int menuPositionFrame = 0;
 
     private static void closeMenu() {
         if (openDropdown != null) {
@@ -92,62 +102,47 @@ public class EditorUI {
             openDropdown = null;
         }
         if (openMenuAnchor != null) {
-            openMenuAnchor.removeClass("menu-active");
+            openMenuAnchor.style(s -> s.background(Sprites.RECT_RD));
             openMenuAnchor = null;
         }
-        pendingMenu = null;
     }
 
-    private static void openMenu(UIElement anchor, MenuTreeNode tree) {
-        if (openDropdown != null && openMenuAnchor == anchor) {
+    private static void toggleMenu(UIElement anchor, MenuTreeNode tree) {
+        if (openMenuAnchor == anchor) {
             closeMenu();
             return;
         }
 
         closeMenu();
 
-        UIElementProvider<String> uiProvider = key -> {
-            var label = new Label();
-            label.setText(Component.translatable(key));
-            label.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
-            return label;
-        };
+        var dropdown = new UIElement();
+        dropdown.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(anchor.getPositionX())
+                .top(anchor.getPositionY() + anchor.getSizeHeight())
+                .flexDirection(FlexDirection.COLUMN).paddingVertical(2).gapAll(1));
+        dropdown.style(s -> s.background(Sprites.BORDER).zIndex(1000));
+        dropdown.setId("__dropdown_menu__");
 
-        var menu = new Menu<>(tree, uiProvider);
-        menu.setId("__dropdown_menu__");
-        menu.style(s -> s.zIndex(1000));
-        menu.layout(l -> l.positionType(TaffyPosition.ABSOLUTE).left(-9999).top(-9999));
-        menu.setOnNodeClicked(node -> {
-            var action = node.getContent();
+        for (var child : tree.getChildren()) {
+            var item = new Button();
+            item.setText(Component.translatable(child.getKey()));
+            item.layout(l -> l.widthPercent(100).height(18).paddingHorizontal(8));
+            var action = child.getContent();
             if (action != null) {
-                action.run();
+                item.setOnClick(e -> {
+                    action.run();
+                    closeMenu();
+                });
             }
-            closeMenu();
-        });
-        menu.setOnClose(() -> closeMenu());
+            dropdown.addChild(item);
+        }
 
-        rootElement.addChild(menu);
+        rootElement.addChild(dropdown);
 
         openMenuAnchor = anchor;
-        anchor.addClass("menu-active");
-        pendingMenu = menu;
-        menuPositionFrame = 0;
+        anchor.style(s -> s.background(Sprites.RECT_RD_DARK));
 
-        menu.addEventListener(UIEvents.TICK, e -> {
-            if (pendingMenu == menu) {
-                menuPositionFrame++;
-                if (menuPositionFrame >= 2) {
-                    float x = openMenuAnchor.getPositionX();
-                    float y = openMenuAnchor.getPositionY() + openMenuAnchor.getSizeHeight();
-                    if (x > 0 || y > 0) {
-                        menu.layout(l -> l.left(x).top(y));
-                        pendingMenu = null;
-                    }
-                }
-            }
-        });
-
-        openDropdown = menu;
+        openDropdown = dropdown;
     }
 
     private static MenuTreeNode buildFileMenu() {
@@ -387,9 +382,25 @@ public class EditorUI {
         btn.layout(l -> l.height(20).paddingHorizontal(6));
         btn.addEventListener(UIEvents.CLICK, e -> {
             if (e.button == 0) {
-                state.setActiveTool(tool);
+                selectTool(tool);
             }
         });
+        toolButtons.put(tool, btn);
+        if (tool == state.getActiveTool()) {
+            btn.style(s -> s.background(Sprites.RECT_RD_DARK));
+        }
         return btn;
+    }
+
+    private static void selectTool(EditorTool tool) {
+        var prev = toolButtons.get(state.getActiveTool());
+        if (prev != null) {
+            prev.style(s -> s.background(Sprites.RECT_RD));
+        }
+        state.setActiveTool(tool);
+        var next = toolButtons.get(tool);
+        if (next != null) {
+            next.style(s -> s.background(Sprites.RECT_RD_DARK));
+        }
     }
 }

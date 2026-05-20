@@ -1,10 +1,13 @@
 package com.l1ght.ebe.client.ui;
 
+import net.minecraft.world.level.block.state.BlockState;
+
 public class EditorState {
     private EditorTool activeTool = EditorTool.SELECT;
     private String cursorPosition = "0, 0, 0";
     private int selectedCount = 0;
     private String selectedBlock = "";
+    private BlockState activeBlockState;
     private int fps = 0;
 
     public EditorTool getActiveTool() { return activeTool; }
@@ -19,14 +22,22 @@ public class EditorState {
     public String getSelectedBlock() { return selectedBlock; }
     public void setSelectedBlock(String block) { this.selectedBlock = block; }
 
+    public BlockState getActiveBlockState() { return activeBlockState; }
+    public void setActiveBlockState(BlockState state) { this.activeBlockState = state; }
+
     public int getFps() { return fps; }
     public void setFps(int fps) { this.fps = fps; }
 
     public String buildStatusText() {
         var sb = new StringBuilder();
-        sb.append(cursorPosition);
+        sb.append(activeTool.name());
+        sb.append(" | ").append(cursorPosition);
         if (!selectedBlock.isEmpty()) {
             sb.append(" | ").append(selectedBlock);
+        }
+        if (activeBlockState != null) {
+            var name = activeBlockState.getBlock().getDescriptionId();
+            sb.append(" | Material: ").append(name);
         }
         if (selectedCount > 0) {
             sb.append(" | x").append(selectedCount);

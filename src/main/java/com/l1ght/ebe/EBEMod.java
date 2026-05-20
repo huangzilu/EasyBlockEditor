@@ -16,6 +16,7 @@ import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.event.lifecycle.FMLLoadCompleteEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
@@ -51,14 +52,21 @@ public class EBEMod {
         EBEClientConfig.register(modContainer);
         EBEServerConfig.register(modContainer);
 
-        try {
-            new FileManager(EBEClientConfig.schematicDir.get()).ensureDir();
-            LOGGER.info("EasyBlockEditor schematic directory ready");
-        } catch (Exception e) {
-            LOGGER.error("Failed to create schematic directory", e);
-        }
+        modEventBus.addListener(this::onLoadComplete);
 
         NeoForge.EVENT_BUS.register(this);
+    }
+
+    private void onLoadComplete(FMLLoadCompleteEvent event) {
+        event.enqueueWork(() -> {
+            try {
+                var dir = EBEClientConfig.schematicDir.get();
+                new FileManager(dir).ensureDir();
+                LOGGER.info("EasyBlockEditor schematic directory ready: {}", dir);
+            } catch (Exception e) {
+                LOGGER.error("Failed to create schematic directory", e);
+            }
+        });
     }
 
     @net.neoforged.bus.api.SubscribeEvent
