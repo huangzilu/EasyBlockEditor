@@ -30,6 +30,7 @@
   "ebe.editor.import": "Import",
   "ebe.editor.export": "Export",
   "ebe.editor.overwrite_confirm": "File already exists. Overwrite?",
+  "ebe.editor.confirm_load": "Load \"%s\"?",
   "ebe.editor.project_name": "Project Name",
   "ebe.editor.export_format": "Export Format",
   "ebe.editor.mode.simple": "Simple Mode",
@@ -131,5 +132,12 @@
   "ebe.editor.settings.editor": "Editor",
   "ebe.editor.settings.projection": "Projection",
   "ebe.editor.settings.printer": "Printer",
+  "ebe.editor.block_palette": "Block Palette",
+  "ebe.editor.palette.inventory": "Inventory Blocks",
+  "ebe.editor.palette.browse_all": "Browse All Blocks",
+  "ebe.editor.palette.selected": "Selected: %s",
+  "ebe.editor.palette.selected_none": "Selected: None",
+  "ebe.editor.status.ready": "Ready",
+  "ebe.editor.panel.no_layers": "No layers",
   "itemGroup.ebe": "EasyBlockEditor"
 }

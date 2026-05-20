@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ldlib2-ui xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/Low-Drag-MC/LDLib2/refs/heads/1.21/ldlib2-ui.xsd">
+    <stylesheet location="ldlib2:lss/gdp.lss"/>
+    <style>
+        .browse-container {
+            width: 100%;
+            flex: 1;
+            flex-direction: column;
+            gap-all: 1;
+        }
+        .browse-item {
+            width: 100%;
+            height: 16;
+            padding-horizontal: 4;
+        }
+    </style>
+
+    <root id="browseContent" class="browse-container">
+        <scroller-view id="browseScroller" style="width: 100%; flex: 1"/>
+    </root>
+</ldlib2-ui>

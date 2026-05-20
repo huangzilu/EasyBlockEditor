@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ldlib2-ui xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/Low-Drag-MC/LDLib2/refs/heads/1.21/ldlib2-ui.xsd">
+    <stylesheet location="ldlib2:lss/gdp.lss"/>
+    <style>
+        .palette-panel {
+            width: 220;
+            height: 70%;
+            flex-direction: column;
+            padding-all: 4;
+            gap-all: 4;
+            background: sdf(#dd2c2c34, 3);
+        }
+        .palette-title-bar {
+            width: 100%;
+            height: 18;
+            flex-direction: row;
+            align-items: center;
+        }
+        .current-block-bar {
+            width: 100%;
+            height: 20;
+            flex-direction: row;
+            align-items: center;
+            padding-horizontal: 4;
+        }
+        .palette-inventory {
+            width: 100%;
+            flex-direction: row;
+            gap: 2;
+            flex-wrap: wrap;
+        }
+    </style>
+
+    <root id="blockPalette" class="palette-panel">
+        <element id="paletteTitleBar" class="palette-title-bar">
+            <label id="paletteTitle"><lang key="ebe.editor.block_palette"/></label>
+            <element style="flex: 1"/>
+            <button id="paletteClose" text="X" style="width: 16; height: 16"/>
+        </element>
+
+        <element class="current-block-bar">
+            <label id="currentBlockLabel"><lang key="ebe.editor.palette.selected_none"/></label>
+        </element>
+
+        <label id="inventoryLabel"><lang key="ebe.editor.palette.inventory"/></label>
+        <element id="inventoryContainer" class="palette-inventory"/>
+
+        <button id="browseAllBtn" text="Browse All" style="width: 100%; height: 18"/>
+
+        <scroller-view id="paletteScroller" style="flex: 1; width: 100%"/>
+    </root>
+</ldlib2-ui>

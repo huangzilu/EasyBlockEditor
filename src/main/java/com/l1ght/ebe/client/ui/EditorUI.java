@@ -151,7 +151,7 @@ public class EditorUI {
             session.newProject(name);
         }));
         root.child("ebe.editor.open", () -> ImportDialog.show(rootElement, file -> {
-            try { session.load(file); } catch (Exception ignored) {}
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception ignored) {}
         }));
         root.child("ebe.editor.save", () -> {
             try { session.save(); } catch (Exception ignored) {}
@@ -160,7 +160,7 @@ public class EditorUI {
             try { session.saveAs(name); } catch (Exception ignored) {}
         }));
         root.child("ebe.editor.import", () -> ImportDialog.show(rootElement, file -> {
-            try { session.load(file); } catch (Exception ignored) {}
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception ignored) {}
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception ignored) {}
@@ -187,6 +187,7 @@ public class EditorUI {
         root.child("ebe.editor.panel.properties");
         root.child("ebe.editor.panel.materials");
         root.child("ebe.editor.panel.history");
+        root.child("ebe.editor.block_palette", () -> BlockPaletteUI.togglePalette(rootElement));
         root.child("ebe.editor.settings", () -> SettingsUI.showSettings(rootElement));
         return root;
     }
@@ -280,13 +281,12 @@ public class EditorUI {
                 node -> Component.literal(node.getPath().getFileName().toString())
         ));
         treeList.setClickToExpand(true);
-        treeList.setDoubleClickToExpand(false);
-        treeList.setOnSelectedChanged(selected -> {
-            if (!selected.isEmpty()) {
-                var node = selected.iterator().next();
-                if (!node.isDirectory()) {
-                    onFileSelected(node.getPath());
-                }
+        treeList.setDoubleClickToExpand(true);
+        treeList.setOnDoubleClickNode(node -> {
+            if (!node.isDirectory()) {
+                EditorDialogs.confirmDialog(rootElement,
+                        Component.translatable("ebe.editor.confirm_load", node.getPath().getFileName().toString()),
+                        () -> onFileSelected(node.getPath()));
             }
         });
         return treeList;
@@ -316,6 +316,7 @@ public class EditorUI {
     private static void onFileSelected(Path file) {
         try {
             EditorUI.getSession().load(file);
+            ViewportFactory.loadFromModel(EditorUI.getSession().getModel());
         } catch (Exception ignored) {
         }
     }
@@ -367,6 +368,42 @@ public class EditorUI {
         spacer.layout(l -> l.flex(1));
         bar.addChild(spacer);
 
+        var blockPanel = new UIElement();
+        blockPanel.setId("activeBlockPanel");
+        blockPanel.layout(l -> l.flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4)
+                .paddingHorizontal(4).paddingVertical(2));
+        blockPanel.style(s -> s.background(Sprites.RECT_DARK));
+
+        var blockSceneWrap = new UIElement();
+        blockSceneWrap.setId("activeBlockSceneWrap");
+        blockSceneWrap.layout(l -> l.width(20).height(20));
+        var blockIcon = new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
+                net.minecraft.world.item.Items.AIR);
+        blockSceneWrap.style(s -> s.backgroundTexture(blockIcon));
+        blockPanel.addChild(blockSceneWrap);
+
+        var blockInfo = new UIElement();
+        blockInfo.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1));
+
+        var blockNameLabel = new Label();
+        blockNameLabel.setId("activeBlockLabel");
+        blockNameLabel.setText(Component.translatable("ebe.editor.palette.selected_none"));
+        blockNameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
+        blockInfo.addChild(blockNameLabel);
+
+        var blockNbtLabel = new Label();
+        blockNbtLabel.setId("activeBlockNbtLabel");
+        blockNbtLabel.setText(Component.literal(""));
+        blockNbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(8));
+        blockInfo.addChild(blockNbtLabel);
+
+        blockPanel.addChild(blockInfo);
+        bar.addChild(blockPanel);
+
+        var spacer2 = new UIElement();
+        spacer2.layout(l -> l.width(8));
+        bar.addChild(spacer2);
+
         var status = new Label();
         status.setText(Component.literal(state.buildStatusText()));
         status.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
@@ -390,6 +427,50 @@ public class EditorUI {
             btn.style(s -> s.background(Sprites.RECT_RD_DARK));
         }
         return btn;
+    }
+
+    public static void updateActiveBlockIndicator() {
+        var bs = state.getActiveBlockState();
+        var iconWrap = UIUtils.findById(rootElement, "activeBlockSceneWrap");
+        var nameLabel = UIUtils.findById(rootElement, "activeBlockLabel");
+        var nbtLabel = UIUtils.findById(rootElement, "activeBlockNbtLabel");
+
+        if (bs != null && !bs.isAir()) {
+            if (iconWrap != null) {
+                iconWrap.style(s -> s.backgroundTexture(
+                        new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(bs.getBlock().asItem())));
+            }
+            if (nameLabel instanceof Label l) {
+                l.setText(Component.translatable("ebe.editor.palette.selected", bs.getBlock().getName()));
+            }
+            if (nbtLabel instanceof Label l) {
+                var props = bs.getValues();
+                if (props.isEmpty()) {
+                    l.setText(Component.literal(""));
+                } else {
+                    var sb = new StringBuilder();
+                    for (var entry : props.entrySet()) {
+                        if (sb.length() > 0) sb.append(", ");
+                        sb.append(entry.getKey().getName())
+                                .append("=")
+                                .append(entry.getValue());
+                    }
+                    l.setText(Component.literal(sb.toString()));
+                }
+            }
+        } else {
+            if (iconWrap != null) {
+                iconWrap.style(s -> s.backgroundTexture(
+                        new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
+                                net.minecraft.world.item.Items.AIR)));
+            }
+            if (nameLabel instanceof Label l) {
+                l.setText(Component.translatable("ebe.editor.palette.selected_none"));
+            }
+            if (nbtLabel instanceof Label l) {
+                l.setText(Component.literal(""));
+            }
+        }
     }
 
     private static void selectTool(EditorTool tool) {

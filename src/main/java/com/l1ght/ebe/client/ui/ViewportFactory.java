@@ -1,10 +1,14 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.data.BuildingModel;
+import com.l1ght.ebe.data.Region;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
 import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
@@ -42,6 +46,68 @@ public class ViewportFactory {
         return currentScene;
     }
 
+    public static void loadFromModel(BuildingModel model) {
+        if (currentScene == null) return;
+
+        currentWorld = new TrackedDummyWorld();
+        currentScene.createScene(currentWorld);
+
+        for (var region : model.getRegions()) {
+            loadRegion(region);
+        }
+
+        refreshRenderedCore();
+
+        if (!model.getRegions().isEmpty()) {
+            var meta = model.getMetadata();
+            float cx = meta.getSizeX() / 2f;
+            float cy = meta.getSizeY() / 2f;
+            float cz = meta.getSizeZ() / 2f;
+            currentScene.setCenter(new org.joml.Vector3f(cx, cy, cz));
+            currentScene.setZoom(Math.max(8, Math.max(meta.getSizeX(), Math.max(meta.getSizeY(), meta.getSizeZ()))));
+        } else {
+            currentScene.setCenter(new org.joml.Vector3f(0, 0, 0));
+            currentScene.setZoom(8);
+        }
+    }
+
+    private static void loadRegion(Region region) {
+        var container = region.getBlocks();
+        for (int y = 0; y < region.getSizeY(); y++) {
+            for (int z = 0; z < region.getSizeZ(); z++) {
+                for (int x = 0; x < region.getSizeX(); x++) {
+                    var obj = container.get(x, y, z);
+                    var blockState = resolveBlockState(obj);
+                    if (blockState != null && !blockState.isAir()) {
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+                        currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
+                    }
+                }
+            }
+        }
+    }
+
+    private static BlockState resolveBlockState(Object obj) {
+        if (obj instanceof BlockState bs) return bs;
+        if (obj instanceof String s) {
+            if (s.isEmpty() || s.equals("minecraft:air") || s.equals("air")) {
+                return Blocks.AIR.defaultBlockState();
+            }
+            try {
+                var bracketIdx = s.indexOf('[');
+                var idStr = bracketIdx >= 0 ? s.substring(0, bracketIdx) : s;
+                var loc = ResourceLocation.parse(idStr);
+                var block = BuiltInRegistries.BLOCK.getOptional(loc);
+                return block.map(b -> b.defaultBlockState()).orElse(Blocks.AIR.defaultBlockState());
+            } catch (Exception e) {
+                return Blocks.AIR.defaultBlockState();
+            }
+        }
+        return Blocks.AIR.defaultBlockState();
+    }
+
     private static void handleBlockClick(BlockPos pos, net.minecraft.core.Direction face) {
         var state = EditorUI.getState();
         var tool = state.getActiveTool();
@@ -50,6 +116,7 @@ public class ViewportFactory {
                 var blockState = currentWorld.getBlockState(pos);
                 state.setSelectedBlock(pos.toShortString());
                 state.setActiveBlockState(blockState);
+                EditorUI.updateActiveBlockIndicator();
             }
             case PLACE -> {
                 var material = state.getActiveBlockState();
@@ -64,16 +131,20 @@ public class ViewportFactory {
                 var blockState = currentWorld.getBlockState(pos);
                 state.setSelectedBlock(pos.toShortString());
                 state.setActiveBlockState(blockState);
+                EditorUI.updateActiveBlockIndicator();
             }
             case MEASURE -> state.setCursorPosition(pos.toShortString());
             case FILL -> {}
         }
     }
 
-    public static void placeBlock(BlockPos pos, BlockState state) {
+    public static void placeBlock(BlockPos pos, BlockState blockState) {
         if (currentWorld == null) return;
-        currentWorld.addBlock(pos, new BlockInfo(state));
+        currentWorld.addBlock(pos, new BlockInfo(blockState));
         refreshRenderedCore();
+
+        var model = EditorUI.getSession().getModel();
+        syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
     }
 
@@ -81,15 +152,53 @@ public class ViewportFactory {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
         refreshRenderedCore();
+
+        var model = EditorUI.getSession().getModel();
+        syncBlockToModel(model, pos, Blocks.AIR.defaultBlockState());
         EditorUI.getSession().markDirty();
     }
 
-    public static void replaceBlock(BlockPos pos, BlockState state) {
+    public static void replaceBlock(BlockPos pos, BlockState blockState) {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
-        currentWorld.addBlock(pos, new BlockInfo(state));
+        currentWorld.addBlock(pos, new BlockInfo(blockState));
         refreshRenderedCore();
+
+        var model = EditorUI.getSession().getModel();
+        syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
+    }
+
+    private static void syncBlockToModel(BuildingModel model, BlockPos pos, BlockState blockState) {
+        var region = findOrCreateRegion(model, pos);
+        if (region != null) {
+            var id = BuiltInRegistries.BLOCK.getKey(blockState.getBlock()).toString();
+            region.setWorldBlock(pos.getX(), pos.getY(), pos.getZ(), id);
+        }
+    }
+
+    private static Region findOrCreateRegion(BuildingModel model, BlockPos pos) {
+        for (var region : model.getRegions()) {
+            if (region.containsWorldPos(pos.getX(), pos.getY(), pos.getZ())) {
+                return region;
+            }
+        }
+
+        int minX = pos.getX() - 2;
+        int minY = Math.max(0, pos.getY() - 2);
+        int minZ = pos.getZ() - 2;
+        int sizeX = 16;
+        int sizeY = 16;
+        int sizeZ = 16;
+
+        var region = model.addRegion(sizeX, sizeY, sizeZ);
+        var meta = model.getMetadata();
+        meta.setSize(
+            Math.max(meta.getSizeX(), minX + sizeX),
+            Math.max(meta.getSizeY(), minY + sizeY),
+            Math.max(meta.getSizeZ(), minZ + sizeZ)
+        );
+        return region;
     }
 
     public static void clearAndLoad(TrackedDummyWorld world) {

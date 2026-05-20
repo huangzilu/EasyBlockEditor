@@ -3,6 +3,8 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.io.EBEFormatIO;
+import com.l1ght.ebe.data.io.FileManager;
+import com.l1ght.ebe.data.io.SchematicReaders;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -53,7 +55,15 @@ public class EditorSession {
     }
 
     public void load(Path file) throws Exception {
-        this.model = EBEFormatIO.read(file);
+        var ext = FileManager.getFileExtension(file).toLowerCase();
+        this.model = switch (ext) {
+            case ".ebe" -> EBEFormatIO.read(file);
+            case ".litematic" -> SchematicReaders.readLitematic(file);
+            case ".nbt" -> SchematicReaders.readNbtStructure(file);
+            case ".schem", ".schematic" -> throw new UnsupportedOperationException(
+                    "Format " + ext + " is not yet supported. Convert to .ebe or .litematic first.");
+            default -> throw new UnsupportedOperationException("Unknown format: " + ext);
+        };
         this.currentFile = file;
         this.dirty = false;
     }

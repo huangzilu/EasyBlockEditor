@@ -30,6 +30,7 @@
   "ebe.editor.import": "导入",
   "ebe.editor.export": "导出",
   "ebe.editor.overwrite_confirm": "文件已存在，是否覆盖？",
+  "ebe.editor.confirm_load": "加载 \"%s\"？",
   "ebe.editor.project_name": "项目名称",
   "ebe.editor.export_format": "导出格式",
   "ebe.editor.mode.simple": "简洁模式",
@@ -131,5 +132,12 @@
   "ebe.editor.settings.editor": "编辑器",
   "ebe.editor.settings.projection": "投影",
   "ebe.editor.settings.printer": "打印机",
+  "ebe.editor.block_palette": "方块面板",
+  "ebe.editor.palette.inventory": "背包方块",
+  "ebe.editor.palette.browse_all": "浏览所有方块",
+  "ebe.editor.palette.selected": "已选: %s",
+  "ebe.editor.palette.selected_none": "未选择方块",
+  "ebe.editor.status.ready": "就绪",
+  "ebe.editor.panel.no_layers": "无图层",
   "itemGroup.ebe": "EasyBlockEditor"
 }

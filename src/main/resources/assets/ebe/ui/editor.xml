@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ldlib2-ui xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/Low-Drag-MC/LDLib2/refs/heads/1.21/ldlib2-ui.xsd">
+    <stylesheet location="ldlib2:lss/gdp.lss"/>
+    <style>
+        .menu-bar {
+            height: 22;
+            flex-direction: row;
+            padding-horizontal: 4;
+            align-items: center;
+            gap: 2;
+            background: sdf(#dd2c2c34, 3);
+        }
+        .content-area {
+            flex: 1;
+            flex-direction: row;
+            width: 100%;
+            align-items: stretch;
+        }
+        .left-panel {
+            width: 15%;
+            min-width: 120;
+            max-width: 300;
+            flex-direction: column;
+            background: sdf(#dd2c2c34, 3);
+            padding-all: 4;
+            gap-all: 2;
+        }
+        .right-panel {
+            width: 18%;
+            min-width: 150;
+            max-width: 350;
+            flex-direction: column;
+            background: sdf(#dd2c2c34, 3);
+            padding-all: 4;
+            gap-all: 2;
+        }
+        .bottom-bar {
+            height: 28;
+            flex-direction: row;
+            align-items: center;
+            padding-horizontal: 4;
+            gap: 2;
+            background: sdf(#dd2c2c34, 3);
+        }
+        .menu-btn {
+            height: 18;
+            padding-horizontal: 8;
+        }
+        .tool-btn {
+            height: 20;
+            padding-horizontal: 6;
+        }
+        .spacer {
+            flex: 1;
+        }
+    </style>
+
+    <root id="root" style="width: 100%; height: 100%; flex-direction: column">
+        <element id="menuBar" class="menu-bar">
+            <button id="menuFile" text="File" class="menu-btn"/>
+            <button id="menuEdit" text="Edit" class="menu-btn"/>
+            <button id="menuView" text="View" class="menu-btn"/>
+            <button id="menuTool" text="Tool" class="menu-btn"/>
+            <button id="menuHelp" text="Help" class="menu-btn"/>
+        </element>
+
+        <element id="contentArea" class="content-area">
+            <element id="leftPanel" class="left-panel">
+                <tab-view id="leftTabView">
+                    <tab text="Files">
+                        <tab-content id="filesContent"/>
+                    </tab>
+                    <tab text="Layers">
+                        <tab-content id="layersContent">
+                            <label><lang key="ebe.editor.panel.no_layers"/></label>
+                        </tab-content>
+                    </tab>
+                </tab-view>
+            </element>
+
+            <element id="viewportContainer" style="flex: 1"/>
+
+            <element id="rightPanel" class="right-panel">
+                <tab-view id="rightTabView">
+                    <tab text="Properties">
+                        <tab-content id="propsContent"/>
+                    </tab>
+                    <tab text="Materials">
+                        <tab-content id="matsContent"/>
+                    </tab>
+                    <tab text="History">
+                        <tab-content id="histContent"/>
+                    </tab>
+                </tab-view>
+            </element>
+        </element>
+
+        <element id="bottomBar" class="bottom-bar">
+            <button id="toolSelect" text="Select" class="tool-btn"/>
+            <button id="toolPlace" text="Place" class="tool-btn"/>
+            <button id="toolDelete" text="Delete" class="tool-btn"/>
+            <button id="toolReplace" text="Replace" class="tool-btn"/>
+            <button id="toolGrab" text="Grab" class="tool-btn"/>
+            <button id="toolMeasure" text="Measure" class="tool-btn"/>
+            <button id="toolFill" text="Fill" class="tool-btn"/>
+            <element class="spacer"/>
+            <label id="statusBar"><lang key="ebe.editor.status.ready"/></label>
+        </element>
+    </root>
+</ldlib2-ui>

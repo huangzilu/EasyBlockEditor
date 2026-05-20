@@ -66,4 +66,29 @@ public class EditorDialogs {
         dialog.show(parent);
         return dialog;
     }
+
+    public static Dialog confirmDialog(UIElement parent, Component message, Runnable onConfirm) {
+        var dialog = new Dialog();
+        dialog.setTitle("Confirm");
+        dialog.overlay.layout(l -> l.width(280));
+
+        var msg = new Label();
+        msg.setText(message);
+        msg.textStyle(ts -> ts.adaptiveWidth(true));
+        dialog.addContent(msg);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> {
+                    onConfirm.run();
+                    dialog.close();
+                })
+                .setText(Component.literal("OK")));
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText(Component.literal("Cancel")));
+
+        dialog.show(parent);
+        return dialog;
+    }
 }
