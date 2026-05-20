@@ -124,5 +124,6 @@
   "ebe.error.file_not_found": "File not found",
   "ebe.error.invalid_format": "Invalid format",
   "ebe.error.load_failed": "Failed to load file",
-  "ebe.error.save_failed": "Failed to save file"
+  "ebe.error.save_failed": "Failed to save file",
+  "itemGroup.ebe": "EasyBlockEditor"
 }

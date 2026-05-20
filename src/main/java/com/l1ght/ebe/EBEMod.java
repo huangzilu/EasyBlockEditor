@@ -1,23 +1,65 @@
 package com.l1ght.ebe;
 
+import com.l1ght.ebe.command.EBECommands;
+import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.config.EBEServerConfig;
+import com.l1ght.ebe.item.ArchitectToolboxItem;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.registries.DeferredItem;
+import net.neoforged.neoforge.registries.DeferredRegister;
+
+import java.util.function.Supplier;
 
 @Mod(EBEMod.MOD_ID)
 public class EBEMod {
     public static final String MOD_ID = "ebe";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public EBEMod(IEventBus modEventBus) {
+    public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MOD_ID);
+    public static final DeferredRegister<CreativeModeTab> CREATIVE_MODE_TABS =
+            DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MOD_ID);
+
+    public static final DeferredItem<ArchitectToolboxItem> ARCHITECT_TOOLBOX =
+            ITEMS.register("architect_toolbox", ArchitectToolboxItem::new);
+
+    public static final Supplier<CreativeModeTab> EBE_TAB = CREATIVE_MODE_TABS.register("ebe_tab", () ->
+            CreativeModeTab.builder()
+                    .title(Component.translatable("itemGroup.ebe"))
+                    .withTabsBefore(CreativeModeTabs.TOOLS_AND_UTILITIES)
+                    .icon(() -> new ItemStack(ARCHITECT_TOOLBOX.get()))
+                    .displayItems((params, output) -> output.accept(ARCHITECT_TOOLBOX.get()))
+                    .build());
+
+    public EBEMod(IEventBus modEventBus, ModContainer modContainer) {
+        ITEMS.register(modEventBus);
+        CREATIVE_MODE_TABS.register(modEventBus);
+
+        EBEClientConfig.register(modContainer);
+        EBEServerConfig.register(modContainer);
+
         NeoForge.EVENT_BUS.register(this);
     }
 
     @net.neoforged.bus.api.SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         LOGGER.info("EasyBlockEditor server starting");
+    }
+
+    @net.neoforged.bus.api.SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        EBECommands.register(event.getDispatcher());
     }
 }
