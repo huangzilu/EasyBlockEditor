@@ -14,6 +14,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
+import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +25,7 @@ import java.util.List;
 public class ViewportFactory {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/Viewport");
+    private static final int FBO_THRESHOLD = 5000;
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
@@ -42,11 +44,9 @@ public class ViewportFactory {
 
         currentScene.setCameraYawAndPitch(-135, 25);
         currentScene.setZoom(8);
-        currentScene.setCenter(new org.joml.Vector3f(3, 2, 3));
+        currentScene.setCenter(new Vector3f(3, 2, 3));
 
-        currentScene.setOnSelected((pos, face) -> {
-            handleBlockClick(pos, face);
-        });
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
 
         return currentScene;
     }
@@ -58,48 +58,34 @@ public class ViewportFactory {
         }
 
         currentWorld = new TrackedDummyWorld();
-        currentScene.createScene(currentWorld);
-
-        LOG.info("Model has {} regions", model.getRegions().size());
 
         int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
-            var container = region.getBlocks();
-            var palette = container.getPalette();
-            LOG.info("Region '{}' palette size={}, bits={}", region.getName(), palette.size(), palette.getBits());
-            for (Object state : palette.allStates()) {
-                LOG.info("  palette entry: {} (type={})", state, state != null ? state.getClass().getSimpleName() : "null");
-            }
-
             int count = loadRegion(region);
             totalBlocksAdded += count;
-            LOG.info("Loaded region '{}' (offset={},{},{} size={},{},{}) : {} non-air blocks",
-                    region.getName(), region.getOffsetX(), region.getOffsetY(), region.getOffsetZ(),
-                    region.getSizeX(), region.getSizeY(), region.getSizeZ(), count);
+            LOG.info("Loaded region '{}' : {} blocks", region.getName(), count);
         }
 
-        LOG.info("Total blocks added to world: {}", totalBlocksAdded);
-        LOG.info("Filled blocks in world: {}", currentWorld.getFilledBlocks().size());
+        LOG.info("Total blocks: {}, using {} renderer",
+                totalBlocksAdded, totalBlocksAdded > FBO_THRESHOLD ? "FBO" : "immediate");
+
+        currentScene.createScene(currentWorld, totalBlocksAdded > FBO_THRESHOLD, null);
+        currentScene.useCacheBuffer(true);
 
         refreshRenderedCore();
 
-        if (!model.getRegions().isEmpty()) {
-            var meta = model.getMetadata();
-            LOG.info("Model metadata size: {}x{}x{}", meta.getSizeX(), meta.getSizeY(), meta.getSizeZ());
-        }
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+
+        LOG.info("Model loaded: {} blocks", totalBlocksAdded);
     }
 
     private static int loadRegion(Region region) {
         var container = region.getBlocks();
         int count = 0;
-        int total = region.getSizeX() * region.getSizeY() * region.getSizeZ();
         for (int y = 0; y < region.getSizeY(); y++) {
             for (int z = 0; z < region.getSizeZ(); z++) {
                 for (int x = 0; x < region.getSizeX(); x++) {
                     var obj = container.get(x, y, z);
-                    if (count < 3) {
-                        LOG.info("  sample [{},{},{}] = {} (type={})", x, y, z, obj, obj != null ? obj.getClass().getSimpleName() : "null");
-                    }
                     var blockState = resolveBlockState(obj);
                     if (blockState != null && !blockState.isAir()) {
                         int wx = x + region.getOffsetX();
@@ -140,7 +126,6 @@ public class ViewportFactory {
                 var loc = ResourceLocation.parse(idStr);
                 var block = BuiltInRegistries.BLOCK.getOptional(loc);
                 if (block.isEmpty()) {
-                    LOG.warn("Unknown block ID: {}", s);
                     return Blocks.STONE.defaultBlockState();
                 }
 
@@ -155,12 +140,8 @@ public class ViewportFactory {
                 }
                 return state;
             } catch (Exception e) {
-                LOG.warn("Failed to resolve block state: {}", s, e);
                 return Blocks.STONE.defaultBlockState();
             }
-        }
-        if (obj != null) {
-            LOG.warn("Unexpected block data type: {} value={}", obj.getClass().getSimpleName(), obj);
         }
         return Blocks.AIR.defaultBlockState();
     }
@@ -229,8 +210,7 @@ public class ViewportFactory {
     private static void syncBlockToModel(BuildingModel model, BlockPos pos, BlockState blockState) {
         var region = findOrCreateRegion(model, pos);
         if (region != null) {
-            var id = BuiltInRegistries.BLOCK.getKey(blockState.getBlock()).toString();
-            region.setWorldBlock(pos.getX(), pos.getY(), pos.getZ(), id);
+            region.setWorldBlock(pos.getX(), pos.getY(), pos.getZ(), blockState);
         }
     }
 
@@ -269,7 +249,7 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        LOG.info("refreshRenderedCore: {} positions from filledBlocks", positions.size());
+        LOG.info("refreshRenderedCore: {} positions", positions.size());
         currentScene.setRenderedCore(positions);
     }
 
