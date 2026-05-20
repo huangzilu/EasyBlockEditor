@@ -151,7 +151,10 @@ public class ChunkedBlockRenderer {
                     var state = world.getBlockState(pos);
                     if (state == null || state.isAir()) continue;
                     try {
+                        poseStack.pushPose();
+                        poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
                         brd.renderBatched(state, pos, world, poseStack, bufferBuilder, false, randomSource, ModelData.EMPTY, layer);
+                        poseStack.popPose();
                     } catch (Exception e) {
                         // skip problematic blocks
                     }

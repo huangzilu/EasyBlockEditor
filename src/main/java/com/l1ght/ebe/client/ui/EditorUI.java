@@ -166,14 +166,14 @@ public class EditorUI {
             session.newProject(name);
             ViewportFactory.clearModel();
         }));
-        root.child("ebe.editor.open", () -> ImportDialog.show(rootElement, file -> {
+        root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, file -> {
             try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception e) { e.printStackTrace(); } });
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
         }));
-        root.child("ebe.editor.import", () -> ImportDialog.show(rootElement, file -> {
+        root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, file -> {
             try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
