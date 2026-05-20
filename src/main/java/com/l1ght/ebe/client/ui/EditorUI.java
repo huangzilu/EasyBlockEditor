@@ -316,13 +316,16 @@ public class EditorUI {
         var nameLabel = new Label();
         nameLabel.setId("activeBlockLabel");
         nameLabel.setText(Component.translatable("ebe.editor.palette.selected_none"));
-        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(11));
+        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(11)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        nameLabel.layout(l -> l.widthPercent(100));
         infoCol.addChild(nameLabel);
 
         var nbtLabel = new Label();
         nbtLabel.setId("activeBlockNbtLabel");
         nbtLabel.setText(Component.literal(""));
-        nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(9));
+        nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
         nbtLabel.layout(l -> l.widthPercent(100));
         infoCol.addChild(nbtLabel);
 
