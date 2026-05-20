@@ -5,17 +5,22 @@ import com.l1ght.ebe.data.Region;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 
 public class SchematicReaders {
 
+    private static final Logger LOG = LoggerFactory.getLogger("EBE/SchematicReaders");
+
     public static BuildingModel readLitematic(Path file) throws Exception {
-        var root = NbtIo.read(file);
+        var root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
 
         int version = root.getInt("Version");
@@ -117,7 +122,16 @@ public class SchematicReaders {
     }
 
     public static BuildingModel readNbtStructure(Path file) throws Exception {
-        var root = NbtIo.read(file);
+        CompoundTag root = null;
+        try {
+            root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+        } catch (Exception e) {
+            try {
+                root = NbtIo.read(file);
+            } catch (Exception e2) {
+                LOG.error("Failed to read NBT structure from {}: compressed and uncompressed both failed", file, e2);
+            }
+        }
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
 
         var model = new BuildingModel();
