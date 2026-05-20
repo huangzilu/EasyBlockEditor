@@ -1,5 +1,6 @@
 package com.l1ght.ebe.data.io;
 
+import com.google.gson.JsonObject;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
 import net.minecraft.core.BlockPos;
@@ -8,19 +9,77 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.Optional;
 
 public class SchematicReaders {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/SchematicReaders");
 
+    private static BlockState safeReadBlockState(CompoundTag tag) {
+        try {
+            return NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), tag);
+        } catch (Exception e) {
+            var nameTag = tag.get("Name");
+            if (nameTag != null) {
+                var name = nameTag.getAsString();
+                LOG.warn("Unknown block '{}', falling back to stone", name);
+                try {
+                    var loc = net.minecraft.resources.ResourceLocation.parse(name);
+                    var block = BuiltInRegistries.BLOCK.getOptional(loc);
+                    if (block.isPresent()) {
+                        var state = block.get().defaultBlockState();
+                        return applyProperties(state, tag);
+                    }
+                } catch (Exception ignored) {}
+            }
+            return Blocks.STONE.defaultBlockState();
+        }
+    }
+
+    private static BlockState applyProperties(BlockState state, CompoundTag tag) {
+        var propsTag = tag.get("Properties");
+        if (propsTag == null) return state;
+        if (!(propsTag instanceof CompoundTag properties)) return state;
+
+        for (var key : properties.getAllKeys()) {
+            var value = properties.getString(key);
+            for (Property<?> prop : state.getProperties()) {
+                if (prop.getName().equals(key)) {
+                    state = setProperty(state, prop, value);
+                    break;
+                }
+            }
+        }
+        return state;
+    }
+
+    private static <T extends Comparable<T>> BlockState setProperty(BlockState state, Property<T> prop, String value) {
+        Optional<T> parsed = prop.getValue(value);
+        if (parsed.isPresent()) {
+            return state.setValue(prop, parsed.get());
+        }
+        return state;
+    }
+
     public static BuildingModel readLitematic(Path file) throws Exception {
-        var root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+        CompoundTag root = null;
+        try {
+            root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+        } catch (Exception e) {
+            try {
+                root = NbtIo.read(file);
+            } catch (Exception e2) {
+                LOG.error("Failed to read litematic from {}: compressed and uncompressed both failed", file, e2);
+            }
+        }
         if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
 
         int version = root.getInt("Version");
@@ -71,7 +130,7 @@ public class SchematicReaders {
             var paletteTag = regionTag.getList("BlockStatePalette", 10);
             BlockState[] palette = new BlockState[paletteTag.size()];
             for (int i = 0; i < paletteTag.size(); i++) {
-                palette[i] = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), paletteTag.getCompound(i));
+                palette[i] = safeReadBlockState(paletteTag.getCompound(i));
             }
 
             var blockStatesTag = regionTag.get("BlockStates");
@@ -86,7 +145,6 @@ public class SchematicReaders {
 
             int bitsPerEntry = Math.max(2, Integer.SIZE - Integer.numberOfLeadingZeros(Math.max(0, palette.length - 1)));
             long maxEntryValue = (1L << bitsPerEntry) - 1L;
-            long totalVolume = (long) absSizeX * absSizeY * absSizeZ;
 
             var region = model.addRegion(regionName, minX, minY, minZ, absSizeX, absSizeY, absSizeZ);
 
@@ -110,8 +168,7 @@ public class SchematicReaders {
 
                         BlockState bs = paletteIdx < palette.length ? palette[paletteIdx] : Blocks.AIR.defaultBlockState();
                         if (!bs.isAir()) {
-                            var id = BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
-                            region.setWorldBlock(x + minX, y + minY, z + minZ, id);
+                            region.setWorldBlock(x + minX, y + minY, z + minZ, bs);
                         }
                     }
                 }
@@ -140,7 +197,7 @@ public class SchematicReaders {
         var paletteTag = root.getList("palette", 10);
         BlockState[] palette = new BlockState[paletteTag.size()];
         for (int i = 0; i < paletteTag.size(); i++) {
-            palette[i] = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), paletteTag.getCompound(i));
+            palette[i] = safeReadBlockState(paletteTag.getCompound(i));
         }
 
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
@@ -170,11 +227,44 @@ public class SchematicReaders {
             int paletteIdx = block.getInt("state");
             BlockState bs = paletteIdx < palette.length ? palette[paletteIdx] : Blocks.AIR.defaultBlockState();
             if (!bs.isAir()) {
-                var id = BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
-                region.setWorldBlock(pos[0], pos[1], pos[2], id);
+                region.setWorldBlock(pos[0], pos[1], pos[2], bs);
             }
         }
 
         return model;
+    }
+
+    public static BlockState resolveBlockStateFromJson(JsonObject obj) {
+        if (!obj.has("id")) return Blocks.AIR.defaultBlockState();
+        var id = obj.get("id").getAsString();
+        if (id.isEmpty() || id.equals("minecraft:air") || id.equals("air")) {
+            return Blocks.AIR.defaultBlockState();
+        }
+        try {
+            var loc = ResourceLocation.parse(id);
+            var block = BuiltInRegistries.BLOCK.getOptional(loc);
+            if (block.isEmpty()) {
+                LOG.warn("Unknown block ID in EBE file: {}, falling back to stone", id);
+                return Blocks.STONE.defaultBlockState();
+            }
+            var state = block.get().defaultBlockState();
+            if (obj.has("properties")) {
+                var props = obj.getAsJsonObject("properties");
+                for (var entry : props.entrySet()) {
+                    var propName = entry.getKey();
+                    var propValue = entry.getValue().getAsString();
+                    for (Property<?> prop : state.getProperties()) {
+                        if (prop.getName().equals(propName)) {
+                            state = setProperty(state, prop, propValue);
+                            break;
+                        }
+                    }
+                }
+            }
+            return state;
+        } catch (Exception e) {
+            LOG.warn("Failed to resolve block state from JSON: {}", id, e);
+            return Blocks.STONE.defaultBlockState();
+        }
     }
 }

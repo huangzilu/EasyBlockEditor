@@ -2,11 +2,15 @@ package com.l1ght.ebe.data.io;
 
 import com.google.gson.*;
 import com.l1ght.ebe.data.*;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 
 public class EBEFormatIO {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -60,7 +64,20 @@ public class EBEFormatIO {
             var palette = region.getBlocks().getPalette();
             var paletteArray = new JsonArray();
             for (Object state : palette.allStates()) {
-                paletteArray.add(state.toString());
+                if (state instanceof BlockState bs) {
+                    var entry = new JsonObject();
+                    entry.addProperty("id", BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString());
+                    if (!bs.getProperties().isEmpty()) {
+                        var props = new JsonObject();
+                        for (Property<?> prop : bs.getProperties()) {
+                            props.addProperty(prop.getName(), bs.getValue(prop).toString());
+                        }
+                        entry.add("properties", props);
+                    }
+                    paletteArray.add(entry);
+                } else {
+                    paletteArray.add(state.toString());
+                }
             }
             rj.add("palette", paletteArray);
 
@@ -69,7 +86,12 @@ public class EBEFormatIO {
             for (int y = 0; y < region.getSizeY(); y++) {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
-                        blockData.add(data.get(x, y, z).toString());
+                        var obj = data.get(x, y, z);
+                        if (obj instanceof BlockState bs) {
+                            blockData.add(BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString());
+                        } else {
+                            blockData.add(obj.toString());
+                        }
                     }
                 }
             }
@@ -122,9 +144,15 @@ public class EBEFormatIO {
             );
 
             var paletteArray = rj.getAsJsonArray("palette");
-            String[] palette = new String[paletteArray.size()];
+            Object[] palette = new Object[paletteArray.size()];
             for (int i = 0; i < palette.length; i++) {
-                palette[i] = paletteArray.get(i).getAsString();
+                var elem = paletteArray.get(i);
+                if (elem.isJsonObject()) {
+                    var obj = elem.getAsJsonObject();
+                    palette[i] = SchematicReaders.resolveBlockStateFromJson(obj);
+                } else {
+                    palette[i] = elem.getAsString();
+                }
             }
 
             var blockData = rj.getAsJsonArray("block_data");
@@ -133,7 +161,12 @@ public class EBEFormatIO {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
                         if (idx < blockData.size()) {
-                            region.getBlocks().set(x, y, z, blockData.get(idx).getAsString());
+                            var elem = blockData.get(idx);
+                            if (elem.isJsonObject()) {
+                                region.getBlocks().set(x, y, z, SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject()));
+                            } else {
+                                region.getBlocks().set(x, y, z, elem.getAsString());
+                            }
                         }
                         idx++;
                     }

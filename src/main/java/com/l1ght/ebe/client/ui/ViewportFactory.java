@@ -11,6 +11,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.slf4j.Logger;
@@ -59,8 +60,17 @@ public class ViewportFactory {
         currentWorld = new TrackedDummyWorld();
         currentScene.createScene(currentWorld);
 
+        LOG.info("Model has {} regions", model.getRegions().size());
+
         int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
+            var container = region.getBlocks();
+            var palette = container.getPalette();
+            LOG.info("Region '{}' palette size={}, bits={}", region.getName(), palette.size(), palette.getBits());
+            for (Object state : palette.allStates()) {
+                LOG.info("  palette entry: {} (type={})", state, state != null ? state.getClass().getSimpleName() : "null");
+            }
+
             int count = loadRegion(region);
             totalBlocksAdded += count;
             LOG.info("Loaded region '{}' (offset={},{},{} size={},{},{}) : {} non-air blocks",
@@ -82,10 +92,14 @@ public class ViewportFactory {
     private static int loadRegion(Region region) {
         var container = region.getBlocks();
         int count = 0;
+        int total = region.getSizeX() * region.getSizeY() * region.getSizeZ();
         for (int y = 0; y < region.getSizeY(); y++) {
             for (int z = 0; z < region.getSizeZ(); z++) {
                 for (int x = 0; x < region.getSizeX(); x++) {
                     var obj = container.get(x, y, z);
+                    if (count < 3) {
+                        LOG.info("  sample [{},{},{}] = {} (type={})", x, y, z, obj, obj != null ? obj.getClass().getSimpleName() : "null");
+                    }
                     var blockState = resolveBlockState(obj);
                     if (blockState != null && !blockState.isAir()) {
                         int wx = x + region.getOffsetX();
@@ -107,19 +121,46 @@ public class ViewportFactory {
                 return Blocks.AIR.defaultBlockState();
             }
             try {
-                var bracketIdx = s.indexOf('[');
-                var idStr = bracketIdx >= 0 ? s.substring(0, bracketIdx) : s;
+                String idStr = s;
+                String propsStr = null;
+
+                int bracketIdx = s.indexOf('[');
+                if (bracketIdx >= 0) {
+                    idStr = s.substring(0, bracketIdx);
+                    int endBracket = s.indexOf(']', bracketIdx);
+                    if (endBracket > bracketIdx + 1) {
+                        propsStr = s.substring(bracketIdx + 1, endBracket);
+                    }
+                }
+
+                if (idStr.startsWith("Block{")) {
+                    idStr = idStr.substring(6, idStr.length() - 1);
+                }
+
                 var loc = ResourceLocation.parse(idStr);
                 var block = BuiltInRegistries.BLOCK.getOptional(loc);
                 if (block.isEmpty()) {
                     LOG.warn("Unknown block ID: {}", s);
-                    return Blocks.AIR.defaultBlockState();
+                    return Blocks.STONE.defaultBlockState();
                 }
-                return block.get().defaultBlockState();
+
+                var state = block.get().defaultBlockState();
+                if (propsStr != null) {
+                    for (var pair : propsStr.split(",")) {
+                        var kv = pair.split("=");
+                        if (kv.length == 2) {
+                            state = applyProperty(state, kv[0], kv[1]);
+                        }
+                    }
+                }
+                return state;
             } catch (Exception e) {
                 LOG.warn("Failed to resolve block state: {}", s, e);
-                return Blocks.AIR.defaultBlockState();
+                return Blocks.STONE.defaultBlockState();
             }
+        }
+        if (obj != null) {
+            LOG.warn("Unexpected block data type: {} value={}", obj.getClass().getSimpleName(), obj);
         }
         return Blocks.AIR.defaultBlockState();
     }
@@ -256,5 +297,19 @@ public class ViewportFactory {
         world.addBlock(new BlockPos(2, 1, 2), new BlockInfo(Blocks.CRAFTING_TABLE.defaultBlockState()));
         world.addBlock(new BlockPos(4, 1, 2), new BlockInfo(Blocks.FURNACE.defaultBlockState()));
         world.addBlock(new BlockPos(3, 1, 4), new BlockInfo(Blocks.CHEST.defaultBlockState()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Comparable<T>> BlockState applyProperty(BlockState state, String propName, String propValue) {
+        for (Property<?> prop : state.getProperties()) {
+            if (prop.getName().equals(propName)) {
+                var opt = ((Property<T>) prop).getValue(propValue);
+                if (opt.isPresent()) {
+                    return state.setValue((Property<T>) prop, opt.get());
+                }
+                break;
+            }
+        }
+        return state;
     }
 }
