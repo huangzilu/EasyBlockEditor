@@ -267,31 +267,32 @@ public class EditorUI {
         panel.setId("blockIndicatorPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .right(4).bottom(4)
-                .flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4)
-                .paddingHorizontal(6).paddingVertical(3));
+                .minWidth(120)
+                .flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(6)
+                .paddingHorizontal(8).paddingVertical(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
 
         var iconWrap = new UIElement();
         iconWrap.setId("activeBlockSceneWrap");
-        iconWrap.layout(l -> l.width(20).height(20));
+        iconWrap.layout(l -> l.width(24).height(24));
         iconWrap.style(s -> s.backgroundTexture(
                 new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
                         net.minecraft.world.item.Items.AIR)));
         panel.addChild(iconWrap);
 
         var infoCol = new UIElement();
-        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1));
+        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
 
         var nameLabel = new Label();
         nameLabel.setId("activeBlockLabel");
         nameLabel.setText(Component.translatable("ebe.editor.palette.selected_none"));
-        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
+        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(11));
         infoCol.addChild(nameLabel);
 
         var nbtLabel = new Label();
         nbtLabel.setId("activeBlockNbtLabel");
         nbtLabel.setText(Component.literal(""));
-        nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(8));
+        nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(9));
         infoCol.addChild(nbtLabel);
 
         panel.addChild(infoCol);

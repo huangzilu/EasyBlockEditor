@@ -4,10 +4,12 @@ import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ItemSlot;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
+import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.FlexWrap;
 import dev.vfyjxf.taffy.style.TaffyPosition;
@@ -32,6 +34,9 @@ public class BlockPaletteUI {
     private static float dragOffsetX, dragOffsetY;
     private static boolean dragging = false;
 
+    private static final int SLOT_SIZE = 18;
+    private static final int SLOTS_PER_ROW = 9;
+
     public static void togglePalette(UIElement parent) {
         if (paletteOpen && palettePanel != null) {
             closePalette();
@@ -53,7 +58,7 @@ public class BlockPaletteUI {
         var titleBar = new UIElement();
         titleBar.setId("paletteTitleBar");
         titleBar.layout(l -> l.widthPercent(100).height(18).flexDirection(FlexDirection.ROW)
-                .alignItems(dev.vfyjxf.taffy.style.AlignItems.CENTER));
+                .alignItems(AlignItems.CENTER));
         var title = new Label();
         title.setText(Component.translatable("ebe.editor.block_palette"));
         title.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
@@ -78,13 +83,8 @@ public class BlockPaletteUI {
         invLabel.textStyle(ts -> ts.textColor(0xFFC0C0C0).textShadow(false));
         panel.addChild(invLabel);
 
-        var invContainer = new UIElement();
-        invContainer.setId("inventoryContainer");
-        invContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2)
-                .flexWrap(FlexWrap.WRAP));
-        panel.addChild(invContainer);
-
-        populateInventory(invContainer);
+        var invGrid = buildInventoryGrid();
+        panel.addChild(invGrid);
 
         var player = Minecraft.getInstance().player;
         var isCreative = player != null && player.isCreative();
@@ -103,6 +103,60 @@ public class BlockPaletteUI {
         parent.addChild(panel);
         palettePanel = panel;
         paletteOpen = true;
+    }
+
+    private static UIElement buildInventoryGrid() {
+        var grid = new UIElement();
+        grid.setId("inventoryGrid");
+        grid.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .flexWrap(FlexWrap.WRAP).gapAll(1));
+
+        var player = Minecraft.getInstance().player;
+        if (player == null) return grid;
+
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < SLOTS_PER_ROW; col++) {
+                int slotIdx = 9 + row * SLOTS_PER_ROW + col;
+                var stack = player.getInventory().getItem(slotIdx);
+                grid.addChild(createInventorySlot(stack, slotIdx));
+            }
+        }
+
+        var hotbarRow = new UIElement();
+        hotbarRow.layout(l -> l.widthPercent(100).height(2));
+        grid.addChild(hotbarRow);
+
+        for (int col = 0; col < SLOTS_PER_ROW; col++) {
+            var stack = player.getInventory().getItem(col);
+            grid.addChild(createInventorySlot(stack, col));
+        }
+
+        return grid;
+    }
+
+    private static UIElement createInventorySlot(ItemStack stack, int slotIdx) {
+        var slot = new UIElement();
+        slot.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+        slot.style(s -> s.background(Sprites.RECT_DARK));
+
+        if (!stack.isEmpty() && stack.getItem() instanceof BlockItem bi) {
+            var icon = new UIElement();
+            icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bi)));
+            icon.addEventListener(UIEvents.CLICK, e -> {
+                if (e.button == 0) {
+                    EditorUI.getState().setActiveBlockState(bi.getBlock().defaultBlockState());
+                    updateCurrentBlockLabel();
+                    EditorUI.updateActiveBlockIndicator();
+                }
+            });
+            icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                icon.style(s -> s.tooltips(bi.getBlock().getName()));
+            });
+            slot.addChild(icon);
+        }
+
+        return slot;
     }
 
     private static void setupDrag(UIElement panel) {
@@ -155,39 +209,6 @@ public class BlockPaletteUI {
         }
     }
 
-    private static void populateInventory(UIElement container) {
-        var player = Minecraft.getInstance().player;
-        if (player == null) return;
-
-        for (int i = 9; i < 36; i++) {
-            var stack = player.getInventory().getItem(i);
-            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem bi) {
-                container.addChild(createBlockSlot(bi.getBlock()));
-            }
-        }
-        for (int i = 0; i < 9; i++) {
-            var stack = player.getInventory().getItem(i);
-            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem bi) {
-                container.addChild(createBlockSlot(bi.getBlock()));
-            }
-        }
-    }
-
-    private static UIElement createBlockSlot(Block block) {
-        var btn = new Button();
-        btn.addPreIcon(new ItemStackTexture(block.asItem()));
-        btn.setText(block.getName());
-        btn.layout(l -> l.height(16).paddingHorizontal(2));
-        btn.addEventListener(UIEvents.CLICK, e -> {
-            if (e.button == 0) {
-                EditorUI.getState().setActiveBlockState(block.defaultBlockState());
-                updateCurrentBlockLabel();
-                EditorUI.updateActiveBlockIndicator();
-            }
-        });
-        return btn;
-    }
-
     private static void showBrowseDialog(UIElement parent) {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.editor.palette.browse_all").getString());
@@ -195,9 +216,36 @@ public class BlockPaletteUI {
 
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+
         var container = new UIElement();
-        container.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1));
-        populateBlockList(container);
+        container.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .flexWrap(FlexWrap.WRAP).gapAll(1));
+
+        List<Block> blocks = new ArrayList<>();
+        BuiltInRegistries.BLOCK.forEach(blocks::add);
+
+        blocks.stream()
+                .filter(b -> b.asItem() != net.minecraft.world.item.Items.AIR)
+                .forEach(block -> {
+                    var slotEl = new UIElement();
+                    slotEl.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+                    slotEl.style(s -> s.background(Sprites.RECT_DARK));
+
+                    var icon = new UIElement();
+                    icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+                    icon.style(s -> s.backgroundTexture(new ItemStackTexture(block.asItem())));
+                    icon.addEventListener(UIEvents.CLICK, e -> {
+                        EditorUI.getState().setActiveBlockState(block.defaultBlockState());
+                        updateCurrentBlockLabel();
+                        EditorUI.updateActiveBlockIndicator();
+                    });
+                    icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                        icon.style(s -> s.tooltips(block.getName()));
+                    });
+                    slotEl.addChild(icon);
+                    container.addChild(slotEl);
+                });
+
         scroller.addScrollViewChild(container);
         dialog.addContent(scroller);
 
@@ -206,25 +254,5 @@ public class BlockPaletteUI {
                 .setOnClick(e -> dialog.close()));
 
         dialog.show(parent);
-    }
-
-    private static void populateBlockList(UIElement container) {
-        List<Block> blocks = new ArrayList<>();
-        BuiltInRegistries.BLOCK.forEach(blocks::add);
-
-        blocks.stream()
-                .filter(b -> b.asItem() != net.minecraft.world.item.Items.AIR)
-                .forEach(block -> {
-                    var item = new Button();
-                    item.addPreIcon(new ItemStackTexture(block.asItem()));
-                    item.setText(block.getName());
-                    item.layout(l -> l.widthPercent(100).height(16).paddingHorizontal(4));
-                    item.addEventListener(UIEvents.CLICK, e -> {
-                        EditorUI.getState().setActiveBlockState(block.defaultBlockState());
-                        updateCurrentBlockLabel();
-                        EditorUI.updateActiveBlockIndicator();
-                    });
-                    container.addChild(item);
-                });
     }
 }
