@@ -8,6 +8,7 @@ public class EditorState {
     private int selectedCount = 0;
     private String selectedBlock = "";
     private BlockState activeBlockState;
+    private BlockState inspectedBlockState;
     private int fps = 0;
 
     public EditorTool getActiveTool() { return activeTool; }
@@ -24,6 +25,9 @@ public class EditorState {
 
     public BlockState getActiveBlockState() { return activeBlockState; }
     public void setActiveBlockState(BlockState state) { this.activeBlockState = state; }
+
+    public BlockState getInspectedBlockState() { return inspectedBlockState; }
+    public void setInspectedBlockState(BlockState state) { this.inspectedBlockState = state; }
 
     public int getFps() { return fps; }
     public void setFps(int fps) { this.fps = fps; }

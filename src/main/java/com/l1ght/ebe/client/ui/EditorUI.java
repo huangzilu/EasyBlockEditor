@@ -314,6 +314,15 @@ public class EditorUI {
 
     public static void updateActiveBlockIndicator() {
         var bs = state.getActiveBlockState();
+        updateBlockIndicatorDisplay(bs);
+    }
+
+    public static void updateBlockInspection() {
+        var bs = state.getInspectedBlockState();
+        updateBlockIndicatorDisplay(bs);
+    }
+
+    private static void updateBlockIndicatorDisplay(net.minecraft.world.level.block.state.BlockState bs) {
         var iconWrap = UIUtils.findById(rootElement, "activeBlockSceneWrap");
         var nameLabel = UIUtils.findById(rootElement, "activeBlockLabel");
         var nbtLabel = UIUtils.findById(rootElement, "activeBlockNbtLabel");

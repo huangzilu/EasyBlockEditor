@@ -152,8 +152,8 @@ public class ViewportFactory {
             case SELECT -> {
                 var blockState = currentWorld.getBlockState(pos);
                 state.setSelectedBlock(pos.toShortString());
-                state.setActiveBlockState(blockState);
-                EditorUI.updateActiveBlockIndicator();
+                state.setInspectedBlockState(blockState);
+                EditorUI.updateBlockInspection();
             }
             case PLACE -> {
                 var material = state.getActiveBlockState();
@@ -166,7 +166,6 @@ public class ViewportFactory {
             }
             case GRAB -> {
                 var blockState = currentWorld.getBlockState(pos);
-                state.setSelectedBlock(pos.toShortString());
                 state.setActiveBlockState(blockState);
                 EditorUI.updateActiveBlockIndicator();
             }
