@@ -19,6 +19,13 @@ gradle/wrapper/gradle-wrapper.jar
 run/
 logs/
 
+# Schematic / projection files
+*.litematic
+*.schem
+*.schematic
+*.nbt
+*.ebe
+
 # OS
 .DS_Store
 Thumbs.db
