@@ -72,8 +72,7 @@ public class ViewportFactory {
         currentScene.createScene(currentWorld, totalBlocksAdded > FBO_THRESHOLD, null);
         currentScene.useCacheBuffer(true);
 
-        refreshRenderedCore();
-
+        refreshRenderedCore(true);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
 
         LOG.info("Model loaded: {} blocks", totalBlocksAdded);
@@ -246,11 +245,15 @@ public class ViewportFactory {
     }
 
     public static void refreshRenderedCore() {
+        refreshRenderedCore(false);
+    }
+
+    public static void refreshRenderedCore(boolean autoCamera) {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        LOG.info("refreshRenderedCore: {} positions", positions.size());
-        currentScene.setRenderedCore(positions);
+        LOG.info("refreshRenderedCore: {} positions, autoCamera={}", positions.size(), autoCamera);
+        currentScene.setRenderedCore(positions, null, autoCamera);
     }
 
     private static void addDemoBlocks(TrackedDummyWorld world) {
