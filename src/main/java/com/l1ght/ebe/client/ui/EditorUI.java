@@ -280,7 +280,7 @@ public class EditorUI {
         panel.setId("blockIndicatorPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .right(4).bottom(4)
-                .minWidth(120)
+                .minWidth(180).maxWidth(280)
                 .flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(6)
                 .paddingHorizontal(8).paddingVertical(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
@@ -294,7 +294,7 @@ public class EditorUI {
         panel.addChild(iconWrap);
 
         var infoCol = new UIElement();
-        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
+        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1).minWidth(140));
 
         var nameLabel = new Label();
         nameLabel.setId("activeBlockLabel");
