@@ -238,6 +238,18 @@ public class EditorUI {
         viewport.addChild(blockIndicator);
         blockIndicatorPanel = blockIndicator;
 
+        if (!leftPanelVisible) {
+            leftPanel.setDisplay(false);
+            leftCollapseBtn.setText(Component.literal("▶"));
+        }
+        if (!rightPanelVisible) {
+            rightPanel.setDisplay(false);
+            rightCollapseBtn.setText(Component.literal("◀"));
+        }
+        if (!blockIndicatorVisible) {
+            blockIndicatorPanel.setDisplay(false);
+        }
+
         return content;
     }
 
@@ -280,8 +292,8 @@ public class EditorUI {
         panel.setId("blockIndicatorPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .right(4).bottom(4)
-                .minWidth(180).maxWidth(280)
-                .flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(6)
+                .minWidth(180).maxWidth(320)
+                .flexDirection(FlexDirection.ROW).alignItems(AlignItems.START).gapAll(6)
                 .paddingHorizontal(8).paddingVertical(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
 

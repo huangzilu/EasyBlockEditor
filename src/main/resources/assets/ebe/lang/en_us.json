@@ -138,6 +138,8 @@
   "ebe.editor.palette.browse_all": "Browse All Blocks",
   "ebe.editor.palette.selected": "Selected: %s",
   "ebe.editor.palette.selected_none": "Selected: None",
+  "ebe.editor.palette.search": "Search blocks...",
+  "ebe.editor.palette.close": "Close",
   "ebe.editor.status.ready": "Ready",
   "ebe.editor.panel.no_layers": "No layers",
   "itemGroup.ebe": "EasyBlockEditor"

@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,6 +60,7 @@ public class BlockPaletteUI {
     private static Class<?> outputClass;
     private static Class<?> visibilityClass;
     private static boolean reflectionInitialized = false;
+    private static boolean reflectionFailed = false;
 
     private static void initReflection() {
         if (reflectionInitialized) return;
@@ -68,106 +70,72 @@ public class BlockPaletteUI {
                 if (iconField == null && type == Supplier.class) {
                     try {
                         field.setAccessible(true);
-                        var testVal = field.get(BuiltInRegistries.CREATIVE_MODE_TAB.iterator().next());
+                        var firstTab = BuiltInRegistries.CREATIVE_MODE_TAB.iterator().next();
+                        var testVal = field.get(firstTab);
                         if (testVal instanceof Supplier<?> supplier && supplier.get() instanceof ItemStack) {
                             iconField = field;
-                            LOG.info("Found icon field by type: {}", field.getName());
+                            LOG.info("Found icon field: {}", field.getName());
                         }
                     } catch (Exception ignored) {}
                 } else if (displayNameField == null && type == Component.class) {
                     try {
                         field.setAccessible(true);
                         displayNameField = field;
-                        LOG.info("Found displayName field by type: {}", field.getName());
+                        LOG.info("Found displayName field: {}", field.getName());
                     } catch (Exception ignored) {}
-                } else if (displayItemsGeneratorField == null && !type.isPrimitive() && !type.isArray()) {
-                    var iface = type.isInterface() ? type : null;
-                    if (iface == null && type.getInterfaces().length > 0) {
-                        for (var ifc : type.getInterfaces()) {
-                            if (ifc.getSimpleName().contains("Generator") || ifc.getMethod("accept") != null) {
-                                iface = ifc;
-                                break;
-                            }
-                        }
-                    }
-                    if (type.getDeclaringClass() == CreativeModeTab.class || (type.isInterface() && type.getSimpleName().contains("Display"))) {
-                        try {
-                            field.setAccessible(true);
+                }
+            }
+
+            for (var field : CreativeModeTab.class.getDeclaredFields()) {
+                var type = field.getType();
+                if (type == Supplier.class || type == Component.class || type.isPrimitive()) continue;
+                if (iconField != null && field == iconField) continue;
+                if (displayNameField != null && field == displayNameField) continue;
+                if (displayItemsGeneratorField != null) continue;
+
+                try {
+                    field.setAccessible(true);
+                    for (var method : type.getMethods()) {
+                        if (method.getName().equals("accept") && method.getParameterCount() == 2) {
                             displayItemsGeneratorField = field;
-                            LOG.info("Found displayItemsGenerator field by type: {}", field.getName());
-                        } catch (Exception ignored) {}
-                    }
-                }
-            }
-
-            if (displayItemsGeneratorField == null) {
-                for (var field : CreativeModeTab.class.getDeclaredFields()) {
-                    var type = field.getType();
-                    if (type.isInterface() && type != Supplier.class && type != Component.class) {
-                        try {
-                            field.setAccessible(true);
-                            for (var method : type.getMethods()) {
-                                if (method.getName().equals("accept") && method.getParameterCount() == 2) {
-                                    displayItemsGeneratorField = field;
-                                    outputClass = method.getParameterTypes()[1];
-                                    itemDisplayParamsClass = method.getParameterTypes()[0];
-                                    LOG.info("Found displayItemsGenerator via interface method: field={}, paramsClass={}, outputClass={}",
-                                            field.getName(), itemDisplayParamsClass.getName(), outputClass.getName());
-                                    break;
-                                }
-                            }
-                        } catch (Exception ignored) {}
-                        if (displayItemsGeneratorField != null) break;
-                    }
-                }
-            }
-
-            if (itemDisplayParamsClass == null) {
-                for (var method : CreativeModeTab.class.getDeclaredMethods()) {
-                    if (method.getParameterCount() == 1) {
-                        var paramType = method.getParameterTypes()[0];
-                        if (paramType.getDeclaringClass() == CreativeModeTab.class || paramType.getSimpleName().contains("Display")) {
-                            itemDisplayParamsClass = paramType;
-                            LOG.info("Found ItemDisplayParameters via method param: {}", paramType.getName());
+                            itemDisplayParamsClass = method.getParameterTypes()[0];
+                            outputClass = method.getParameterTypes()[1];
+                            LOG.info("Found generator field: {}, params={}, output={}",
+                                    field.getName(), itemDisplayParamsClass.getName(), outputClass.getName());
                             break;
                         }
                     }
-                }
+                } catch (Exception ignored) {}
+                if (displayItemsGeneratorField != null) break;
             }
 
-            if (outputClass == null && displayItemsGeneratorField != null) {
-                var genType = displayItemsGeneratorField.getType();
-                for (var method : genType.getMethods()) {
-                    if (method.getName().equals("accept") && method.getParameterCount() == 2) {
-                        outputClass = method.getParameterTypes()[1];
-                        LOG.info("Found Output via generator method: {}", outputClass.getName());
-                        break;
-                    }
-                }
-            }
-
-            if (visibilityClass == null && outputClass != null) {
+            if (outputClass != null) {
                 for (var method : outputClass.getMethods()) {
                     if (method.getName().equals("accept") && method.getParameterCount() == 2) {
                         visibilityClass = method.getParameterTypes()[1];
-                        LOG.info("Found TabVisibility via output method: {}", visibilityClass.getName());
+                        LOG.info("Found visibility class: {}", visibilityClass.getName());
                         break;
                     }
                 }
             }
 
             reflectionInitialized = true;
-            LOG.info("CreativeModeTab reflection result: icon={}, displayName={}, generator={}, params={}, output={}, visibility={}",
+            boolean ok = iconField != null && displayNameField != null && displayItemsGeneratorField != null
+                    && itemDisplayParamsClass != null && outputClass != null && visibilityClass != null;
+            reflectionFailed = !ok;
+            LOG.info("Reflection result: icon={} displayName={} generator={} params={} output={} visibility={} failed={}",
                     iconField != null, displayNameField != null, displayItemsGeneratorField != null,
-                    itemDisplayParamsClass != null, outputClass != null, visibilityClass != null);
+                    itemDisplayParamsClass != null, outputClass != null, visibilityClass != null, reflectionFailed);
         } catch (Exception e) {
             LOG.error("Failed to init CreativeModeTab reflection", e);
             reflectionInitialized = true;
+            reflectionFailed = true;
         }
     }
 
     @SuppressWarnings("unchecked")
     private static Supplier<ItemStack> getTabIcon(CreativeModeTab tab) {
+        if (iconField == null) return null;
         try {
             return (Supplier<ItemStack>) iconField.get(tab);
         } catch (Exception e) {
@@ -176,6 +144,10 @@ public class BlockPaletteUI {
     }
 
     private static Component getTabDisplayName(CreativeModeTab tab) {
+        if (displayNameField == null) {
+            var key = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab);
+            return Component.literal(key != null ? key.getPath() : "?");
+        }
         try {
             return (Component) displayNameField.get(tab);
         } catch (Exception e) {
@@ -185,10 +157,7 @@ public class BlockPaletteUI {
     }
 
     private static Object createItemDisplayParams() {
-        if (itemDisplayParamsClass == null) {
-            LOG.error("createItemDisplayParams: itemDisplayParamsClass is null");
-            return null;
-        }
+        if (itemDisplayParamsClass == null) return null;
         try {
             var mc = Minecraft.getInstance();
             var featureFlags = mc.level != null ? mc.level.enabledFeatures() : FeatureFlagSet.of();
@@ -200,50 +169,53 @@ public class BlockPaletteUI {
             for (var ctor : itemDisplayParamsClass.getConstructors()) {
                 var params = ctor.getParameterTypes();
                 try {
-                    if (params.length == 3
-                            && params[0] == FeatureFlagSet.class
-                            && params[1] == boolean.class) {
+                    if (params.length == 3 && params[0] == FeatureFlagSet.class && params[1] == boolean.class) {
                         return ctor.newInstance(featureFlags, hasPermissions, registryAccess);
-                    } else if (params.length == 2
-                            && params[0] == FeatureFlagSet.class
-                            && params[1] == boolean.class) {
+                    } else if (params.length == 2 && params[0] == FeatureFlagSet.class && params[1] == boolean.class) {
                         return ctor.newInstance(featureFlags, hasPermissions);
                     }
-                } catch (Exception e) {
-                    LOG.debug("Constructor with {} params failed, trying next", params.length, e);
-                }
+                } catch (Exception ignored) {}
             }
-
-            LOG.error("No suitable constructor found for {}", itemDisplayParamsClass.getName());
-            return null;
         } catch (Exception e) {
             LOG.error("Failed to create ItemDisplayParameters", e);
-            return null;
         }
+        return null;
     }
 
     private static List<ItemStack> getTabBlockItems(CreativeModeTab tab, Object params) {
         List<ItemStack> result = new ArrayList<>();
-        if (params == null || outputClass == null) return result;
+        if (params == null || outputClass == null || displayItemsGeneratorField == null || visibilityClass == null) return result;
 
         try {
             var generator = displayItemsGeneratorField.get(tab);
             if (generator == null) return result;
 
-            var parentOnly = visibilityClass.getField("PARENT_TAB_ONLY").get(null);
-            var parentAndSearch = visibilityClass.getField("PARENT_AND_SEARCH_TABS").get(null);
+            Object parentOnlyVal = null;
+            Object parentAndSearchVal = null;
+            for (var f : visibilityClass.getFields()) {
+                var name = f.getName();
+                if (name.contains("PARENT_ONLY") || name.contains("ONLY")) {
+                    parentOnlyVal = f.get(null);
+                } else if (name.contains("PARENT_AND_SEARCH") || name.contains("BOTH")) {
+                    parentAndSearchVal = f.get(null);
+                }
+            }
 
-            var output = java.lang.reflect.Proxy.newProxyInstance(
+            final Object pOnly = parentOnlyVal;
+            final Object pAndSearch = parentAndSearchVal;
+
+            var output = Proxy.newProxyInstance(
                     outputClass.getClassLoader(),
                     new Class[]{outputClass},
                     (proxy, method, args) -> {
                         if (method.getName().equals("accept") && args.length == 2) {
                             var stack = (ItemStack) args[0];
-                            var visibility = args[1];
-                            if (visibility == parentOnly || visibility == parentAndSearch) {
-                                if (stack.getItem() instanceof BlockItem) {
-                                    result.add(stack.copy());
-                                }
+                            var vis = args[1];
+                            boolean ok = (pOnly != null && vis == pOnly)
+                                    || (pAndSearch != null && vis == pAndSearch)
+                                    || (pOnly == null && pAndSearch == null);
+                            if (ok && stack.getItem() instanceof BlockItem) {
+                                result.add(stack.copy());
                             }
                         } else if (method.getName().equals("accept") && args.length == 1) {
                             var stack = (ItemStack) args[0];
@@ -254,10 +226,14 @@ public class BlockPaletteUI {
                         return null;
                     });
 
-            var acceptMethod = generator.getClass().getMethod("accept", itemDisplayParamsClass, outputClass);
-            acceptMethod.invoke(generator, params, output);
+            for (var m : generator.getClass().getMethods()) {
+                if (m.getName().equals("accept") && m.getParameterCount() == 2) {
+                    m.invoke(generator, params, output);
+                    break;
+                }
+            }
         } catch (Exception e) {
-            LOG.error("Failed to get tab items via reflection for tab {}", BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab), e);
+            LOG.error("Failed to get tab items for {}", BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab), e);
         }
 
         return result;
@@ -269,7 +245,7 @@ public class BlockPaletteUI {
         Map<CreativeModeTab, List<ItemStack>> tabMap = new LinkedHashMap<>();
         var params = createItemDisplayParams();
 
-        if (params != null) {
+        if (params != null && !reflectionFailed) {
             for (var tab : BuiltInRegistries.CREATIVE_MODE_TAB) {
                 if (tab.getType() != CreativeModeTab.Type.CATEGORY) continue;
                 var items = getTabBlockItems(tab, params);
@@ -280,7 +256,7 @@ public class BlockPaletteUI {
         }
 
         if (tabMap.isEmpty()) {
-            LOG.warn("Reflection approach failed, falling back to simple block list");
+            LOG.warn("Tab reflection failed, falling back to simple block list");
             List<ItemStack> allBlocks = new ArrayList<>();
             BuiltInRegistries.BLOCK.forEach(block -> {
                 var item = block.asItem();
@@ -408,12 +384,20 @@ public class BlockPaletteUI {
                 }
             });
             icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
-                icon.style(s -> s.tooltips(bi.getBlock().getName()));
+                icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
             });
             slot.addChild(icon);
         }
 
         return slot;
+    }
+
+    private static Component buildBlockTooltip(Block block) {
+        var name = block.getName();
+        var id = BuiltInRegistries.BLOCK.getKey(block);
+        var modId = id != null ? id.getNamespace() : "minecraft";
+        return Component.empty().append(name).append(Component.literal("\n"))
+                .append(Component.literal("[" + modId + "]").withStyle(s -> s.withColor(0xFF888888).withItalic(true)));
     }
 
     private static void setupDrag(UIElement panel) {
@@ -565,7 +549,7 @@ public class BlockPaletteUI {
         dialog.addContent(tabView);
 
         dialog.addButton(new Button()
-                .setText(Component.literal("Close"))
+                .setText(Component.translatable("ebe.editor.palette.close"))
                 .setOnClick(e -> dialog.close()));
 
         dialog.show(parent);
@@ -597,7 +581,7 @@ public class BlockPaletteUI {
                 EditorUI.updateActiveBlockIndicator();
             });
             icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
-                icon.style(s -> s.tooltips(bi.getBlock().getName()));
+                icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
             });
             slotEl.addChild(icon);
             grid.addChild(slotEl);

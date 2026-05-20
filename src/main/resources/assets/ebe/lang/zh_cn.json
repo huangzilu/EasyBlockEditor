@@ -138,6 +138,8 @@
   "ebe.editor.palette.browse_all": "浏览所有方块",
   "ebe.editor.palette.selected": "已选: %s",
   "ebe.editor.palette.selected_none": "未选择方块",
+  "ebe.editor.palette.search": "搜索方块...",
+  "ebe.editor.palette.close": "关闭",
   "ebe.editor.status.ready": "就绪",
   "ebe.editor.panel.no_layers": "无图层",
   "itemGroup.ebe": "EasyBlockEditor"
