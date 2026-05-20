@@ -186,6 +186,7 @@ public class EditorUI {
         root.child("ebe.editor.panel.properties");
         root.child("ebe.editor.panel.materials");
         root.child("ebe.editor.panel.history");
+        root.child("ebe.editor.settings", () -> SettingsUI.showSettings(rootElement));
         return root;
     }
 
@@ -312,6 +313,10 @@ public class EditorUI {
     }
 
     private static void onFileSelected(Path file) {
+        try {
+            EditorUI.getSession().load(file);
+        } catch (Exception ignored) {
+        }
     }
 
     private static UIElement buildViewport() {

@@ -126,5 +126,10 @@
   "ebe.error.load_failed": "Failed to load file",
   "ebe.error.save_failed": "Failed to save file",
   "ebe.screen.editor": "EasyBlock Editor",
+  "ebe.editor.settings": "Settings",
+  "ebe.editor.settings.general": "General",
+  "ebe.editor.settings.editor": "Editor",
+  "ebe.editor.settings.projection": "Projection",
+  "ebe.editor.settings.printer": "Printer",
   "itemGroup.ebe": "EasyBlockEditor"
 }

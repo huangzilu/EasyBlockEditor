@@ -5,6 +5,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 
@@ -14,29 +15,78 @@ import java.util.List;
 @OnlyIn(Dist.CLIENT)
 public class ViewportFactory {
 
+    private static TrackedDummyWorld currentWorld;
+    private static Scene currentScene;
+
     public static UIElement create3DViewport() {
-        var scene = new Scene();
-        scene.layout(l -> l.flex(1));
-        scene.setId("viewport");
+        currentWorld = new TrackedDummyWorld();
 
-        var world = new TrackedDummyWorld();
-        scene.createScene(world);
+        currentScene = new Scene();
+        currentScene.layout(l -> l.flex(1));
+        currentScene.setId("viewport");
 
-        addDemoBlocks(world);
+        currentScene.createScene(currentWorld);
 
-        List<BlockPos> positions = new ArrayList<>();
-        world.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        scene.setRenderedCore(positions);
+        addDemoBlocks(currentWorld);
+        refreshRenderedCore();
 
-        scene.setCameraYawAndPitch(-135, 25);
-        scene.setZoom(8);
-        scene.setCenter(new org.joml.Vector3f(3, 2, 3));
+        currentScene.setCameraYawAndPitch(-135, 25);
+        currentScene.setZoom(8);
+        currentScene.setCenter(new org.joml.Vector3f(3, 2, 3));
 
-        scene.setOnSelected((pos, face) -> {
-            EditorUI.getState().setSelectedBlock(pos.toShortString());
+        currentScene.setOnSelected((pos, face) -> {
+            handleBlockClick(pos, face);
         });
 
-        return scene;
+        return currentScene;
+    }
+
+    private static void handleBlockClick(BlockPos pos, net.minecraft.core.Direction face) {
+        var tool = EditorUI.getState().getActiveTool();
+        switch (tool) {
+            case SELECT -> EditorUI.getState().setSelectedBlock(pos.toShortString());
+            case PLACE -> placeBlock(pos.relative(face), Blocks.STONE.defaultBlockState());
+            case DELETE -> deleteBlock(pos);
+            case REPLACE -> replaceBlock(pos, Blocks.GLASS.defaultBlockState());
+            case GRAB -> EditorUI.getState().setSelectedBlock(pos.toShortString());
+            case MEASURE -> EditorUI.getState().setCursorPosition(pos.toShortString());
+            default -> {}
+        }
+    }
+
+    public static void placeBlock(BlockPos pos, BlockState state) {
+        if (currentWorld == null) return;
+        currentWorld.setBlockAndUpdate(pos, state);
+        refreshRenderedCore();
+        EditorUI.getSession().markDirty();
+    }
+
+    public static void deleteBlock(BlockPos pos) {
+        if (currentWorld == null) return;
+        currentWorld.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState());
+        refreshRenderedCore();
+        EditorUI.getSession().markDirty();
+    }
+
+    public static void replaceBlock(BlockPos pos, BlockState state) {
+        if (currentWorld == null) return;
+        currentWorld.setBlockAndUpdate(pos, state);
+        refreshRenderedCore();
+        EditorUI.getSession().markDirty();
+    }
+
+    public static void loadWorld(TrackedDummyWorld world) {
+        if (currentScene == null) return;
+        currentWorld = world;
+        currentScene.createScene(world);
+        refreshRenderedCore();
+    }
+
+    public static void refreshRenderedCore() {
+        if (currentScene == null || currentWorld == null) return;
+        List<BlockPos> positions = new ArrayList<>();
+        currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
+        currentScene.setRenderedCore(positions);
     }
 
     private static void addDemoBlocks(TrackedDummyWorld world) {

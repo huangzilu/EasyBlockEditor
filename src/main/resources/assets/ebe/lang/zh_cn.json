@@ -126,5 +126,10 @@
   "ebe.error.load_failed": "加载文件失败",
   "ebe.error.save_failed": "保存文件失败",
   "ebe.screen.editor": "建筑编辑器",
+  "ebe.editor.settings": "设置",
+  "ebe.editor.settings.general": "通用",
+  "ebe.editor.settings.editor": "编辑器",
+  "ebe.editor.settings.projection": "投影",
+  "ebe.editor.settings.printer": "打印机",
   "itemGroup.ebe": "EasyBlockEditor"
 }
