@@ -18,8 +18,11 @@ import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @OnlyIn(Dist.CLIENT)
 public class ViewportFactory {
@@ -29,6 +32,73 @@ public class ViewportFactory {
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
+    private static boolean hasLoadedModel = false;
+    private static boolean firstOpen = true;
+
+    private static float savedYaw = -135;
+    private static float savedPitch = 25;
+    private static float savedZoom = 8;
+    private static Vector3f savedCenter = new Vector3f(3, 2, 3);
+
+    private static Field sceneCoreField;
+    private static Method sceneNeedCompileCacheMethod;
+    private static boolean sceneReflectionInit = false;
+
+    @SuppressWarnings("unchecked")
+    private static Set<BlockPos> getSceneCore() {
+        if (!sceneReflectionInit) initSceneReflection();
+        if (sceneCoreField == null || currentScene == null) return null;
+        try {
+            return (Set<BlockPos>) sceneCoreField.get(currentScene);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void triggerCacheRecompile() {
+        if (!sceneReflectionInit) initSceneReflection();
+        if (sceneNeedCompileCacheMethod == null || currentScene == null) return;
+        try {
+            sceneNeedCompileCacheMethod.invoke(currentScene);
+        } catch (Exception e) {
+            LOG.warn("Failed to trigger cache recompile", e);
+        }
+    }
+
+    private static void initSceneReflection() {
+        if (sceneReflectionInit) return;
+        try {
+            sceneCoreField = Scene.class.getDeclaredField("core");
+            sceneCoreField.setAccessible(true);
+            sceneNeedCompileCacheMethod = Scene.class.getDeclaredMethod("needCompileCache");
+            sceneNeedCompileCacheMethod.setAccessible(true);
+            LOG.info("Scene reflection initialized: core={}, needCompileCache={}",
+                    sceneCoreField != null, sceneNeedCompileCacheMethod != null);
+        } catch (Exception e) {
+            LOG.warn("Scene reflection failed, will use full refresh", e);
+        }
+        sceneReflectionInit = true;
+    }
+
+    private static void incrementalAdd(BlockPos pos) {
+        var core = getSceneCore();
+        if (core != null) {
+            core.add(pos);
+            triggerCacheRecompile();
+        } else {
+            refreshRenderedCore();
+        }
+    }
+
+    private static void incrementalRemove(BlockPos pos) {
+        var core = getSceneCore();
+        if (core != null) {
+            core.remove(pos);
+            triggerCacheRecompile();
+        } else {
+            refreshRenderedCore();
+        }
+    }
 
     public static UIElement create3DViewport() {
         currentWorld = new TrackedDummyWorld();
@@ -39,19 +109,34 @@ public class ViewportFactory {
 
         currentScene.createScene(currentWorld);
 
-        addDemoBlocks(currentWorld);
-        refreshRenderedCore();
+        var session = EditorUI.getSession();
+        boolean hasContent = hasLoadedModel || (session != null && !session.getModel().getRegions().isEmpty());
 
-        currentScene.setCameraYawAndPitch(-135, 25);
-        currentScene.setZoom(8);
-        currentScene.setCenter(new Vector3f(3, 2, 3));
+        if (hasContent && session != null) {
+            loadFromModel(session.getModel(), false);
+            currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+            currentScene.setZoom(savedZoom);
+            currentScene.setCenter(savedCenter);
+        } else if (firstOpen) {
+            addDemoBlocks(currentWorld);
+            refreshRenderedCore();
+            currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+            currentScene.setZoom(savedZoom);
+            currentScene.setCenter(savedCenter);
+        } else {
+            refreshRenderedCore(true);
+        }
 
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
-
+        firstOpen = false;
         return currentScene;
     }
 
     public static void loadFromModel(BuildingModel model) {
+        loadFromModel(model, true);
+    }
+
+    public static void loadFromModel(BuildingModel model, boolean autoCamera) {
         if (currentScene == null) {
             LOG.error("loadFromModel: currentScene is null");
             return;
@@ -72,10 +157,29 @@ public class ViewportFactory {
         currentScene.createScene(currentWorld, totalBlocksAdded > FBO_THRESHOLD, null);
         currentScene.useCacheBuffer(true);
 
-        refreshRenderedCore(true);
+        refreshRenderedCore(autoCamera);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
 
-        LOG.info("Model loaded: {} blocks", totalBlocksAdded);
+        if (autoCamera) {
+            savedYaw = -135;
+            savedPitch = 25;
+        }
+
+        hasLoadedModel = true;
+        LOG.info("Model loaded: {} blocks, autoCamera={}", totalBlocksAdded, autoCamera);
+    }
+
+    public static void saveCameraState() {
+        if (currentScene == null) return;
+        try {
+            savedYaw = currentScene.getRotationYaw();
+            savedPitch = currentScene.getRotationPitch();
+            savedZoom = currentScene.getZoom();
+            savedCenter = new Vector3f(currentScene.getCenter());
+            LOG.debug("Camera state saved: yaw={}, pitch={}, zoom={}, center={}", savedYaw, savedPitch, savedZoom, savedCenter);
+        } catch (Exception e) {
+            LOG.warn("Failed to save camera state", e);
+        }
     }
 
     private static int loadRegion(Region region) {
@@ -177,32 +281,35 @@ public class ViewportFactory {
     public static void placeBlock(BlockPos pos, BlockState blockState) {
         if (currentWorld == null) return;
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        refreshRenderedCore();
+        incrementalAdd(pos);
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
+        hasLoadedModel = true;
     }
 
     public static void deleteBlock(BlockPos pos) {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
-        refreshRenderedCore();
+        incrementalRemove(pos);
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, Blocks.AIR.defaultBlockState());
         EditorUI.getSession().markDirty();
+        hasLoadedModel = true;
     }
 
     public static void replaceBlock(BlockPos pos, BlockState blockState) {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        refreshRenderedCore();
+        triggerCacheRecompile();
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
+        hasLoadedModel = true;
     }
 
     private static void syncBlockToModel(BuildingModel model, BlockPos pos, BlockState blockState) {
@@ -234,6 +341,19 @@ public class ViewportFactory {
             Math.max(meta.getSizeZ(), minZ + sizeZ)
         );
         return region;
+    }
+
+    public static void clearModel() {
+        hasLoadedModel = false;
+        savedYaw = -135;
+        savedPitch = 25;
+        savedZoom = 8;
+        savedCenter = new Vector3f(3, 2, 3);
+        if (currentScene != null && currentWorld != null) {
+            currentWorld = new TrackedDummyWorld();
+            currentScene.createScene(currentWorld);
+            refreshRenderedCore(true);
+        }
     }
 
     public static void clearAndLoad(TrackedDummyWorld world) {

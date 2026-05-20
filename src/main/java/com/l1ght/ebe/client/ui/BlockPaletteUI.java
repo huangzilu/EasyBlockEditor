@@ -49,6 +49,10 @@ public class BlockPaletteUI {
     private static float dragOffsetX, dragOffsetY;
     private static boolean dragging = false;
 
+    private static boolean persistedOpen = false;
+    private static float persistedLeft = 8;
+    private static float persistedTop = 30;
+
     private static final int SLOT_SIZE = 18;
     private static final int SLOTS_PER_ROW = 9;
     private static final int GRID_WIDTH = SLOT_SIZE * SLOTS_PER_ROW + SLOTS_PER_ROW - 1;
@@ -228,6 +232,7 @@ public class BlockPaletteUI {
 
             for (var m : generator.getClass().getMethods()) {
                 if (m.getName().equals("accept") && m.getParameterCount() == 2) {
+                    m.setAccessible(true);
                     m.invoke(generator, params, output);
                     break;
                 }
@@ -283,7 +288,7 @@ public class BlockPaletteUI {
 
         var panel = new UIElement();
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(8).top(30).width(GRID_WIDTH + 10).heightPercent(70)
+                .left(persistedLeft).top(persistedTop).width(GRID_WIDTH + 10).heightPercent(70)
                 .flexDirection(FlexDirection.COLUMN).paddingAll(4).gapAll(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(500));
         panel.setId("blockPalette");
@@ -397,7 +402,7 @@ public class BlockPaletteUI {
         var id = BuiltInRegistries.BLOCK.getKey(block);
         var modId = id != null ? id.getNamespace() : "minecraft";
         return Component.empty().append(name).append(Component.literal("\n"))
-                .append(Component.literal("[" + modId + "]").withStyle(s -> s.withColor(0xFF888888).withItalic(true)));
+                .append(Component.literal(modId).withStyle(s -> s.withColor(0xFF888888)));
     }
 
     private static void setupDrag(UIElement panel) {
@@ -427,12 +432,30 @@ public class BlockPaletteUI {
 
     public static void closePalette() {
         if (palettePanel != null) {
+            persistedLeft = palettePanel.getPositionX();
+            persistedTop = palettePanel.getPositionY();
             palettePanel.removeSelf();
             palettePanel = null;
         }
         paletteOpen = false;
+        persistedOpen = false;
         currentBlockLabel = null;
         dragging = false;
+    }
+
+    public static void saveState() {
+        persistedOpen = paletteOpen;
+        if (palettePanel != null) {
+            persistedLeft = palettePanel.getPositionX();
+            persistedTop = palettePanel.getPositionY();
+        }
+    }
+
+    public static void restorePalette(UIElement parent) {
+        if (persistedOpen) {
+            openPalette(parent);
+            updateCurrentBlockLabel();
+        }
     }
 
     public static boolean isPaletteOpen() {

@@ -20,6 +20,20 @@ public class EditorScreen extends Screen {
     }
 
     @Override
+    public void onClose() {
+        ViewportFactory.saveCameraState();
+        BlockPaletteUI.saveState();
+        super.onClose();
+    }
+
+    @Override
+    public void removed() {
+        ViewportFactory.saveCameraState();
+        BlockPaletteUI.saveState();
+        super.removed();
+    }
+
+    @Override
     public boolean isPauseScreen() {
         return false;
     }

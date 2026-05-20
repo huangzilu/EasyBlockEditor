@@ -56,6 +56,8 @@ public class EditorUI {
         rootElement.addChild(contentArea);
         rootElement.addChild(buildBottomBar());
 
+        BlockPaletteUI.restorePalette(rootElement);
+
         var stylesheet = StylesheetManager.INSTANCE.getStylesheetSafe(getThemeStylesheet());
         var ui = UI.of(rootElement, List.of(stylesheet), screenSize -> screenSize);
         return ModularUI.of(ui);
@@ -160,7 +162,10 @@ public class EditorUI {
 
     private static MenuTreeNode buildFileMenu() {
         var root = new MenuTreeNode("file");
-        root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> session.newProject(name)));
+        root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {
+            session.newProject(name);
+            ViewportFactory.clearModel();
+        }));
         root.child("ebe.editor.open", () -> ImportDialog.show(rootElement, file -> {
             try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
         }));
@@ -318,6 +323,7 @@ public class EditorUI {
         nbtLabel.setId("activeBlockNbtLabel");
         nbtLabel.setText(Component.literal(""));
         nbtLabel.textStyle(ts -> ts.textColor(0xFFA0A0A0).textShadow(false).fontSize(9));
+        nbtLabel.layout(l -> l.widthPercent(100));
         infoCol.addChild(nbtLabel);
 
         panel.addChild(infoCol);
@@ -354,7 +360,7 @@ public class EditorUI {
                 } else {
                     var sb = new StringBuilder();
                     for (var entry : props.entrySet()) {
-                        if (sb.length() > 0) sb.append(", ");
+                        if (sb.length() > 0) sb.append("\n");
                         sb.append(entry.getKey().getName()).append("=").append(entry.getValue());
                     }
                     l.setText(Component.literal(sb.toString()));
