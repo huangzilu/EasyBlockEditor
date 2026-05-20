@@ -7,6 +7,8 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Menu;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TreeList;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
@@ -24,17 +26,18 @@ import java.util.Comparator;
 public class EditorUI {
 
     private static final EditorState state = new EditorState();
+    private static UIElement rootElement;
 
     public static ModularUI createModularUI() {
-        var root = new UIElement();
-        root.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN));
-        root.setId("root");
+        rootElement = new UIElement();
+        rootElement.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN));
+        rootElement.setId("root");
 
-        root.addChild(buildMenuBar());
-        root.addChild(buildContentArea());
-        root.addChild(buildBottomBar());
+        rootElement.addChild(buildMenuBar());
+        rootElement.addChild(buildContentArea());
+        rootElement.addChild(buildBottomBar());
 
-        var ui = UI.of(root, Collections.emptyList(), screenSize -> screenSize);
+        var ui = UI.of(rootElement, Collections.emptyList(), screenSize -> screenSize);
         return ModularUI.of(ui);
     }
 
@@ -106,10 +109,10 @@ public class EditorUI {
 
     private static MenuTreeNode buildFileMenu() {
         var root = new MenuTreeNode("file");
-        root.child("ebe.editor.new_project");
+        root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {}));
         root.child("ebe.editor.open");
         root.child("ebe.editor.save");
-        root.child("ebe.editor.save_as");
+        root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, "untitled", name -> {}));
         root.child("ebe.editor.import");
         root.child("ebe.editor.export");
         return root;
@@ -172,22 +175,37 @@ public class EditorUI {
         panel.layout(l -> l.width(200).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
 
-        var titleBar = new UIElement();
-        titleBar.layout(l -> l.widthPercent(100).height(16).paddingHorizontal(4)
-                .alignItems(AlignItems.CENTER));
-        var title = new Label();
-        title.setText(Component.translatable("ebe.editor.panel.files"));
-        title.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
-        titleBar.addChild(title);
-        panel.addChild(titleBar);
+        var tabView = new TabView();
+        tabView.layout(l -> l.flex(1).widthPercent(100));
 
+        var filesTab = new Tab();
+        filesTab.setText(Component.translatable("ebe.editor.panel.files"));
+        tabView.addTab(filesTab, createFilesContent());
+
+        var layersTab = new Tab();
+        layersTab.setText(Component.translatable("ebe.editor.panel.layers"));
+        tabView.addTab(layersTab, createLayersContent());
+
+        panel.addChild(tabView);
+        return panel;
+    }
+
+    private static UIElement createFilesContent() {
         var treeList = createFileTree();
         var scroller = new ScrollerView();
-        scroller.layout(l -> l.flex(1).widthPercent(100));
+        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
         scroller.addScrollViewChild(treeList);
-        panel.addChild(scroller);
+        return scroller;
+    }
 
-        return panel;
+    private static UIElement createLayersContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).gapAll(2));
+        var placeholder = new Label();
+        placeholder.setText(Component.literal("No layers"));
+        placeholder.textStyle(ts -> ts.textColor(0xFF808080));
+        container.addChild(placeholder);
+        return container;
     }
 
     private static TreeList<FileTreeNode> createFileTree() {
@@ -240,16 +258,32 @@ public class EditorUI {
 
     private static UIElement buildRightPanel() {
         var panel = new UIElement();
-        panel.layout(l -> l.width(250).flexDirection(FlexDirection.COLUMN)
-                .paddingAll(4).gapAll(4));
+        panel.layout(l -> l.width(250).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
 
-        var title = new Label();
-        title.setText(Component.translatable("ebe.editor.panel.properties"));
-        title.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
-        panel.addChild(title);
+        var tabView = new TabView();
+        tabView.layout(l -> l.flex(1).widthPercent(100));
 
+        var propsTab = new Tab();
+        propsTab.setText(Component.translatable("ebe.editor.panel.properties"));
+        tabView.addTab(propsTab, createPlaceholderPanel());
+
+        var matsTab = new Tab();
+        matsTab.setText(Component.translatable("ebe.editor.panel.materials"));
+        tabView.addTab(matsTab, createPlaceholderPanel());
+
+        var histTab = new Tab();
+        histTab.setText(Component.translatable("ebe.editor.panel.history"));
+        tabView.addTab(histTab, createPlaceholderPanel());
+
+        panel.addChild(tabView);
         return panel;
+    }
+
+    private static UIElement createPlaceholderPanel() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        return container;
     }
 
     private static UIElement buildBottomBar() {
