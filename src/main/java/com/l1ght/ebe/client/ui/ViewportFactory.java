@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.client.renderer.ChunkedBlockRenderer;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -18,19 +19,17 @@ import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 @OnlyIn(Dist.CLIENT)
 public class ViewportFactory {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/Viewport");
-    private static final int FBO_THRESHOLD = 5000;
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
+    private static final ChunkedBlockRenderer chunkedRenderer = new ChunkedBlockRenderer();
     private static boolean hasLoadedModel = false;
     private static boolean firstOpen = true;
 
@@ -38,71 +37,6 @@ public class ViewportFactory {
     private static float savedPitch = 25;
     private static float savedZoom = 8;
     private static Vector3f savedCenter = new Vector3f(3, 2, 3);
-
-    private static Field sceneCoreField;
-    private static boolean sceneReflectionInit = false;
-
-    @SuppressWarnings("unchecked")
-    private static Set<BlockPos> getSceneCore() {
-        if (!sceneReflectionInit) initSceneReflection();
-        if (sceneCoreField == null || currentScene == null) return null;
-        try {
-            return (Set<BlockPos>) sceneCoreField.get(currentScene);
-        } catch (Exception e) {
-            LOG.warn("Failed to get Scene.core", e);
-            return null;
-        }
-    }
-
-    private static void initSceneReflection() {
-        if (sceneReflectionInit) return;
-        try {
-            for (var field : Scene.class.getDeclaredFields()) {
-                if (java.util.Set.class.isAssignableFrom(field.getType())) {
-                    field.setAccessible(true);
-                    var testVal = field.get(currentScene);
-                    if (testVal instanceof java.util.Set<?> set && !set.isEmpty()) {
-                        var first = set.iterator().next();
-                        if (first instanceof BlockPos) {
-                            sceneCoreField = field;
-                            LOG.info("Found Scene.core field: {}", field.getName());
-                            break;
-                        }
-                    } else if (testVal instanceof java.util.Set<?>) {
-                        sceneCoreField = field;
-                        LOG.info("Found Scene.core field (empty set): {}", field.getName());
-                        break;
-                    }
-                }
-            }
-            if (sceneCoreField == null) {
-                LOG.warn("Could not find Scene.core field by type, incremental updates disabled");
-            }
-        } catch (Exception e) {
-            LOG.warn("Scene reflection failed, will use full refresh", e);
-        }
-        sceneReflectionInit = true;
-    }
-
-    private static void incrementalAdd(BlockPos pos) {
-        var core = getSceneCore();
-        if (core != null) {
-            core.add(pos);
-            if (currentScene != null) currentScene.needCompileCache();
-        } else {
-            refreshRenderedCore();
-        }
-    }
-
-    private static void incrementalRemove(BlockPos pos) {
-        var core = getSceneCore();
-        if (core != null) {
-            core.remove(pos);
-            if (currentScene != null) currentScene.needCompileCache();
-        } else {
-            refreshRenderedCore();
-        }
-    }
 
     public static UIElement create3DViewport() {
         currentWorld = new TrackedDummyWorld();
@@ -112,6 +46,10 @@ public class ViewportFactory {
         currentScene.setId("viewport");
 
         currentScene.createScene(currentWorld);
+        currentWorld.setBlockFilter(null);
+        currentScene.useCacheBuffer(false);
+
+        chunkedRenderer.setWorld(currentWorld);
 
         var session = EditorUI.getSession();
         boolean hasContent = hasLoadedModel || (session != null && !session.getModel().getRegions().isEmpty());
@@ -123,15 +61,16 @@ public class ViewportFactory {
             currentScene.setCenter(savedCenter);
         } else if (firstOpen) {
             addDemoBlocks(currentWorld);
-            refreshRenderedCore();
+            populateRendererFromWorld();
+            chunkedRenderer.compileAll();
             currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
-        } else {
-            refreshRenderedCore(true);
         }
 
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+        currentScene.setBeforeWorldRender(renderer -> chunkedRenderer.render());
+
         firstOpen = false;
         return currentScene;
     }
@@ -147,6 +86,7 @@ public class ViewportFactory {
         }
 
         currentWorld = new TrackedDummyWorld();
+        chunkedRenderer.setWorld(currentWorld);
 
         int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
@@ -155,13 +95,24 @@ public class ViewportFactory {
             LOG.info("Loaded region '{}' : {} blocks", region.getName(), count);
         }
 
-        LOG.info("Total blocks: {}, using {} renderer",
-                totalBlocksAdded, totalBlocksAdded > FBO_THRESHOLD ? "FBO" : "immediate");
+        populateRendererFromWorld();
 
-        currentScene.createScene(currentWorld, false, null);
-        currentScene.useCacheBuffer(totalBlocksAdded > FBO_THRESHOLD);
+        currentScene.createScene(currentWorld);
+        currentWorld.setBlockFilter(null);
+        currentScene.useCacheBuffer(false);
+        currentScene.setBeforeWorldRender(renderer -> chunkedRenderer.render());
 
-        refreshRenderedCore(autoCamera);
+        chunkedRenderer.compileAll();
+
+        if (autoCamera && !chunkedRenderer.isEmpty()) {
+            var center = chunkedRenderer.calculateCenter();
+            var zoom = chunkedRenderer.calculateZoom();
+            currentScene.setCenter(center);
+            currentScene.setZoom(zoom);
+            savedCenter = new Vector3f(center);
+            savedZoom = zoom;
+        }
+
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
 
         if (autoCamera) {
@@ -173,6 +124,14 @@ public class ViewportFactory {
         LOG.info("Model loaded: {} blocks, autoCamera={}", totalBlocksAdded, autoCamera);
     }
 
+    private static void populateRendererFromWorld() {
+        chunkedRenderer.clearAll();
+        currentWorld.getFilledBlocks().forEach(packed -> {
+            var pos = BlockPos.of(packed);
+            chunkedRenderer.addPosition(pos);
+        });
+    }
+
     public static void saveCameraState() {
         if (currentScene == null) return;
         try {
@@ -180,7 +139,6 @@ public class ViewportFactory {
             savedPitch = currentScene.getRotationPitch();
             savedZoom = currentScene.getZoom();
             savedCenter = new Vector3f(currentScene.getCenter());
-            LOG.debug("Camera state saved: yaw={}, pitch={}, zoom={}, center={}", savedYaw, savedPitch, savedZoom, savedCenter);
         } catch (Exception e) {
             LOG.warn("Failed to save camera state", e);
         }
@@ -285,7 +243,8 @@ public class ViewportFactory {
     public static void placeBlock(BlockPos pos, BlockState blockState) {
         if (currentWorld == null) return;
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        incrementalAdd(pos);
+        chunkedRenderer.addPosition(pos);
+        chunkedRenderer.markDirty(pos);
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);
@@ -296,7 +255,8 @@ public class ViewportFactory {
     public static void deleteBlock(BlockPos pos) {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
-        incrementalRemove(pos);
+        chunkedRenderer.removePosition(pos);
+        chunkedRenderer.markDirty(pos);
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, Blocks.AIR.defaultBlockState());
@@ -308,12 +268,7 @@ public class ViewportFactory {
         if (currentWorld == null) return;
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
-        var core = getSceneCore();
-        if (core == null) {
-            refreshRenderedCore();
-        } else if (currentScene != null) {
-            currentScene.needCompileCache();
-        }
+        chunkedRenderer.markDirty(pos);
 
         var model = EditorUI.getSession().getModel();
         syncBlockToModel(model, pos, blockState);
@@ -358,30 +313,14 @@ public class ViewportFactory {
         savedPitch = 25;
         savedZoom = 8;
         savedCenter = new Vector3f(3, 2, 3);
-        if (currentScene != null && currentWorld != null) {
+        if (currentScene != null) {
             currentWorld = new TrackedDummyWorld();
+            chunkedRenderer.setWorld(currentWorld);
             currentScene.createScene(currentWorld);
-            refreshRenderedCore(true);
+            currentWorld.setBlockFilter(null);
+            currentScene.useCacheBuffer(false);
+            currentScene.setBeforeWorldRender(renderer -> chunkedRenderer.render());
         }
-    }
-
-    public static void clearAndLoad(TrackedDummyWorld world) {
-        if (currentScene == null) return;
-        currentWorld = world;
-        currentScene.createScene(world);
-        refreshRenderedCore();
-    }
-
-    public static void refreshRenderedCore() {
-        refreshRenderedCore(false);
-    }
-
-    public static void refreshRenderedCore(boolean autoCamera) {
-        if (currentScene == null || currentWorld == null) return;
-        List<BlockPos> positions = new ArrayList<>();
-        currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        LOG.info("refreshRenderedCore: {} positions, autoCamera={}", positions.size(), autoCamera);
-        currentScene.setRenderedCore(positions, null, autoCamera);
     }
 
     private static void addDemoBlocks(TrackedDummyWorld world) {
