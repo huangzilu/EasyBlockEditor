@@ -262,10 +262,12 @@ public class SchematicReaders {
         try {
             result = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
             if (result != null) {
-                LOG.debug("Read NBT from {} using GZIP format", file.getFileName());
+                LOG.info("Read NBT from {} using NbtIo.readCompressed (GZIP)", file.getFileName());
                 return result;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOG.debug("NbtIo.readCompressed failed: {}", e.getMessage());
+        }
 
         try (var fis = Files.newInputStream(file);
              var bis = new BufferedInputStream(fis)) {
@@ -279,32 +281,57 @@ public class SchematicReaders {
                      var dis = new DataInputStream(gzis)) {
                     result = NbtIo.read(dis, NbtAccounter.unlimitedHeap());
                     if (result != null) {
-                        LOG.debug("Read NBT from {} using manual GZIP format", file.getFileName());
+                        LOG.info("Read NBT from {} using manual GZIP", file.getFileName());
                         return result;
                     }
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOG.debug("Manual GZIP failed: {}", e.getMessage());
+        }
 
         try (var fis = Files.newInputStream(file);
              var iis = new InflaterInputStream(fis);
              var dis = new DataInputStream(iis)) {
             result = NbtIo.read(dis, NbtAccounter.unlimitedHeap());
             if (result != null) {
-                LOG.debug("Read NBT from {} using Zlib/Deflate format", file.getFileName());
+                LOG.info("Read NBT from {} using Zlib/Deflate", file.getFileName());
                 return result;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOG.debug("Zlib/Deflate failed: {}", e.getMessage());
+        }
+
+        try (var fis = Files.newInputStream(file);
+             var iis = new java.util.zip.InflaterInputStream(fis, new java.util.zip.Inflater(true));
+             var dis = new DataInputStream(iis)) {
+            result = NbtIo.read(dis, NbtAccounter.unlimitedHeap());
+            if (result != null) {
+                LOG.info("Read NBT from {} using raw Deflate (no Zlib header)", file.getFileName());
+                return result;
+            }
+        } catch (Exception e) {
+            LOG.debug("Raw Deflate failed: {}", e.getMessage());
+        }
 
         try {
             result = NbtIo.read(file);
             if (result != null) {
-                LOG.debug("Read NBT from {} using uncompressed format", file.getFileName());
+                LOG.info("Read NBT from {} using uncompressed format", file.getFileName());
                 return result;
             }
+        } catch (Exception e) {
+            LOG.debug("Uncompressed failed: {}", e.getMessage());
+        }
+
+        try (var fis = Files.newInputStream(file)) {
+            byte[] header = new byte[Math.min(16, fis.available())];
+            fis.read(header);
+            var hex = new StringBuilder();
+            for (byte b : header) hex.append(String.format("%02X ", b & 0xFF));
+            LOG.error("Failed to read NBT from {}: all formats failed. File header bytes: [{}]", file.getFileName(), hex.toString().trim());
         } catch (Exception ignored) {}
 
-        LOG.error("Failed to read NBT from {}: all formats (GZIP, Zlib, uncompressed) failed", file);
         return null;
     }
 }
