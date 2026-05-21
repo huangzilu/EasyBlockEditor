@@ -5,6 +5,9 @@ import net.minecraft.world.level.block.state.BlockState;
 public class EditorState {
     private EditorTool activeTool = EditorTool.SELECT;
     private String cursorPosition = "0, 0, 0";
+    private int cursorX = 0;
+    private int cursorY = 0;
+    private int cursorZ = 0;
     private int selectedCount = 0;
     private String selectedBlock = "";
     private BlockState activeBlockState;
@@ -16,6 +19,13 @@ public class EditorState {
 
     public String getCursorPosition() { return cursorPosition; }
     public void setCursorPosition(String pos) { this.cursorPosition = pos; }
+
+    public int getCursorX() { return cursorX; }
+    public void setCursorX(int x) { this.cursorX = x; }
+    public int getCursorY() { return cursorY; }
+    public void setCursorY(int y) { this.cursorY = y; }
+    public int getCursorZ() { return cursorZ; }
+    public void setCursorZ(int z) { this.cursorZ = z; }
 
     public int getSelectedCount() { return selectedCount; }
     public void setSelectedCount(int count) { this.selectedCount = count; }

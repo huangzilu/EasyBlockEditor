@@ -34,6 +34,12 @@ public class EditorScreen extends Screen {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+        ViewportFactory.tickCamera();
+    }
+
+    @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (EditorUI.handleKeyPress(keyCode, scanCode, modifiers)) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);

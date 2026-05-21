@@ -37,6 +37,10 @@ public class EditorUI {
 
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
+    private static final com.l1ght.ebe.editor.selection.SelectionManager selection = new com.l1ght.ebe.editor.selection.SelectionManager();
+    private static final com.l1ght.ebe.editor.ClipboardManager clipboard = new com.l1ght.ebe.editor.ClipboardManager();
+    private static final com.l1ght.ebe.editor.history.HistoryManager<Object[][]> history =
+            new com.l1ght.ebe.editor.history.HistoryManager<>(200);
     private static final Map<EditorTool, UIElement> toolbarButtons = new EnumMap<>(EditorTool.class);
     private static UIElement rootElement;
     private static UIElement contentArea;
@@ -87,6 +91,8 @@ public class EditorUI {
 
     public static EditorState getState() { return state; }
     public static EditorSession getSession() { return session; }
+    public static com.l1ght.ebe.editor.selection.SelectionManager getSelection() { return selection; }
+    public static com.l1ght.ebe.editor.ClipboardManager getClipboard() { return clipboard; }
 
     // ========== Menu Bar ==========
 
@@ -197,13 +203,23 @@ public class EditorUI {
 
     private static MenuTreeNode buildEditMenu() {
         var root = new MenuTreeNode("edit");
-        root.child("ebe.editor.undo");
-        root.child("ebe.editor.redo");
-        root.child("ebe.editor.copy");
-        root.child("ebe.editor.paste");
-        root.child("ebe.editor.cut");
-        root.child("ebe.editor.select_all");
-        root.child("ebe.editor.deselect");
+        root.child("ebe.editor.undo", () -> undo());
+        root.child("ebe.editor.redo", () -> redo());
+        root.child("ebe.editor.copy", () -> clipboard.copy(session.getModel(), selection));
+        root.child("ebe.editor.paste", () -> {
+            clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
+                    state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
+            ViewportFactory.refreshFromModel(session.getModel());
+            EditorUI.refreshMaterialList();
+        });
+        root.child("ebe.editor.cut", () -> {
+            clipboard.cut(session.getModel(), selection, history);
+            ViewportFactory.refreshFromModel(session.getModel());
+            EditorUI.refreshMaterialList();
+            updateSelectionCount();
+        });
+        root.child("ebe.editor.select_all", () -> selectAll());
+        root.child("ebe.editor.deselect", () -> { selection.clear(); updateSelectionCount(); });
         return root;
     }
 
@@ -334,27 +350,22 @@ public class EditorUI {
         btn.style(s -> s.background(Sprites.RECT_RD));
         registerTooltip(btn, Component.translatable(tool.getTranslationKey()));
 
-        var iconStack = getToolIcon(tool);
-        if (iconStack != null) {
-            btn.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
-        }
+        var iconPath = switch (tool) {
+            case SELECT -> "ebe:textures/gui/tool_select";
+            case PLACE -> "ebe:textures/gui/tool_place";
+            case DELETE -> "ebe:textures/gui/tool_delete";
+            case REPLACE -> "ebe:textures/gui/tool_replace";
+            case GRAB -> "ebe:textures/gui/tool_grab";
+            case MEASURE -> "ebe:textures/gui/tool_measure";
+            case FILL -> "ebe:textures/gui/tool_fill";
+        };
+        btn.style(s -> s.backgroundTexture(
+                com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture.of(iconPath)));
 
         btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) selectTool(tool);
         });
         return btn;
-    }
-
-    private static ItemStack getToolIcon(EditorTool tool) {
-        return switch (tool) {
-            case SELECT -> new ItemStack(Items.STICK);
-            case PLACE -> new ItemStack(Items.STONE);
-            case DELETE -> new ItemStack(Items.BARRIER);
-            case REPLACE -> new ItemStack(Items.PAPER);
-            case GRAB -> new ItemStack(Items.ENDER_EYE);
-            case MEASURE -> new ItemStack(Items.COMPASS);
-            case FILL -> new ItemStack(Items.WATER_BUCKET);
-        };
     }
 
     private static void registerTooltip(UIElement el, Component tooltip) {
@@ -372,6 +383,50 @@ public class EditorUI {
     private static void selectTool(EditorTool tool) {
         state.setActiveTool(tool);
         highlightCurrentTool();
+    }
+
+    private static void undo() {
+        var snapshots = history.undo();
+        if (snapshots == null) return;
+        for (var s : snapshots) {
+            int x = (int) s[0], y = (int) s[1], z = (int) s[2];
+            session.getModel().setBlockAt(x, y, z, s[3]);
+        }
+        ViewportFactory.refreshFromModel(session.getModel());
+        EditorUI.refreshMaterialList();
+    }
+
+    private static void redo() {
+        var snapshots = history.redo();
+        if (snapshots == null) return;
+        for (var s : snapshots) {
+            int x = (int) s[0], y = (int) s[1], z = (int) s[2];
+            session.getModel().setBlockAt(x, y, z, s[4]);
+        }
+        ViewportFactory.refreshFromModel(session.getModel());
+        EditorUI.refreshMaterialList();
+    }
+
+    private static void selectAll() {
+        selection.clear();
+        for (var region : session.getModel().getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var val = region.getBlocks().get(x, y, z);
+                        if (val instanceof net.minecraft.world.level.block.state.BlockState bs && bs.isAir()) continue;
+                        if (val instanceof String s && s.equals("minecraft:air")) continue;
+                        selection.add(x + region.getOffsetX(), y + region.getOffsetY(), z + region.getOffsetZ());
+                    }
+                }
+            }
+        }
+        updateSelectionCount();
+    }
+
+    private static void updateSelectionCount() {
+        state.setSelectedCount(selection.size());
+        updateStatusBar();
     }
 
     // ========== Block Indicator ==========

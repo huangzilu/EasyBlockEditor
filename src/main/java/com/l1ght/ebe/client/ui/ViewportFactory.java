@@ -1,5 +1,7 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.client.keybind.EBEKeyMappings;
+import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -155,6 +157,43 @@ public class ViewportFactory {
         }
     }
 
+    public static void tickCamera() {
+        if (currentScene == null) return;
+
+        float yaw = (float) Math.toRadians(currentScene.getRotationYaw());
+        float pitch = (float) Math.toRadians(currentScene.getRotationPitch());
+        float speed = EBEClientConfig.flightSpeed.get().floatValue();
+        var center = new Vector3f(currentScene.getCenter());
+
+        float fx = (float) (Math.cos(pitch) * Math.cos(yaw));
+        float fy = (float) Math.sin(pitch);
+        float fz = (float) (Math.cos(pitch) * Math.sin(yaw));
+
+        float rx = (float) -Math.sin(yaw);
+        float rz = (float) Math.cos(yaw);
+
+        if (EBEKeyMappings.FREE_FLIGHT_FORWARD.isDown()) {
+            center.add(fx * speed, fy * speed, fz * speed);
+        }
+        if (EBEKeyMappings.FREE_FLIGHT_BACK.isDown()) {
+            center.add(-fx * speed, -fy * speed, -fz * speed);
+        }
+        if (EBEKeyMappings.FREE_FLIGHT_LEFT.isDown()) {
+            center.add(-rx * speed, 0, -rz * speed);
+        }
+        if (EBEKeyMappings.FREE_FLIGHT_RIGHT.isDown()) {
+            center.add(rx * speed, 0, rz * speed);
+        }
+        if (EBEKeyMappings.FREE_FLIGHT_UP.isDown()) {
+            center.add(0, speed, 0);
+        }
+        if (EBEKeyMappings.FREE_FLIGHT_DOWN.isDown()) {
+            center.add(0, -speed, 0);
+        }
+
+        currentScene.setCenter(center);
+    }
+
     private static int loadRegion(Region region) {
         var container = region.getBlocks();
         int count = 0;
@@ -224,6 +263,10 @@ public class ViewportFactory {
 
     private static void handleBlockClick(BlockPos pos, net.minecraft.core.Direction face) {
         var state = EditorUI.getState();
+        state.setCursorX(pos.getX());
+        state.setCursorY(pos.getY());
+        state.setCursorZ(pos.getZ());
+        state.setCursorPosition(pos.toShortString());
         var tool = state.getActiveTool();
         switch (tool) {
             case SELECT -> {
@@ -249,6 +292,7 @@ public class ViewportFactory {
             case MEASURE -> state.setCursorPosition(pos.toShortString());
             case FILL -> {}
         }
+        EditorUI.updateStatusBar();
     }
 
     public static void placeBlock(BlockPos pos, BlockState blockState) {
@@ -339,6 +383,36 @@ public class ViewportFactory {
             currentScene.createScene(currentWorld);
             refreshRenderedCore(true);
         }
+    }
+
+    public static void refreshFromModel(BuildingModel model) {
+        if (currentScene == null) return;
+        currentWorld = new TrackedDummyWorld();
+        int totalBlocks = 0;
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        var blockState = resolveBlockState(obj);
+                        if (blockState != null && !blockState.isAir()) {
+                            int wx = x + region.getOffsetX();
+                            int wy = y + region.getOffsetY();
+                            int wz = z + region.getOffsetZ();
+                            currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
+                            totalBlocks++;
+                        }
+                    }
+                }
+            }
+        }
+        currentScene.createScene(currentWorld);
+        currentScene.useCacheBuffer(totalBlocks > FBO_THRESHOLD);
+        refreshRenderedCore(false);
+        currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+        currentScene.setZoom(savedZoom);
+        currentScene.setCenter(savedCenter);
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
     }
 
     public static void refreshRenderedCore() {
