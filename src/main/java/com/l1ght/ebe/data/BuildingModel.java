@@ -1,5 +1,7 @@
 package com.l1ght.ebe.data;
 
+import net.minecraft.nbt.CompoundTag;
+
 import java.util.*;
 
 public class BuildingModel {
@@ -125,6 +127,24 @@ public class BuildingModel {
         for (var region : regions) {
             if (region.containsWorldPos(wx, wy, wz)) {
                 region.setWorldBlock(wx, wy, wz, state);
+                return;
+            }
+        }
+    }
+
+    public CompoundTag getBlockEntityNbt(int wx, int wy, int wz) {
+        for (var region : regions) {
+            if (region.containsWorldPos(wx, wy, wz)) {
+                return region.getWorldBlockEntity(wx, wy, wz);
+            }
+        }
+        return null;
+    }
+
+    public void setBlockEntityNbt(int wx, int wy, int wz, CompoundTag tag) {
+        for (var region : regions) {
+            if (region.containsWorldPos(wx, wy, wz)) {
+                region.setWorldBlockEntity(wx, wy, wz, tag);
                 return;
             }
         }

@@ -196,5 +196,6 @@
   "ebe.editor.replace.pick_active": "Use Active",
   "ebe.editor.replace.use_selected": "Use Selection",
   "ebe.editor.replace.using_selection": "Using current selection",
-  "ebe.editor.replace.execute": "Execute Replace"
+  "ebe.editor.replace.execute": "Execute Replace",
+  "ebe.editor.nbt.create": "Create NBT"
 }

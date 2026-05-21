@@ -791,8 +791,8 @@ public class EditorUI {
                     .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(2));
 
             var visBtn = new Button();
-            visBtn.setText(Component.literal(layer.isVisible() ? "👁" : "   "));
-            visBtn.layout(l -> l.width(20).height(20));
+            visBtn.layout(l -> l.width(18).height(18));
+            visBtn.style(s -> s.backgroundTexture(layer.isVisible() ? EditorIcons.VISIBLE : EditorIcons.HIDDEN));
             visBtn.setOnClick(e -> {
                 layer.setVisible(!layer.isVisible());
                 refreshLayersList();
@@ -801,8 +801,8 @@ public class EditorUI {
             row.addChild(visBtn);
 
             var lockBtn = new Button();
-            lockBtn.setText(Component.literal(layer.isLocked() ? "🔒" : "   "));
-            lockBtn.layout(l -> l.width(20).height(20));
+            lockBtn.layout(l -> l.width(18).height(18));
+            lockBtn.style(s -> s.backgroundTexture(layer.isLocked() ? EditorIcons.LOCKED : EditorIcons.UNLOCKED));
             lockBtn.setOnClick(e -> {
                 layer.setLocked(!layer.isLocked());
                 refreshLayersList();
@@ -816,8 +816,8 @@ public class EditorUI {
             row.addChild(nameLbl);
 
             var delBtn = new Button();
-            delBtn.setText(Component.literal("✕"));
-            delBtn.layout(l -> l.width(16).height(16));
+            delBtn.layout(l -> l.width(14).height(14));
+            delBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
             delBtn.setOnClick(e -> {
                 if (session.getModel().getLayers().size() <= 1) return;
                 session.getModel().removeLayer(layer.getId());
@@ -860,13 +860,13 @@ public class EditorUI {
 
         var undoBtn = new UIElement();
         undoBtn.layout(l -> l.width(20).height(20));
-        undoBtn.style(s -> s.backgroundTexture(SpriteTexture.of("ebe:textures/gui/undo.png")));
+        undoBtn.style(s -> s.backgroundTexture(EditorIcons.UNDO));
         undoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) undo(); });
         header.addChild(undoBtn);
 
         var redoBtn = new UIElement();
         redoBtn.layout(l -> l.width(20).height(20));
-        redoBtn.style(s -> s.backgroundTexture(SpriteTexture.of("ebe:textures/gui/redo.png")));
+        redoBtn.style(s -> s.backgroundTexture(EditorIcons.REDO));
         redoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) redo(); });
         header.addChild(redoBtn);
 
@@ -1068,6 +1068,201 @@ public class EditorUI {
                 propertiesContainer.addChild(propValRow);
             }
         }
+
+        var nbt = session.getModel().getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ());
+        if (nbt != null) {
+            var nbtLabel = new Label();
+            nbtLabel.setText(Component.literal("NBT:"));
+            nbtLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+            nbtLabel.layout(l -> l.marginTop(4));
+            propertiesContainer.addChild(nbtLabel);
+
+            addNbtTree(propertiesContainer, nbt, 0);
+        } else if (bs.hasBlockEntity()) {
+            var nbtLabel = new Label();
+            nbtLabel.setText(Component.literal("NBT: (empty)"));
+            nbtLabel.textStyle(ts -> ts.textColor(0xFF808080).fontSize(9));
+            nbtLabel.layout(l -> l.marginTop(4));
+            propertiesContainer.addChild(nbtLabel);
+
+            var addNbtBtn = new Button();
+            addNbtBtn.setText(Component.translatable("ebe.editor.nbt.create"));
+            addNbtBtn.layout(l -> l.widthPercent(100).height(18));
+            addNbtBtn.setOnClick(e -> {
+                var tag = new net.minecraft.nbt.CompoundTag();
+                session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), tag);
+                refreshPropertiesPanel();
+            });
+            propertiesContainer.addChild(addNbtBtn);
+        }
+    }
+
+    private static void addNbtTree(UIElement parent, net.minecraft.nbt.CompoundTag tag, int depth) {
+        int indent = depth * 8;
+        for (var key : tag.getAllKeys()) {
+            var value = tag.get(key);
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                    .alignItems(AlignItems.CENTER).gapAll(2).paddingHorizontal(4).paddingVertical(1)
+                    .marginLeft(indent));
+            row.style(s -> s.background(Sprites.RECT_DARK));
+
+            var keyLbl = new Label();
+            keyLbl.setText(Component.literal(key + ":"));
+            keyLbl.textStyle(ts -> ts.textColor(0xFF88CCFF).fontSize(8).textShadow(false));
+            keyLbl.layout(l -> l.minWidth(30));
+            row.addChild(keyLbl);
+
+            if (value instanceof net.minecraft.nbt.CompoundTag compound) {
+                var expandBtn = new Button();
+                expandBtn.setText(Component.literal("{...}"));
+                expandBtn.layout(l -> l.height(14));
+                expandBtn.textStyle(ts -> ts.fontSize(8));
+                var childContainer = new UIElement();
+                childContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN));
+                childContainer.setDisplay(false);
+                expandBtn.setOnClick(e -> {
+                    childContainer.setDisplay(!childContainer.isDisplayed());
+                });
+                row.addChild(expandBtn);
+                parent.addChild(row);
+                addNbtTree(childContainer, compound, depth + 1);
+                parent.addChild(childContainer);
+            } else if (value instanceof net.minecraft.nbt.ListTag list) {
+                var listLbl = new Label();
+                listLbl.setText(Component.literal("[" + list.size() + " items]"));
+                listLbl.textStyle(ts -> ts.textColor(0xFFCC88FF).fontSize(8).textShadow(false));
+                row.addChild(listLbl);
+                parent.addChild(row);
+
+                for (int i = 0; i < list.size(); i++) {
+                    var item = list.get(i);
+                    if (item instanceof net.minecraft.nbt.CompoundTag compoundItem) {
+                        var itemRow = new UIElement();
+                        itemRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                                .alignItems(AlignItems.CENTER).gapAll(2).paddingHorizontal(4)
+                                .marginLeft((depth + 1) * 8));
+                        var idxLbl = new Label();
+                        idxLbl.setText(Component.literal("[" + i + "]:"));
+                        idxLbl.textStyle(ts -> ts.textColor(0xFF88CCFF).fontSize(8).textShadow(false));
+                        itemRow.addChild(idxLbl);
+                        var braceLbl = new Label();
+                        braceLbl.setText(Component.literal("{...}"));
+                        braceLbl.textStyle(ts -> ts.textColor(0xFFCC88FF).fontSize(8).textShadow(false));
+                        itemRow.addChild(braceLbl);
+                        parent.addChild(itemRow);
+                        addNbtTree(parent, compoundItem, depth + 2);
+                    } else {
+                        addNbtValueRow(parent, "[" + i + "]", item, (depth + 1) * 8);
+                    }
+                }
+            } else {
+                var valLbl = new Label();
+                String valStr = nbtValueToString(value);
+                valLbl.setText(Component.literal(valStr));
+                valLbl.textStyle(ts -> ts.textColor(nbtValueColor(value)).fontSize(8).textShadow(false));
+                valLbl.layout(l -> l.flex(1));
+                row.addChild(valLbl);
+
+                var editBtn = new Button();
+                editBtn.setText(Component.literal("✎"));
+                editBtn.layout(l -> l.width(14).height(14));
+                editBtn.setOnClick(e -> {
+                    editNbtValue(tag, key, value);
+                });
+                row.addChild(editBtn);
+
+                var delBtn = new Button();
+                delBtn.setText(Component.literal("✕"));
+                delBtn.layout(l -> l.width(14).height(14));
+                delBtn.setOnClick(e -> {
+                    tag.remove(key);
+                    session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), tag);
+                    refreshPropertiesPanel();
+                });
+                row.addChild(delBtn);
+
+                parent.addChild(row);
+            }
+        }
+
+        var addFieldBtn = new Button();
+        addFieldBtn.setText(Component.literal("+"));
+        addFieldBtn.layout(l -> l.width(16).height(16).marginLeft(indent));
+        addFieldBtn.setOnClick(e -> {
+            addNbtField(tag);
+        });
+        parent.addChild(addFieldBtn);
+    }
+
+    private static void addNbtValueRow(UIElement parent, String key, net.minecraft.nbt.Tag value, int indent) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(2).paddingHorizontal(4).marginLeft(indent));
+        var keyLbl = new Label();
+        keyLbl.setText(Component.literal(key + ":"));
+        keyLbl.textStyle(ts -> ts.textColor(0xFF88CCFF).fontSize(8).textShadow(false));
+        row.addChild(keyLbl);
+        var valLbl = new Label();
+        valLbl.setText(Component.literal(nbtValueToString(value)));
+        valLbl.textStyle(ts -> ts.textColor(nbtValueColor(value)).fontSize(8).textShadow(false));
+        row.addChild(valLbl);
+        parent.addChild(row);
+    }
+
+    private static String nbtValueToString(net.minecraft.nbt.Tag tag) {
+        if (tag instanceof net.minecraft.nbt.StringTag s) return "\"" + s.getAsString() + "\"";
+        if (tag instanceof net.minecraft.nbt.IntTag i) return String.valueOf(i.getAsInt());
+        if (tag instanceof net.minecraft.nbt.LongTag l) return l.getAsLong() + "L";
+        if (tag instanceof net.minecraft.nbt.FloatTag f) return f.getAsFloat() + "f";
+        if (tag instanceof net.minecraft.nbt.DoubleTag d) return d.getAsDouble() + "d";
+        if (tag instanceof net.minecraft.nbt.ByteTag b) return b.getAsByte() + "b";
+        if (tag instanceof net.minecraft.nbt.ShortTag s) return s.getAsShort() + "s";
+        if (tag instanceof net.minecraft.nbt.ByteArrayTag ba) return "byte[" + ba.size() + "]";
+        if (tag instanceof net.minecraft.nbt.IntArrayTag ia) return "int[" + ia.size() + "]";
+        if (tag instanceof net.minecraft.nbt.LongArrayTag la) return "long[" + la.size() + "]";
+        return tag.toString();
+    }
+
+    private static int nbtValueColor(net.minecraft.nbt.Tag tag) {
+        if (tag instanceof net.minecraft.nbt.StringTag) return 0xFF88FF88;
+        if (tag instanceof net.minecraft.nbt.NumericTag) return 0xFFFFAA44;
+        return 0xFFCCCCCC;
+    }
+
+    private static void editNbtValue(net.minecraft.nbt.CompoundTag parent, String key, net.minecraft.nbt.Tag oldValue) {
+        var input = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
+        input.setText(nbtValueToString(oldValue).replace("\"", ""));
+        input.layout(l -> l.widthPercent(100).height(18));
+        input.setTextResponder(text -> {
+            net.minecraft.nbt.Tag newTag = parseNbtValue(text, oldValue);
+            if (newTag != null) {
+                parent.put(key, newTag);
+                session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), parent);
+                refreshPropertiesPanel();
+            }
+        });
+    }
+
+    private static net.minecraft.nbt.Tag parseNbtValue(String text, net.minecraft.nbt.Tag oldTag) {
+        try {
+            if (oldTag instanceof net.minecraft.nbt.StringTag) return net.minecraft.nbt.StringTag.valueOf(text);
+            if (oldTag instanceof net.minecraft.nbt.IntTag) return net.minecraft.nbt.IntTag.valueOf(Integer.parseInt(text));
+            if (oldTag instanceof net.minecraft.nbt.LongTag) return net.minecraft.nbt.LongTag.valueOf(Long.parseLong(text.endsWith("L") ? text.substring(0, text.length() - 1) : text));
+            if (oldTag instanceof net.minecraft.nbt.FloatTag) return net.minecraft.nbt.FloatTag.valueOf(Float.parseFloat(text.endsWith("f") ? text.substring(0, text.length() - 1) : text));
+            if (oldTag instanceof net.minecraft.nbt.DoubleTag) return net.minecraft.nbt.DoubleTag.valueOf(Double.parseDouble(text.endsWith("d") ? text.substring(0, text.length() - 1) : text));
+            if (oldTag instanceof net.minecraft.nbt.ByteTag) return net.minecraft.nbt.ByteTag.valueOf(Byte.parseByte(text.endsWith("b") ? text.substring(0, text.length() - 1) : text));
+            if (oldTag instanceof net.minecraft.nbt.ShortTag) return net.minecraft.nbt.ShortTag.valueOf(Short.parseShort(text.endsWith("s") ? text.substring(0, text.length() - 1) : text));
+            return net.minecraft.nbt.StringTag.valueOf(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static void addNbtField(net.minecraft.nbt.CompoundTag parent) {
+        parent.putString("new_field", "");
+        session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), parent);
+        refreshPropertiesPanel();
     }
 
     private static UIElement buildCoordField(String label, int value) {
@@ -1267,8 +1462,8 @@ public class EditorUI {
         titleRow.addChild(title);
 
         var closeBtn = new Button();
-        closeBtn.setText(Component.literal("✕"));
         closeBtn.layout(l -> l.width(16).height(16));
+        closeBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
         closeBtn.setOnClick(e -> {
             replacePanelVisible = false;
             panel.setDisplay(false);

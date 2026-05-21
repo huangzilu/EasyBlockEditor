@@ -196,5 +196,6 @@
   "ebe.editor.replace.pick_active": "使用活跃",
   "ebe.editor.replace.use_selected": "使用当前选区",
   "ebe.editor.replace.using_selection": "使用当前选区",
-  "ebe.editor.replace.execute": "执行替换"
+  "ebe.editor.replace.execute": "执行替换",
+  "ebe.editor.nbt.create": "创建NBT"
 }
