@@ -1,5 +1,14 @@
 package com.l1ght.ebe.client.renderer;
 
+/*
+ * TODO: Chunked VBO renderer - needs fixes:
+ * - Transparent blocks render opaque
+ * - Bypasses Scene.renderedBlocksMap → breaks raycasting (click detection)
+ * - Needs integration with Scene's render pipeline rather than standalone rendering
+ * Plan: inject per-section VBO into WorldSceneRenderer.renderedBlocksMap by chunk key,
+ *       recompile only dirty sections on needCompileCache, keep Scene native pipeline intact.
+ */
+
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
