@@ -79,6 +79,8 @@ public class EditorUI {
     private static boolean keybindHintsVisible = true;
     private static UIElement replacePanel;
     private static boolean replacePanelVisible = false;
+    private static UIElement fillPanel;
+    private static boolean fillPanelVisible = false;
 
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
@@ -323,6 +325,10 @@ public class EditorUI {
         replacePanel.setDisplay(false);
         viewport.addChild(replacePanel);
 
+        fillPanel = buildFillPanel();
+        fillPanel.setDisplay(false);
+        viewport.addChild(fillPanel);
+
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
             leftCollapseBtn.setText(Component.literal("▶"));
@@ -493,6 +499,10 @@ public class EditorUI {
         if (replacePanel != null) {
             replacePanelVisible = (tool == EditorTool.REPLACE);
             replacePanel.setDisplay(replacePanelVisible);
+        }
+        if (fillPanel != null) {
+            fillPanelVisible = (tool == EditorTool.FILL);
+            fillPanel.setDisplay(fillPanelVisible);
         }
     }
 
@@ -1574,6 +1584,165 @@ public class EditorUI {
     private static net.minecraft.world.level.block.Block replaceSourceBlock = null;
     private static BlockState replaceTargetState = null;
     private static boolean replaceUseSelection = false;
+
+    private static UIElement buildFillPanel() {
+        var panel = new UIElement();
+        panel.setId("fillPanel");
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(40).top(40)
+                .minWidth(200).maxWidth(280)
+                .flexDirection(FlexDirection.COLUMN).gapAll(4)
+                .paddingAll(6));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
+
+        var titleRow = new UIElement();
+        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.fill.title"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
+        title.layout(l -> l.flex(1));
+        titleRow.addChild(title);
+
+        var closeBtn = new Button();
+        closeBtn.layout(l -> l.width(16).height(16));
+        closeBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+        closeBtn.setOnClick(e -> {
+            fillPanelVisible = false;
+            panel.setDisplay(false);
+        });
+        titleRow.addChild(closeBtn);
+        panel.addChild(titleRow);
+
+        var targetLabel = new Label();
+        targetLabel.setText(Component.translatable("ebe.editor.fill.block"));
+        targetLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        panel.addChild(targetLabel);
+
+        var blockRow = new UIElement();
+        blockRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var blockLabel = new Label();
+        blockLabel.setId("fillBlockLabel");
+        blockLabel.setText(Component.literal("-"));
+        blockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        blockLabel.layout(l -> l.flex(1));
+        blockRow.addChild(blockLabel);
+
+        var pickBtn = new Button();
+        pickBtn.setText(Component.translatable("ebe.editor.replace.pick_active"));
+        pickBtn.layout(l -> l.height(16));
+        pickBtn.setOnClick(e -> {
+            var active = state.getActiveBlockState();
+            if (active != null) {
+                fillBlockState = active;
+                updateFillBlockDisplay();
+            }
+        });
+        blockRow.addChild(pickBtn);
+        panel.addChild(blockRow);
+
+        var dxRow = new UIElement();
+        dxRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dxLabel = new Label();
+        dxLabel.setText(Component.literal("dX:"));
+        dxLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dxLabel.layout(l -> l.width(20));
+        dxRow.addChild(dxLabel);
+        var dxField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
+        dxField.setText("0");
+        dxField.setId("fillDxField");
+        dxField.layout(l -> l.flex(1).height(18));
+        dxRow.addChild(dxField);
+        panel.addChild(dxRow);
+
+        var dyRow = new UIElement();
+        dyRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dyLabel = new Label();
+        dyLabel.setText(Component.literal("dY:"));
+        dyLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dyLabel.layout(l -> l.width(20));
+        dyRow.addChild(dyLabel);
+        var dyField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
+        dyField.setText("0");
+        dyField.setId("fillDyField");
+        dyField.layout(l -> l.flex(1).height(18));
+        dyRow.addChild(dyField);
+        panel.addChild(dyRow);
+
+        var dzRow = new UIElement();
+        dzRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dzLabel = new Label();
+        dzLabel.setText(Component.literal("dZ:"));
+        dzLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dzLabel.layout(l -> l.width(20));
+        dzRow.addChild(dzLabel);
+        var dzField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
+        dzField.setText("0");
+        dzField.setId("fillDzField");
+        dzField.layout(l -> l.flex(1).height(18));
+        dzRow.addChild(dzField);
+        panel.addChild(dzRow);
+
+        var fillBtn = new Button();
+        fillBtn.setText(Component.translatable("ebe.editor.fill.execute_fill"));
+        fillBtn.layout(l -> l.widthPercent(100).height(22));
+        fillBtn.setOnClick(e -> executeFill());
+        panel.addChild(fillBtn);
+
+        var translateBtn = new Button();
+        translateBtn.setText(Component.translatable("ebe.editor.fill.execute_translate"));
+        translateBtn.layout(l -> l.widthPercent(100).height(22));
+        translateBtn.setOnClick(e -> executeTranslate());
+        panel.addChild(translateBtn);
+
+        return panel;
+    }
+
+    private static BlockState fillBlockState = null;
+
+    private static void updateFillBlockDisplay() {
+        var label = UIUtils.findById(fillPanel, "fillBlockLabel");
+        if (label instanceof Label l && fillBlockState != null) {
+            l.setText(Component.literal(fillBlockState.getBlock().getDescriptionId()));
+        }
+    }
+
+    private static void executeFill() {
+        if (session == null || fillBlockState == null) return;
+        var selection = getSelection();
+        if (selection.isEmpty()) return;
+        clipboard.fill(session.getModel(), selection, fillBlockState, history);
+        ViewportFactory.refreshFromModel(session.getModel());
+        refreshMaterialList();
+        refreshHistoryList();
+    }
+
+    private static void executeTranslate() {
+        if (session == null) return;
+        var selection = getSelection();
+        if (selection.isEmpty()) return;
+        int dx = getIntField(fillPanel, "fillDxField", 0);
+        int dy = getIntField(fillPanel, "fillDyField", 0);
+        int dz = getIntField(fillPanel, "fillDzField", 0);
+        if (dx == 0 && dy == 0 && dz == 0) return;
+        clipboard.translateSelection(session.getModel(), selection, dx, dy, dz, history);
+        ViewportFactory.refreshFromModel(session.getModel());
+        refreshMaterialList();
+        refreshHistoryList();
+    }
+
+    private static int getIntField(UIElement parent, String id, int defaultVal) {
+        var elem = UIUtils.findById(parent, id);
+        if (elem instanceof com.lowdragmc.lowdraglib2.gui.ui.elements.TextField tf) {
+            try { return Integer.parseInt(tf.getText()); } catch (NumberFormatException ignored) {}
+        }
+        return defaultVal;
+    }
 
     private static void updateReplaceModeHighlight() {
     }

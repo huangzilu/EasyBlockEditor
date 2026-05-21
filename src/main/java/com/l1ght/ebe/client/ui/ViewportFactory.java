@@ -599,8 +599,22 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        currentScene.setRenderedCore(positions, null, autoCamera);
+        currentScene.setRenderedCore(positions, selectionRenderHook, autoCamera);
     }
+
+    private static final com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook selectionRenderHook =
+            new com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook() {
+                @Override
+                public void applyVertexConsumerWrapper(net.minecraft.world.level.Level world, BlockPos pos,
+                                                        BlockState state,
+                                                        com.lowdragmc.lowdraglib2.client.scene.WorldSceneRenderer.VertexConsumerWrapper wrapperBuffer,
+                                                        net.minecraft.client.renderer.RenderType layer, float partialTicks) {
+                    var selection = EditorUI.getSelection();
+                    if (selection.contains(pos.getX(), pos.getY(), pos.getZ())) {
+                        wrapperBuffer.setColorMultiplier(0.6f, 0.8f, 1.0f, 0.7f);
+                    }
+                }
+            };
 
     private static void addDemoBlocks(TrackedDummyWorld world) {
         for (int x = 0; x < 7; x++) {

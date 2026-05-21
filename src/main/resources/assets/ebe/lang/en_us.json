@@ -197,5 +197,9 @@
   "ebe.editor.replace.use_selected": "Use Selection",
   "ebe.editor.replace.using_selection": "Using current selection",
   "ebe.editor.replace.execute": "Execute Replace",
-  "ebe.editor.nbt.create": "Create NBT"
+  "ebe.editor.nbt.create": "Create NBT",
+  "ebe.editor.fill.title": "Fill & Translate",
+  "ebe.editor.fill.block": "Fill Block:",
+  "ebe.editor.fill.execute_fill": "Fill Selection",
+  "ebe.editor.fill.execute_translate": "Translate Selection"
 }

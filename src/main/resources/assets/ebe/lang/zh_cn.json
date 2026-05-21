@@ -197,5 +197,9 @@
   "ebe.editor.replace.use_selected": "使用当前选区",
   "ebe.editor.replace.using_selection": "使用当前选区",
   "ebe.editor.replace.execute": "执行替换",
-  "ebe.editor.nbt.create": "创建NBT"
+  "ebe.editor.nbt.create": "创建NBT",
+  "ebe.editor.fill.title": "填充与平移",
+  "ebe.editor.fill.block": "填充方块：",
+  "ebe.editor.fill.execute_fill": "填充选区",
+  "ebe.editor.fill.execute_translate": "平移选区"
 }

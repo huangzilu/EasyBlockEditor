@@ -312,6 +312,8 @@ public class ClipboardManager {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int nx = ox + dx, ny = oy + dy, nz = oz + dz;
 
+            if (!model.canEditAt(nx, ny, nz)) continue;
+
             var oldState = model.getBlockAt(ox, oy, oz);
             var oldAtNew = model.getBlockAt(nx, ny, nz);
 
@@ -344,6 +346,7 @@ public class ClipboardManager {
         int repX = 0, repY = 0, repZ = 0;
         for (var p : selection.getPositions()) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
+            if (!model.canEditAt(x, y, z)) continue;
             var oldState = model.getBlockAt(x, y, z);
             if (statesMatch(oldState, fillState)) continue;
 
