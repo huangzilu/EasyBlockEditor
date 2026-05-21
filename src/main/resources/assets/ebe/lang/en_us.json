@@ -175,6 +175,7 @@
   "ebe.mode.edit": "Edit Mode",
   "ebe.editor.keybind_hints": "Shortcuts",
   "ebe.hints.select.click": "Left-click to select block",
+  "ebe.hints.select.multi": "Left-click to toggle multi-select",
   "ebe.hints.select.box": "Left-drag to box-select top blocks",
   "ebe.hints.place.click": "Left-click to place active block",
   "ebe.hints.delete.click": "Left-click to delete block",

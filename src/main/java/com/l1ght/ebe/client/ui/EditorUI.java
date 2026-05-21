@@ -1119,7 +1119,7 @@ public class EditorUI {
         panel.setId("keybindHintsPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .right(4).top(4)
-                .maxWidth(260)
+                .minWidth(180).maxWidth(260)
                 .flexDirection(FlexDirection.COLUMN).gapAll(2)
                 .paddingHorizontal(8).paddingVertical(4));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
@@ -1162,8 +1162,9 @@ public class EditorUI {
         String text = switch (tool) {
             case SELECT -> "■ " +
                     Component.translatable("ebe.hints.select.click").getString() + "\n" +
+                    "■ Ctrl+" + Component.translatable("ebe.hints.select.multi").getString() + "\n" +
                     "■ Shift+" + Component.translatable("ebe.hints.select.box").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z\n" +
+                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z/Y\n" +
                     "■ " + Component.translatable("ebe.hints.common.clipboard").getString() + ": Ctrl+C/V/X";
             case PLACE -> "■ " +
                     Component.translatable("ebe.hints.place.click").getString() + "\n" +

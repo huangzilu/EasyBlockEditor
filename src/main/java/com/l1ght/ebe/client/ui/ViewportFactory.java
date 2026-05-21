@@ -62,11 +62,6 @@ public class ViewportFactory {
     private static int dragCurrentX, dragCurrentY;
     private static UIElement selectionRectOverlay;
 
-    private static boolean isLeftMouseDown() {
-        long window = Minecraft.getInstance().getWindow().getWindow();
-        return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_1) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
-    }
-
     @SuppressWarnings("unchecked")
     private static Set<BlockPos> getSceneCore() {
         if (!sceneReflectionInit) initSceneReflection();
@@ -202,18 +197,21 @@ public class ViewportFactory {
         if (currentScene == null) return;
 
         long window = net.minecraft.client.Minecraft.getInstance().getWindow().getWindow();
-        float yaw = (float) Math.toRadians(currentScene.getRotationYaw());
-        float pitch = (float) Math.toRadians(currentScene.getRotationPitch());
+        double yawDeg = currentScene.getRotationYaw();
+        double pitchDeg = currentScene.getRotationPitch();
+        float yawRad = (float) Math.toRadians(yawDeg);
+        float pitchRad = (float) Math.toRadians(pitchDeg);
         float speed = EBEClientConfig.flightSpeed.get().floatValue();
         var center = new Vector3f(currentScene.getCenter());
 
-        float fh = (float) Math.cos(pitch);
-        float fx = (float) (-Math.sin(yaw) * fh);
-        float fy = (float) Math.sin(pitch);
-        float fz = (float) (-Math.cos(yaw) * fh);
+        float cp = (float) Math.cos(pitchRad);
+        float fx = (float) (cp * Math.cos(yawRad));
+        float fy = (float) Math.sin(pitchRad);
+        float fz = (float) (cp * Math.sin(yawRad));
 
-        float rx = (float) -Math.cos(yaw);
-        float rz = (float) Math.sin(yaw);
+        float rx = fz;
+        float ry = 0;
+        float rz = -fx;
 
         boolean moved = false;
 
@@ -226,22 +224,20 @@ public class ViewportFactory {
             moved = true;
         }
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_A) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
-            center.add(-rx * speed, 0, -rz * speed);
+            center.add(-rx * speed, -ry * speed, -rz * speed);
             moved = true;
         }
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_D) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
-            center.add(rx * speed, 0, rz * speed);
+            center.add(rx * speed, ry * speed, rz * speed);
             moved = true;
         }
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(0, speed, 0);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
-            if (!isLeftMouseDown()) {
-                center.add(0, -speed, 0);
-                moved = true;
-            }
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_ALT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+            center.add(0, -speed, 0);
+            moved = true;
         }
 
         if (moved) {
@@ -350,9 +346,17 @@ public class ViewportFactory {
                 state.setInspectedBlockState(blockState);
                 EditorUI.updateBlockInspection();
                 EditorUI.refreshPropertiesPanel();
-                selection.clear();
-                selection.add(pos.getX(), pos.getY(), pos.getZ());
-                state.setSelectedCount(1);
+
+                long window = Minecraft.getInstance().getWindow().getWindow();
+                boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+
+                if (ctrl) {
+                    selection.toggle(pos.getX(), pos.getY(), pos.getZ());
+                } else {
+                    selection.clear();
+                    selection.add(pos.getX(), pos.getY(), pos.getZ());
+                }
+                state.setSelectedCount(selection.size());
                 state.setSelectedBlock(pos.toShortString());
             }
             case GRAB -> {
@@ -634,14 +638,22 @@ public class ViewportFactory {
             if (e.button != 0) return;
             long window = Minecraft.getInstance().getWindow().getWindow();
             boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+
+            if (ctrl && !shift) {
+                dragSelecting = false;
+                return;
+            }
             if (!shift) return;
 
             dragSelecting = true;
+            var mc = Minecraft.getInstance();
+            double guiScale = mc.getWindow().getGuiScale();
             double[] xpos = new double[1];
             double[] ypos = new double[1];
             org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
-            dragStartX = (int) xpos[0];
-            dragStartY = (int) ypos[0];
+            dragStartX = (int) (xpos[0] / guiScale);
+            dragStartY = (int) (ypos[0] / guiScale);
             dragCurrentX = dragStartX;
             dragCurrentY = dragStartY;
             updateSelectionRect();
@@ -651,11 +663,13 @@ public class ViewportFactory {
         scene.addEventListener(UIEvents.MOUSE_MOVE, e -> {
             if (!dragSelecting) return;
             long window = Minecraft.getInstance().getWindow().getWindow();
+            var mc = Minecraft.getInstance();
+            double guiScale = mc.getWindow().getGuiScale();
             double[] xpos = new double[1];
             double[] ypos = new double[1];
             org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
-            dragCurrentX = (int) xpos[0];
-            dragCurrentY = (int) ypos[0];
+            dragCurrentX = (int) (xpos[0] / guiScale);
+            dragCurrentY = (int) (ypos[0] / guiScale);
             updateSelectionRect();
         });
 
@@ -693,14 +707,15 @@ public class ViewportFactory {
         float aspect = (float) window.getGuiScaledWidth() / (float) window.getGuiScaledHeight();
         float near = 0.1f, far = 1000f;
 
-        float yaw = (float) Math.toRadians(currentScene.getRotationYaw());
-        float pitch = (float) Math.toRadians(currentScene.getRotationPitch());
+        float yawRad = (float) Math.toRadians(currentScene.getRotationYaw());
+        float pitchRad = (float) Math.toRadians(currentScene.getRotationPitch());
         float zoom = currentScene.getZoom();
         var center = currentScene.getCenter();
 
-        float forwardX = (float) (-Math.sin(yaw) * Math.cos(pitch));
-        float forwardY = (float) Math.sin(pitch);
-        float forwardZ = (float) (-Math.cos(yaw) * Math.cos(pitch));
+        float cp = (float) Math.cos(pitchRad);
+        float forwardX = (float) (cp * Math.cos(yawRad));
+        float forwardY = (float) Math.sin(pitchRad);
+        float forwardZ = (float) (cp * Math.sin(yawRad));
         var camPos = new Vector3f(
                 center.x - forwardX * zoom,
                 center.y - forwardY * zoom,
