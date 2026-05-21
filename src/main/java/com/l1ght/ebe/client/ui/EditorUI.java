@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.client.keybind.EBEKeyMappings;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
+import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -11,6 +12,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TreeList;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.style.StylesheetManager;
@@ -19,11 +21,13 @@ import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
 import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.properties.Property;
+import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,12 +39,26 @@ import java.util.Map;
 
 public class EditorUI {
 
+    private static final Map<String, String> EDIT_SHORTCUTS = Map.of(
+            "ebe.editor.undo", "Ctrl+Z",
+            "ebe.editor.redo", "Ctrl+Y",
+            "ebe.editor.copy", "Ctrl+C",
+            "ebe.editor.paste", "Ctrl+V",
+            "ebe.editor.cut", "Ctrl+X",
+            "ebe.editor.select_all", "Ctrl+A",
+            "ebe.editor.deselect", "Ctrl+D"
+    );
+
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
     private static final com.l1ght.ebe.editor.selection.SelectionManager selection = new com.l1ght.ebe.editor.selection.SelectionManager();
     private static final com.l1ght.ebe.editor.ClipboardManager clipboard = new com.l1ght.ebe.editor.ClipboardManager();
-    private static final com.l1ght.ebe.editor.history.HistoryManager<Object[][]> history =
-            new com.l1ght.ebe.editor.history.HistoryManager<>(200);
+    private static final com.l1ght.ebe.editor.history.HistoryManager history =
+            new com.l1ght.ebe.editor.history.HistoryManager(
+                    EBEClientConfig.historyMaxEntries.get() == 0
+                            ? Integer.MAX_VALUE
+                            : EBEClientConfig.historyMaxEntries.get());
+    private static UIElement historyListContainer;
     private static final Map<EditorTool, UIElement> toolbarButtons = new EnumMap<>(EditorTool.class);
     private static UIElement rootElement;
     private static UIElement contentArea;
@@ -54,11 +72,15 @@ public class EditorUI {
     private static boolean rightPanelVisible = true;
     private static boolean blockIndicatorVisible = true;
 
+    private static UIElement keybindHintsPanel;
+    private static boolean keybindHintsVisible = true;
+
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
+    private static boolean toolbarVisible = true;
 
     private static UIElement materialListContainer;
-    private static ScrollerView materialListScroller;
+    private static UIElement propertiesContainer;
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
@@ -93,6 +115,7 @@ public class EditorUI {
     public static EditorSession getSession() { return session; }
     public static com.l1ght.ebe.editor.selection.SelectionManager getSelection() { return selection; }
     public static com.l1ght.ebe.editor.ClipboardManager getClipboard() { return clipboard; }
+    public static com.l1ght.ebe.editor.history.HistoryManager getHistory() { return history; }
 
     // ========== Menu Bar ==========
 
@@ -146,12 +169,21 @@ public class EditorUI {
             var text = Component.translatable(key);
             boolean isChecked = false;
 
+            var shortcut = EDIT_SHORTCUTS.get(key);
+            if (shortcut != null) {
+                text = text.copy().append(Component.literal("  " + shortcut).withStyle(ChatFormatting.DARK_GRAY));
+            }
+
             if (key.equals("ebe.editor.panel.files") || key.equals("ebe.editor.panel.layers")) {
                 isChecked = leftPanelVisible;
             } else if (key.equals("ebe.editor.panel.properties") || key.equals("ebe.editor.panel.materials") || key.equals("ebe.editor.panel.history")) {
                 isChecked = rightPanelVisible;
             } else if (key.equals("ebe.editor.block_indicator")) {
                 isChecked = blockIndicatorVisible;
+            } else if (key.equals("ebe.editor.panel.tools")) {
+                isChecked = toolbarVisible;
+            } else if (key.equals("ebe.editor.keybind_hints")) {
+                isChecked = keybindHintsVisible;
             }
 
             if (isChecked) {
@@ -186,14 +218,14 @@ public class EditorUI {
             ViewportFactory.clearModel();
         }));
         root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); refreshMaterialList(); updateStatusBar(); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception e) { e.printStackTrace(); } });
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); } catch (Exception e) { e.printStackTrace(); }
+            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); refreshMaterialList(); updateStatusBar(); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
@@ -210,12 +242,14 @@ public class EditorUI {
             clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
                     state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
             ViewportFactory.refreshFromModel(session.getModel());
-            EditorUI.refreshMaterialList();
+            refreshMaterialList();
+            refreshHistoryList();
         });
         root.child("ebe.editor.cut", () -> {
             clipboard.cut(session.getModel(), selection, history);
             ViewportFactory.refreshFromModel(session.getModel());
-            EditorUI.refreshMaterialList();
+            refreshMaterialList();
+            refreshHistoryList();
             updateSelectionCount();
         });
         root.child("ebe.editor.select_all", () -> selectAll());
@@ -230,8 +264,10 @@ public class EditorUI {
         root.child("ebe.editor.panel.properties", () -> toggleRightPanel());
         root.child("ebe.editor.panel.materials", () -> toggleRightPanel());
         root.child("ebe.editor.panel.history", () -> toggleRightPanel());
+        root.child("ebe.editor.panel.tools", () -> toggleToolbarPanel());
         root.child("ebe.editor.block_palette", () -> BlockPaletteUI.togglePalette(rootElement));
         root.child("ebe.editor.block_indicator", () -> toggleBlockIndicator());
+        root.child("ebe.editor.keybind_hints", () -> toggleKeybindHints());
         root.child("ebe.editor.settings", () -> SettingsUI.showSettings(rootElement));
         return root;
     }
@@ -275,6 +311,9 @@ public class EditorUI {
         viewport.addChild(blockIndicator);
         blockIndicatorPanel = blockIndicator;
 
+        keybindHintsPanel = buildKeybindHintsPanel();
+        viewport.addChild(keybindHintsPanel);
+
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
             leftCollapseBtn.setText(Component.literal("▶"));
@@ -310,6 +349,14 @@ public class EditorUI {
             panel.addChild(btn);
         }
 
+        var modeSep = new UIElement();
+        modeSep.layout(l -> l.widthPercent(100).height(1));
+        modeSep.style(s -> s.background(Sprites.RECT_DARK));
+        panel.addChild(modeSep);
+
+        var modeBtn = buildModeToggleButton();
+        panel.addChild(modeBtn);
+
         highlightCurrentTool();
         return panel;
     }
@@ -344,23 +391,33 @@ public class EditorUI {
         }
     }
 
+    private static void toggleToolbarPanel() {
+        toolbarVisible = !toolbarVisible;
+        if (toolbarPanel != null) {
+            toolbarPanel.setDisplay(toolbarVisible);
+        }
+    }
+
     private static UIElement buildToolbarButton(EditorTool tool) {
         var btn = new UIElement();
-        btn.layout(l -> l.width(26).height(26).paddingAll(2));
+        btn.layout(l -> l.width(26).height(26).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
         btn.style(s -> s.background(Sprites.RECT_RD));
+        btn.setId("toolbar_btn_" + tool.name());
         registerTooltip(btn, Component.translatable(tool.getTranslationKey()));
 
         var iconPath = switch (tool) {
-            case SELECT -> "ebe:textures/gui/tool_select";
-            case PLACE -> "ebe:textures/gui/tool_place";
-            case DELETE -> "ebe:textures/gui/tool_delete";
-            case REPLACE -> "ebe:textures/gui/tool_replace";
-            case GRAB -> "ebe:textures/gui/tool_grab";
-            case MEASURE -> "ebe:textures/gui/tool_measure";
-            case FILL -> "ebe:textures/gui/tool_fill";
+            case SELECT -> "ebe:textures/gui/tool_select.png";
+            case PLACE -> "ebe:textures/gui/tool_place.png";
+            case DELETE -> "ebe:textures/gui/tool_delete.png";
+            case REPLACE -> "ebe:textures/gui/tool_replace.png";
+            case GRAB -> "ebe:textures/gui/tool_grab.png";
+            case MEASURE -> "ebe:textures/gui/tool_measure.png";
+            case FILL -> "ebe:textures/gui/tool_fill.png";
         };
-        btn.style(s -> s.backgroundTexture(
-                com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture.of(iconPath)));
+        var icon = new UIElement();
+        icon.layout(l -> l.width(20).height(20).paddingAll(3));
+        icon.style(s -> s.backgroundTexture(SpriteTexture.of(iconPath)));
+        btn.addChild(icon);
 
         btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) selectTool(tool);
@@ -380,31 +437,90 @@ public class EditorUI {
         }
     }
 
+    private static UIElement buildModeToggleButton() {
+        var btn = new UIElement();
+        btn.layout(l -> l.width(26).height(26).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
+        btn.setId("toolbar_mode_btn");
+        updateModeButtonStyle(btn);
+
+        var label = new Label();
+        label.setId("modeBtnLabel");
+        label.setText(Component.literal("👁"));
+        label.textStyle(ts -> ts.fontSize(14));
+        btn.addChild(label);
+
+        btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) toggleMode();
+        });
+        return btn;
+    }
+
+    private static void updateModeButtonStyle(UIElement btn) {
+        var mode = state.getMode();
+        if (mode == EditorMode.VIEW) {
+            btn.style(s -> s.background(Sprites.RECT_RD));
+        } else {
+            btn.style(s -> s.background(Sprites.RECT_RD_DARK));
+        }
+        var modeLabel = findById(btn, "modeBtnLabel");
+        if (modeLabel instanceof Label l) {
+            l.setText(mode == EditorMode.VIEW ? Component.literal("👁") : Component.literal("✏"));
+        }
+        registerTooltip(btn, Component.translatable(mode.getKey()));
+    }
+
+    private static void toggleMode() {
+        var newMode = state.getMode() == EditorMode.VIEW ? EditorMode.EDIT : EditorMode.VIEW;
+        state.setMode(newMode);
+        var btn = findById(rootElement, "toolbar_mode_btn");
+        if (btn != null) updateModeButtonStyle(btn);
+        EditorUI.updateStatusBar();
+    }
+
     private static void selectTool(EditorTool tool) {
         state.setActiveTool(tool);
         highlightCurrentTool();
+        refreshKeybindHints();
     }
 
     private static void undo() {
-        var snapshots = history.undo();
-        if (snapshots == null) return;
-        for (var s : snapshots) {
+        var entry = history.undo();
+        if (entry == null) return;
+        for (var s : entry.getSnapshots()) {
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
             session.getModel().setBlockAt(x, y, z, s[3]);
         }
         ViewportFactory.refreshFromModel(session.getModel());
-        EditorUI.refreshMaterialList();
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     private static void redo() {
-        var snapshots = history.redo();
-        if (snapshots == null) return;
-        for (var s : snapshots) {
+        var entry = history.redo();
+        if (entry == null) return;
+        for (var s : entry.getSnapshots()) {
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
             session.getModel().setBlockAt(x, y, z, s[4]);
         }
         ViewportFactory.refreshFromModel(session.getModel());
-        EditorUI.refreshMaterialList();
+        refreshMaterialList();
+        refreshHistoryList();
+    }
+
+    private static void goToHistoryEntry(int displayIdx) {
+        int count = history.goToEntryCount(displayIdx);
+        if (count <= 0) return;
+        var undone = history.popUndoEntries(count);
+        var model = session.getModel();
+        for (var entry : undone) {
+            for (var s : entry.getSnapshots()) {
+                int x = (int) s[0], y = (int) s[1], z = (int) s[2];
+                model.setBlockAt(x, y, z, s[3]);
+            }
+        }
+        ViewportFactory.refreshFromModel(model);
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     private static void selectAll() {
@@ -589,15 +705,15 @@ public class EditorUI {
         var tabView = createTopTabView();
         var propsTab = new Tab();
         propsTab.setText(Component.translatable("ebe.editor.panel.properties"));
-        tabView.addTab(propsTab, createPlaceholderPanel());
+        tabView.addTab(propsTab, createPropertiesContent());
 
         var matsTab = new Tab();
         matsTab.setText(Component.translatable("ebe.editor.panel.materials"));
-        tabView.addTab(matsTab, createPlaceholderPanel());
+        tabView.addTab(matsTab, createMaterialsContent());
 
         var histTab = new Tab();
         histTab.setText(Component.translatable("ebe.editor.panel.history"));
-        tabView.addTab(histTab, createPlaceholderPanel());
+        tabView.addTab(histTab, createHistoryContent());
 
         panel.addChild(tabView);
         return panel;
@@ -619,6 +735,298 @@ public class EditorUI {
         placeholder.textStyle(ts -> ts.textColor(0xFF808080));
         container.addChild(placeholder);
         return container;
+    }
+
+    private static UIElement createMaterialsContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        container.setId("materialsContent");
+
+        materialListContainer = new UIElement();
+        materialListContainer.layout(l -> l.flexDirection(FlexDirection.ROW).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP)
+                .gapAll(4).alignItems(AlignItems.CENTER));
+        materialListContainer.setId("materialsList");
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.addScrollViewChild(materialListContainer);
+        container.addChild(scroller);
+
+        updateMaterialList();
+        return container;
+    }
+
+    private static UIElement createHistoryContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        container.setId("historyContent");
+
+        var header = new UIElement();
+        header.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).paddingHorizontal(2).gapAll(4));
+
+        var undoBtn = new UIElement();
+        undoBtn.layout(l -> l.width(20).height(20));
+        undoBtn.style(s -> s.backgroundTexture(SpriteTexture.of("ebe:textures/gui/undo.png")));
+        undoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) undo(); });
+        header.addChild(undoBtn);
+
+        var redoBtn = new UIElement();
+        redoBtn.layout(l -> l.width(20).height(20));
+        redoBtn.style(s -> s.backgroundTexture(SpriteTexture.of("ebe:textures/gui/redo.png")));
+        redoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) redo(); });
+        header.addChild(redoBtn);
+
+        var clearBtn = new Button();
+        clearBtn.setText(Component.literal("✕"));
+        clearBtn.layout(l -> l.width(20).height(20));
+        clearBtn.style(s -> s.background(Sprites.RECT_RD));
+        clearBtn.setOnClick(e -> { history.clear(); refreshHistoryList(); });
+        header.addChild(clearBtn);
+
+        container.addChild(header);
+
+        historyListContainer = new UIElement();
+        historyListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1).paddingTop(2));
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.addScrollViewChild(historyListContainer);
+        container.addChild(scroller);
+
+        refreshHistoryList();
+        return container;
+    }
+
+    public static void refreshHistoryList() {
+        if (historyListContainer == null) return;
+        historyListContainer.clearAllChildren();
+
+        var entries = history.getUndoEntries();
+        if (entries.isEmpty()) {
+            var empty = new Label();
+            empty.setText(Component.literal("No history"));
+            empty.textStyle(ts -> ts.textColor(0xFF707070).fontSize(9));
+            historyListContainer.addChild(empty);
+            return;
+        }
+
+        int idx = entries.size();
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            var entry = entries.get(i);
+            var row = buildHistoryRow(entry, idx--);
+            historyListContainer.addChild(row);
+        }
+    }
+
+    private static UIElement buildHistoryRow(com.l1ght.ebe.editor.history.HistoryEntry entry, int displayIdx) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(4).paddingVertical(2));
+        row.style(s -> s.background(Sprites.RECT_DARK));
+
+        var icon = new UIElement();
+        icon.layout(l -> l.width(18).height(18));
+        if (entry.getPrimaryBlock() instanceof net.minecraft.world.level.block.state.BlockState bs) {
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bs.getBlock().asItem())));
+        } else {
+            icon.style(s -> s.background(Sprites.RECT_RD));
+        }
+        row.addChild(icon);
+
+        var infoCol = new UIElement();
+        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
+
+        var title = new Label();
+        var actionName = Component.translatable(entry.getActionType().getKey());
+        var countStr = entry.getAffectedCount() > 1 ? " ×" + entry.getAffectedCount() : "";
+        title.setText(Component.literal("#" + displayIdx + " ").append(actionName).append(countStr));
+        title.textStyle(ts -> ts.textColor(0xFFDDDDDD).fontSize(10));
+        infoCol.addChild(title);
+
+        var pos = new Label();
+        pos.setText(Component.literal(entry.getPrimaryX() + ", " + entry.getPrimaryY() + ", " + entry.getPrimaryZ()));
+        pos.textStyle(ts -> ts.textColor(0xFF808080).fontSize(9));
+        infoCol.addChild(pos);
+
+        row.addChild(infoCol);
+
+        var jumpBtn = new Button();
+        jumpBtn.setText(Component.literal("↩"));
+        jumpBtn.layout(l -> l.width(16).height(16));
+        jumpBtn.style(s -> s.background(Sprites.RECT_RD));
+        var displayIdxCapture = displayIdx;
+        jumpBtn.setOnClick(e -> goToHistoryEntry(displayIdxCapture));
+        row.addChild(jumpBtn);
+
+        return row;
+    }
+
+    private static UIElement createPropertiesContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(6));
+        container.setId("propertiesContent");
+        propertiesContainer = container;
+        refreshPropertiesPanel();
+        return container;
+    }
+
+    public static void refreshPropertiesPanel() {
+        if (propertiesContainer == null) return;
+        propertiesContainer.clearAllChildren();
+
+        var bs = state.getInspectedBlockState();
+        if (bs == null || bs.isAir()) {
+            var empty = new Label();
+            empty.setText(Component.translatable("ebe.editor.palette.selected_none"));
+            empty.textStyle(ts -> ts.textColor(0xFF707070).fontSize(10));
+            propertiesContainer.addChild(empty);
+            return;
+        }
+
+        var block = bs.getBlock();
+        var item = block.asItem();
+        var itemKey = BuiltInRegistries.ITEM.getKey(item);
+        var modId = itemKey.getNamespace();
+
+        var row1 = new UIElement();
+        row1.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(6));
+
+        var icon = new UIElement();
+        icon.layout(l -> l.width(28).height(28));
+        icon.style(s -> s.backgroundTexture(new ItemStackTexture(item)));
+        row1.addChild(icon);
+
+        var nameLabel = new Label();
+        nameLabel.setText(block.getName());
+        nameLabel.textStyle(ts -> ts.textColor(0xFFEEEEEE).fontSize(12).textShadow(false));
+        row1.addChild(nameLabel);
+        propertiesContainer.addChild(row1);
+
+        addPropField(propertiesContainer, "ID", itemKey.toString(), 0xFFCCCC88);
+
+        var modLabel = new Label();
+        modLabel.setText(Component.literal("Mod: " + modId));
+        modLabel.textStyle(ts -> ts.textColor(0xFF888888).fontSize(9));
+        propertiesContainer.addChild(modLabel);
+
+        var posSection = new UIElement();
+        posSection.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingTop(4));
+
+        var posLabel = new Label();
+        posLabel.setText(Component.literal("Position:"));
+        posLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+        posSection.addChild(posLabel);
+
+        var posRow = new UIElement();
+        posRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+
+        posRow.addChild(buildCoordField("X", state.getCursorX()));
+        posRow.addChild(buildCoordField("Y", state.getCursorY()));
+        posRow.addChild(buildCoordField("Z", state.getCursorZ()));
+        posSection.addChild(posRow);
+        propertiesContainer.addChild(posSection);
+
+        var propsList = bs.getProperties();
+        if (!propsList.isEmpty()) {
+            var propsLabel = new Label();
+            propsLabel.setText(Component.literal("BlockStates:"));
+            propsLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+            propertiesContainer.addChild(propsLabel);
+
+            for (Property<?> prop : propsList) {
+                var propValRow = new UIElement();
+                propValRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(4).paddingVertical(1));
+                propValRow.style(s -> s.background(Sprites.RECT_DARK));
+
+                var propNameLabel = new Label();
+                propNameLabel.setText(Component.literal(prop.getName()));
+                propNameLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9));
+                propValRow.addChild(propNameLabel);
+
+                var spacer = new UIElement();
+                spacer.layout(l -> l.flex(1));
+                propValRow.addChild(spacer);
+
+                @SuppressWarnings({"unchecked", "rawtypes"})
+                Comparable<?> currentValue = bs.getValue((Property) prop);
+                var valBtn = new Button();
+                valBtn.setText(Component.literal(currentValue.toString()));
+                valBtn.layout(l -> l.paddingHorizontal(6).height(16));
+                valBtn.style(s -> s.background(Sprites.RECT_RD));
+
+                var propRef = prop;
+                valBtn.setOnClick(e -> {
+                    var newBs = cycleProperty(bs, propRef);
+                    state.setInspectedBlockState(newBs);
+                    var sessionModel = session.getModel();
+                    sessionModel.setBlockAt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), newBs);
+                    session.markDirty();
+                    ViewportFactory.placeBlock(
+                            new net.minecraft.core.BlockPos(state.getCursorX(), state.getCursorY(), state.getCursorZ()),
+                            newBs, history);
+                    EditorUI.updateBlockInspection();
+                    refreshPropertiesPanel();
+                    refreshHistoryList();
+                    refreshMaterialList();
+                });
+                propValRow.addChild(valBtn);
+                propertiesContainer.addChild(propValRow);
+            }
+        }
+    }
+
+    private static UIElement buildCoordField(String label, int value) {
+        var col = new UIElement();
+        col.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
+
+        var lbl = new Label();
+        lbl.setText(Component.literal(label));
+        lbl.textStyle(ts -> ts.textColor(0xFF888888).fontSize(8));
+        col.addChild(lbl);
+
+        var tf = new TextField();
+        tf.setText(String.valueOf(value));
+        tf.layout(l -> l.widthPercent(100).height(14));
+        col.addChild(tf);
+
+        return col;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static net.minecraft.world.level.block.state.BlockState cycleProperty(
+            net.minecraft.world.level.block.state.BlockState bs, Property property) {
+        var values = property.getPossibleValues();
+        var current = bs.getValue(property);
+        Comparable next = null;
+        boolean found = false;
+        for (Comparable v : (Iterable<Comparable>) values) {
+            if (found) { next = v; break; }
+            if (v.equals(current)) found = true;
+        }
+        if (next == null) next = (Comparable) values.iterator().next();
+        return bs.setValue(property, next);
+    }
+
+    private static void addPropField(UIElement parent, String label, String value, int color) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.START).gapAll(2));
+
+        var lbl = new Label();
+        lbl.setText(Component.literal(label + ":"));
+        lbl.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+        lbl.layout(l -> l.minWidth(18));
+        row.addChild(lbl);
+
+        var val = new Label();
+        val.setText(Component.literal(value));
+        val.textStyle(ts -> ts.textColor(color).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        val.layout(l -> l.flex(1));
+        row.addChild(val);
+
+        parent.addChild(row);
     }
 
     private static UIElement createPlaceholderPanel() {
@@ -667,6 +1075,8 @@ public class EditorUI {
         try {
             session.load(file);
             ViewportFactory.loadFromModel(session.getModel());
+            refreshMaterialList();
+            updateStatusBar();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -704,38 +1114,86 @@ public class EditorUI {
         }
     }
 
+    private static UIElement buildKeybindHintsPanel() {
+        var panel = new UIElement();
+        panel.setId("keybindHintsPanel");
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .right(4).top(4)
+                .maxWidth(260)
+                .flexDirection(FlexDirection.COLUMN).gapAll(2)
+                .paddingHorizontal(8).paddingVertical(4));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(100));
+
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.keybind_hints"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(9));
+        panel.addChild(title);
+
+        var sep = new UIElement();
+        sep.layout(l -> l.widthPercent(100).height(1));
+        sep.style(s -> s.background(Sprites.RECT_DARK));
+        panel.addChild(sep);
+
+        var hintsLabel = new Label();
+        hintsLabel.setId("keybindHintsText");
+        hintsLabel.setText(Component.literal(""));
+        hintsLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hintsLabel.layout(l -> l.widthPercent(100));
+        panel.addChild(hintsLabel);
+
+        refreshKeybindHints();
+        return panel;
+    }
+
+    private static void toggleKeybindHints() {
+        keybindHintsVisible = !keybindHintsVisible;
+        if (keybindHintsPanel != null) {
+            keybindHintsPanel.setDisplay(keybindHintsVisible);
+        }
+    }
+
+    public static void refreshKeybindHints() {
+        if (keybindHintsPanel == null) return;
+        var hintsLabel = UIUtils.findById(keybindHintsPanel, "keybindHintsText");
+        if (!(hintsLabel instanceof Label l)) return;
+
+        var tool = state.getActiveTool();
+        String text = switch (tool) {
+            case SELECT -> "■ " +
+                    Component.translatable("ebe.hints.select.click").getString() + "\n" +
+                    "■ Shift+" + Component.translatable("ebe.hints.select.box").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z\n" +
+                    "■ " + Component.translatable("ebe.hints.common.clipboard").getString() + ": Ctrl+C/V/X";
+            case PLACE -> "■ " +
+                    Component.translatable("ebe.hints.place.click").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
+            case DELETE -> "■ " +
+                    Component.translatable("ebe.hints.delete.click").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
+            case REPLACE -> "■ " +
+                    Component.translatable("ebe.hints.replace.click").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
+            case GRAB -> "■ " +
+                    Component.translatable("ebe.hints.grab.click").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.grab.middle").getString();
+            case MEASURE -> "■ " +
+                    Component.translatable("ebe.hints.measure.click").getString();
+            case FILL -> "■ " +
+                    Component.translatable("ebe.hints.fill.click").getString() + "\n" +
+                    "■ " + Component.translatable("ebe.hints.fill.ctrl").getString();
+        };
+        l.setText(Component.literal(text));
+    }
+
     // ========== Bottom Bar (Material List) ==========
 
     private static UIElement buildBottomBar() {
         var bar = new UIElement();
-        bar.layout(l -> l.widthPercent(100).height(28).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).paddingHorizontal(4).gapAll(2));
+        bar.layout(l -> l.widthPercent(100).height(22).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).paddingHorizontal(8));
         bar.style(s -> s.background(Sprites.BORDER));
         bar.setId("bottomBar");
-
-        var title = new Label();
-        title.setText(Component.translatable("ebe.editor.material_list"));
-        title.textStyle(ts -> ts.textColor(0xFFCCCCCC).textShadow(false).fontSize(10));
-        bar.addChild(title);
-
-        var sep = new UIElement();
-        sep.layout(l -> l.width(1).heightPercent(80));
-        sep.style(s -> s.background(Sprites.RECT_DARK));
-        bar.addChild(sep);
-
-        var materialsScroller = new ScrollerView();
-        materialsScroller.layout(l -> l.flex(1).heightPercent(100));
-        materialListScroller = materialsScroller;
-        materialListContainer = new UIElement();
-        materialListContainer.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER).paddingHorizontal(4));
-        materialsScroller.addScrollViewChild(materialListContainer);
-        bar.addChild(materialsScroller);
-
-        updateMaterialList();
-
-        var spacer = new UIElement();
-        spacer.layout(l -> l.width(8));
-        bar.addChild(spacer);
 
         var status = new Label();
         status.setText(Component.literal(""));
@@ -766,8 +1224,8 @@ public class EditorUI {
                             if (obj instanceof net.minecraft.world.level.block.state.BlockState bs && !bs.isAir()) {
                                 counts.merge(bs.getBlock(), 1, Integer::sum);
                             } else if (obj instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
-                                var loc = net.minecraft.resources.ResourceLocation.parse(
-                                        s.contains("[") ? s.substring(0, s.indexOf('[')) : s);
+                                var locStr = s.contains("[") ? s.substring(0, s.indexOf('[')) : s;
+                                var loc = net.minecraft.resources.ResourceLocation.parse(locStr);
                                 BuiltInRegistries.BLOCK.getOptional(loc)
                                         .ifPresent(block -> counts.merge(block, 1, Integer::sum));
                             }
@@ -777,17 +1235,24 @@ public class EditorUI {
             }
 
             for (var entry : counts.entrySet()) {
+                var block = entry.getKey();
+                var item = block.asItem();
+                var modId = BuiltInRegistries.ITEM.getKey(item).getNamespace();
+                var blockName = block.getName().getString();
+                var tooltipText = Component.literal(blockName + "\n" + ChatFormatting.GRAY + modId);
+
                 var row = new UIElement();
-                row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(2).alignItems(AlignItems.CENTER));
+                row.layout(l -> l.flexDirection(FlexDirection.COLUMN).alignItems(AlignItems.CENTER).gapAll(1));
 
                 var icon = new UIElement();
-                icon.layout(l -> l.width(14).height(14));
-                icon.style(s -> s.backgroundTexture(new ItemStackTexture(entry.getKey().asItem())));
+                icon.layout(l -> l.width(24).height(24));
+                icon.style(s -> s.backgroundTexture(new ItemStackTexture(item)));
+                icon.addEventListener(UIEvents.MOUSE_ENTER, e -> icon.style(s -> s.tooltips(tooltipText)));
                 row.addChild(icon);
 
                 var countLabel = new Label();
                 countLabel.setText(Component.literal("×" + entry.getValue()));
-                countLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+                countLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).textShadow(false).fontSize(8));
                 row.addChild(countLabel);
 
                 materialListContainer.addChild(row);
@@ -808,6 +1273,33 @@ public class EditorUI {
     // ========== Key Input Handler (called from EditorScreen) ==========
 
     public static boolean handleKeyPress(int keyCode, int scanCode, int modifiers) {
+        boolean ctrl = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0;
+
+        if (ctrl) {
+            if (keyCode == GLFW.GLFW_KEY_Z) { undo(); return true; }
+            if (keyCode == GLFW.GLFW_KEY_Y) { redo(); return true; }
+            if (keyCode == GLFW.GLFW_KEY_C) { clipboard.copy(session.getModel(), selection); return true; }
+            if (keyCode == GLFW.GLFW_KEY_V) {
+                clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
+                        state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
+                ViewportFactory.refreshFromModel(session.getModel());
+                refreshMaterialList();
+                refreshHistoryList();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_X) {
+                clipboard.cut(session.getModel(), selection, history);
+                ViewportFactory.refreshFromModel(session.getModel());
+                refreshMaterialList();
+                refreshHistoryList();
+                updateSelectionCount();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_A) { selectAll(); return true; }
+            if (keyCode == GLFW.GLFW_KEY_D) { selection.clear(); updateSelectionCount(); return true; }
+            return false;
+        }
+
         if (EBEKeyMappings.TOOL_SELECT.matches(keyCode, scanCode)) { selectTool(EditorTool.SELECT); return true; }
         if (EBEKeyMappings.TOOL_PLACE.matches(keyCode, scanCode)) { selectTool(EditorTool.PLACE); return true; }
         if (EBEKeyMappings.TOOL_DELETE.matches(keyCode, scanCode)) { selectTool(EditorTool.DELETE); return true; }

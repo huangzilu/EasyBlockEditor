@@ -1,6 +1,8 @@
 package com.l1ght.ebe.editor;
 
 import com.l1ght.ebe.data.BuildingModel;
+import com.l1ght.ebe.editor.history.HistoryActionType;
+import com.l1ght.ebe.editor.history.HistoryEntry;
 import com.l1ght.ebe.editor.history.HistoryManager;
 import com.l1ght.ebe.editor.selection.SelectionManager;
 import net.minecraft.core.BlockPos;
@@ -72,10 +74,11 @@ public class ClipboardManager {
         return !clipboard.isEmpty();
     }
 
-    public void paste(BuildingModel model, BlockPos targetOrigin, HistoryManager<Object[][]> history) {
+    public void paste(BuildingModel model, BlockPos targetOrigin, HistoryManager history) {
         if (clipboard.isEmpty()) return;
 
         List<Object[]> snapshots = new ArrayList<>();
+        Object repBlock = null;
 
         for (var entry : clipboard.entrySet()) {
             var localPos = entry.getKey();
@@ -88,23 +91,36 @@ public class ClipboardManager {
 
             snapshots.add(new Object[]{wx, wy, wz, oldState, newState});
             model.setBlockAt(wx, wy, wz, newState);
+            if (repBlock == null) repBlock = newState;
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(),
+                    HistoryActionType.PASTE,
+                    snapshots.toArray(Object[][]::new),
+                    targetOrigin.getX(), targetOrigin.getY(), targetOrigin.getZ(),
+                    repBlock, snapshots.size()));
         }
     }
 
-    public void cut(BuildingModel model, SelectionManager selection, HistoryManager<Object[][]> history) {
+    public void cut(BuildingModel model, SelectionManager selection, HistoryManager history) {
         copy(model, selection);
-        deleteSelected(model, selection, history);
+        deleteInternal(model, selection, history, HistoryActionType.CUT);
     }
 
-    public void deleteSelected(BuildingModel model, SelectionManager selection, HistoryManager<Object[][]> history) {
+    public void deleteSelected(BuildingModel model, SelectionManager selection, HistoryManager history) {
+        deleteInternal(model, selection, history, HistoryActionType.DELETE);
+    }
+
+    private void deleteInternal(BuildingModel model, SelectionManager selection,
+                                HistoryManager history, HistoryActionType actionType) {
         if (selection.isEmpty()) return;
 
         List<Object[]> snapshots = new ArrayList<>();
         var positions = selection.getPositions();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
 
         for (var p : positions) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
@@ -114,19 +130,24 @@ public class ClipboardManager {
 
             snapshots.add(new Object[]{x, y, z, oldState, "minecraft:air"});
             model.setBlockAt(x, y, z, "minecraft:air");
+            if (repBlock == null) { repX = x; repY = y; repZ = z; repBlock = oldState; }
         }
 
         selection.clear();
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), actionType,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
     }
 
     public void replace(BuildingModel model, SelectionManager selection, Object fromState, Object toState,
-                        HistoryManager<Object[][]> history) {
+                        HistoryManager history) {
         List<Object[]> snapshots = new ArrayList<>();
         boolean useSelection = !selection.isEmpty();
+        int repX = 0, repY = 0, repZ = 0;
 
         if (useSelection) {
             for (var p : selection.getPositions()) {
@@ -135,6 +156,7 @@ public class ClipboardManager {
                 if (statesMatch(current, fromState)) {
                     snapshots.add(new Object[]{x, y, z, current, toState});
                     model.setBlockAt(x, y, z, toState);
+                    if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
                 }
             }
         } else {
@@ -149,6 +171,7 @@ public class ClipboardManager {
                             if (statesMatch(current, fromState)) {
                                 snapshots.add(new Object[]{wx, wy, wz, current, toState});
                                 region.setWorldBlock(wx, wy, wz, toState);
+                                if (snapshots.size() == 1) { repX = wx; repY = wy; repZ = wz; }
                             }
                         }
                     }
@@ -157,12 +180,15 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.REPLACE,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, toState, snapshots.size()));
         }
     }
 
     public void rotate(BuildingModel model, SelectionManager selection, int angle,
-                       HistoryManager<Object[][]> history) {
+                       HistoryManager history) {
         if (selection.isEmpty()) return;
 
         int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
@@ -173,19 +199,17 @@ public class ClipboardManager {
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int rx = ox - minX, rz = oz - minZ;
             int nx = switch (angle) {
-                case 0 -> -rz;
-                case 1 -> -rx;
-                default -> rz;
+                case 0 -> -rz; case 1 -> -rx; default -> rz;
             };
             int nz = switch (angle) {
-                case 0 -> rx;
-                case 1 -> -rz;
-                default -> -rx;
+                case 0 -> rx; case 1 -> -rz; default -> -rx;
             };
             int wx = minX + nx, wy = oy, wz = minZ + nz;
 
@@ -197,6 +221,7 @@ public class ClipboardManager {
 
             model.setBlockAt(ox, oy, oz, "minecraft:air");
             model.setBlockAt(wx, wy, wz, oldState);
+            if (repBlock == null) { repX = ox; repY = oy; repZ = oz; repBlock = oldState; }
         }
 
         selection.clear();
@@ -204,25 +229,24 @@ public class ClipboardManager {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int rx = ox - minX, rz = oz - minZ;
             int nx = switch (angle) {
-                case 0 -> -rz;
-                case 1 -> -rx;
-                default -> rz;
+                case 0 -> -rz; case 1 -> -rx; default -> rz;
             };
             int nz = switch (angle) {
-                case 0 -> rx;
-                case 1 -> -rz;
-                default -> -rx;
+                case 0 -> rx; case 1 -> -rz; default -> -rx;
             };
             selection.add(minX + nx, oy, minZ + nz);
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.ROTATE,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
     }
 
     public void mirror(BuildingModel model, SelectionManager selection, int axis,
-                       HistoryManager<Object[][]> history) {
+                       HistoryManager history) {
         if (selection.isEmpty()) return;
 
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
@@ -236,6 +260,8 @@ public class ClipboardManager {
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
@@ -253,6 +279,7 @@ public class ClipboardManager {
 
             model.setBlockAt(ox, oy, oz, "minecraft:air");
             model.setBlockAt(nx, ny, nz, oldState);
+            if (repBlock == null) { repX = ox; repY = oy; repZ = oz; repBlock = oldState; }
         }
 
         selection.clear();
@@ -265,16 +292,21 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.MIRROR,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
     }
 
     public void translateSelection(BuildingModel model, SelectionManager selection, int dx, int dy, int dz,
-                                   HistoryManager<Object[][]> history) {
+                                   HistoryManager history) {
         if (selection.isEmpty()) return;
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
@@ -288,6 +320,7 @@ public class ClipboardManager {
 
             model.setBlockAt(ox, oy, oz, "minecraft:air");
             model.setBlockAt(nx, ny, nz, oldState);
+            if (repBlock == null) { repX = nx; repY = ny; repZ = nz; repBlock = oldState; }
         }
 
         selection.clear();
@@ -296,15 +329,19 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.TRANSLATE,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
     }
 
     public void fill(BuildingModel model, SelectionManager selection, Object fillState,
-                     HistoryManager<Object[][]> history) {
+                     HistoryManager history) {
         if (selection.isEmpty()) return;
 
         List<Object[]> snapshots = new ArrayList<>();
+        int repX = 0, repY = 0, repZ = 0;
         for (var p : selection.getPositions()) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
             var oldState = model.getBlockAt(x, y, z);
@@ -312,15 +349,19 @@ public class ClipboardManager {
 
             snapshots.add(new Object[]{x, y, z, oldState, fillState});
             model.setBlockAt(x, y, z, fillState);
+            if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.FILL,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, fillState, snapshots.size()));
         }
     }
 
     public void fillRandom(BuildingModel model, SelectionManager selection,
-                           Map<Object, Double> ratios, HistoryManager<Object[][]> history) {
+                           Map<Object, Double> ratios, HistoryManager history) {
         if (selection.isEmpty() || ratios.isEmpty()) return;
 
         double totalWeight = ratios.values().stream().mapToDouble(Double::doubleValue).sum();
@@ -328,6 +369,8 @@ public class ClipboardManager {
 
         List<Object[]> snapshots = new ArrayList<>();
         var random = new java.util.Random();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
 
         for (var p : selection.getPositions()) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
@@ -348,10 +391,14 @@ public class ClipboardManager {
 
             snapshots.add(new Object[]{x, y, z, oldState, chosen});
             model.setBlockAt(x, y, z, chosen);
+            if (repBlock == null) { repX = x; repY = y; repZ = z; repBlock = chosen; }
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(snapshots.toArray(Object[][]::new));
+            history.push(new HistoryEntry(
+                    history.nextId(), HistoryActionType.FILL,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
     }
 

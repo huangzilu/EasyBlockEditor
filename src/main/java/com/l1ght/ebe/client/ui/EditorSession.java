@@ -36,12 +36,15 @@ public class EditorSession {
         this.model.getMetadata().setName(name);
         this.currentFile = null;
         this.dirty = false;
+        EditorUI.getHistory().clear();
+        EditorUI.refreshHistoryList();
     }
 
     public void save() throws Exception {
         if (currentFile == null) throw new IllegalStateException("No file set, use saveAs");
         model.getMetadata().setModified(System.currentTimeMillis());
         EBEFormatIO.write(model, currentFile);
+        saveHistory();
         dirty = false;
     }
 
@@ -66,5 +69,21 @@ public class EditorSession {
         };
         this.currentFile = file;
         this.dirty = false;
+        loadHistory();
+        EditorUI.refreshHistoryList();
+    }
+
+    private Path getHistoryPath() {
+        String name = model.getMetadata().getName();
+        if (name == null || name.isEmpty()) name = "untitled";
+        return Path.of("config", "ebe", "client", "history", name + ".json");
+    }
+
+    void saveHistory() {
+        EditorUI.getHistory().saveHistory(getHistoryPath());
+    }
+
+    private void loadHistory() {
+        EditorUI.getHistory().loadHistory(getHistoryPath());
     }
 }

@@ -6,24 +6,34 @@ import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
+import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
+import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
+import dev.vfyjxf.taffy.style.TaffyPosition;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
+import net.minecraft.client.Minecraft;
+import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import org.joml.Vector4f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @OnlyIn(Dist.CLIENT)
@@ -43,7 +53,19 @@ public class ViewportFactory {
     private static Vector3f savedCenter = new Vector3f(3, 2, 3);
 
     private static Field sceneCoreField;
+    private static Field sceneRendererField;
+    private static Field rendererTraceField;
     private static boolean sceneReflectionInit = false;
+
+    private static boolean dragSelecting = false;
+    private static int dragStartX, dragStartY;
+    private static int dragCurrentX, dragCurrentY;
+    private static UIElement selectionRectOverlay;
+
+    private static boolean isLeftMouseDown() {
+        long window = Minecraft.getInstance().getWindow().getWindow();
+        return org.lwjgl.glfw.GLFW.glfwGetMouseButton(window, org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_1) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+    }
 
     @SuppressWarnings("unchecked")
     private static Set<BlockPos> getSceneCore() {
@@ -65,11 +87,24 @@ public class ViewportFactory {
                     field.setAccessible(true);
                     sceneCoreField = field;
                     LOG.info("Found Scene.core field: {}", field.getName());
-                    break;
+                }
+                if (field.getType().getName().contains("WorldSceneRenderer")) {
+                    field.setAccessible(true);
+                    sceneRendererField = field;
+                    LOG.info("Found Scene.renderer field: {}", field.getName());
                 }
             }
-            if (sceneCoreField == null) {
-                LOG.warn("Could not find Scene.core field by type");
+            if (sceneCoreField == null) LOG.warn("Could not find Scene.core field by type");
+            if (sceneRendererField == null) LOG.warn("Could not find Scene.renderer field by type");
+            else {
+                for (var field : sceneRendererField.getType().getDeclaredFields()) {
+                    if (field.getType().getName().contains("BlockHitResult")) {
+                        field.setAccessible(true);
+                        rendererTraceField = field;
+                        LOG.info("Found WorldSceneRenderer.trace field: {}", field.getName());
+                        break;
+                    }
+                }
             }
         } catch (Exception e) {
             LOG.warn("Scene reflection failed", e);
@@ -105,6 +140,12 @@ public class ViewportFactory {
         }
 
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+        setupSceneMiddleClick(currentScene);
+        setupDragSelection(currentScene);
+
+        selectionRectOverlay = createSelectionRectOverlay();
+        currentScene.addChild(selectionRectOverlay);
+
         firstOpen = false;
         return currentScene;
     }
@@ -160,38 +201,52 @@ public class ViewportFactory {
     public static void tickCamera() {
         if (currentScene == null) return;
 
+        long window = net.minecraft.client.Minecraft.getInstance().getWindow().getWindow();
         float yaw = (float) Math.toRadians(currentScene.getRotationYaw());
         float pitch = (float) Math.toRadians(currentScene.getRotationPitch());
         float speed = EBEClientConfig.flightSpeed.get().floatValue();
         var center = new Vector3f(currentScene.getCenter());
 
-        float fx = (float) (Math.cos(pitch) * Math.cos(yaw));
+        float fh = (float) Math.cos(pitch);
+        float fx = (float) (-Math.sin(yaw) * fh);
         float fy = (float) Math.sin(pitch);
-        float fz = (float) (Math.cos(pitch) * Math.sin(yaw));
+        float fz = (float) (-Math.cos(yaw) * fh);
 
-        float rx = (float) -Math.sin(yaw);
-        float rz = (float) Math.cos(yaw);
+        float rx = (float) -Math.cos(yaw);
+        float rz = (float) Math.sin(yaw);
 
-        if (EBEKeyMappings.FREE_FLIGHT_FORWARD.isDown()) {
+        boolean moved = false;
+
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_W) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(fx * speed, fy * speed, fz * speed);
+            moved = true;
         }
-        if (EBEKeyMappings.FREE_FLIGHT_BACK.isDown()) {
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_S) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(-fx * speed, -fy * speed, -fz * speed);
+            moved = true;
         }
-        if (EBEKeyMappings.FREE_FLIGHT_LEFT.isDown()) {
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_A) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(-rx * speed, 0, -rz * speed);
+            moved = true;
         }
-        if (EBEKeyMappings.FREE_FLIGHT_RIGHT.isDown()) {
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_D) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(rx * speed, 0, rz * speed);
+            moved = true;
         }
-        if (EBEKeyMappings.FREE_FLIGHT_UP.isDown()) {
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             center.add(0, speed, 0);
+            moved = true;
         }
-        if (EBEKeyMappings.FREE_FLIGHT_DOWN.isDown()) {
-            center.add(0, -speed, 0);
+        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+            if (!isLeftMouseDown()) {
+                center.add(0, -speed, 0);
+                moved = true;
+            }
         }
 
-        currentScene.setCenter(center);
+        if (moved) {
+            currentScene.setCenter(center);
+        }
     }
 
     private static int loadRegion(Region region) {
@@ -268,21 +323,37 @@ public class ViewportFactory {
         state.setCursorZ(pos.getZ());
         state.setCursorPosition(pos.toShortString());
         var tool = state.getActiveTool();
+        var selection = EditorUI.getSelection();
+        var history = EditorUI.getHistory();
+        var mode = state.getMode();
+        boolean isEditMode = mode == EditorMode.EDIT;
+
+        if (isEditMode) {
+            switch (tool) {
+                case PLACE -> {
+                    var material = state.getActiveBlockState();
+                    placeBlock(pos.relative(face), material != null ? material : Blocks.STONE.defaultBlockState(), history);
+                }
+                case DELETE -> deleteBlock(pos, history);
+                case REPLACE -> {
+                    var material = state.getActiveBlockState();
+                    replaceBlock(pos, material != null ? material : Blocks.GLASS.defaultBlockState(), history);
+                }
+            }
+            EditorUI.refreshHistoryList();
+            EditorUI.refreshMaterialList();
+        }
+
         switch (tool) {
             case SELECT -> {
                 var blockState = currentWorld.getBlockState(pos);
-                state.setSelectedBlock(pos.toShortString());
                 state.setInspectedBlockState(blockState);
                 EditorUI.updateBlockInspection();
-            }
-            case PLACE -> {
-                var material = state.getActiveBlockState();
-                placeBlock(pos.relative(face), material != null ? material : Blocks.STONE.defaultBlockState());
-            }
-            case DELETE -> deleteBlock(pos);
-            case REPLACE -> {
-                var material = state.getActiveBlockState();
-                replaceBlock(pos, material != null ? material : Blocks.GLASS.defaultBlockState());
+                EditorUI.refreshPropertiesPanel();
+                selection.clear();
+                selection.add(pos.getX(), pos.getY(), pos.getZ());
+                state.setSelectedCount(1);
+                state.setSelectedBlock(pos.toShortString());
             }
             case GRAB -> {
                 var blockState = currentWorld.getBlockState(pos);
@@ -290,13 +361,66 @@ public class ViewportFactory {
                 EditorUI.updateActiveBlockIndicator();
             }
             case MEASURE -> state.setCursorPosition(pos.toShortString());
-            case FILL -> {}
+            case FILL -> {
+                selection.toggle(pos.getX(), pos.getY(), pos.getZ());
+                state.setSelectedCount(selection.size());
+            }
         }
         EditorUI.updateStatusBar();
     }
 
-    public static void placeBlock(BlockPos pos, BlockState blockState) {
+    public static void handleMiddleClick(BlockPos pos) {
         if (currentWorld == null) return;
+        var state = EditorUI.getState();
+        var blockState = currentWorld.getBlockState(pos);
+        if (blockState != null && !blockState.isAir()) {
+            state.setActiveBlockState(blockState);
+            state.setCursorX(pos.getX());
+            state.setCursorY(pos.getY());
+            state.setCursorZ(pos.getZ());
+            state.setCursorPosition(pos.toShortString());
+            EditorUI.updateActiveBlockIndicator();
+            EditorUI.updateBlockInspection();
+            EditorUI.refreshPropertiesPanel();
+            EditorUI.updateStatusBar();
+        }
+    }
+
+    public static void setupSceneMiddleClick(Scene scene) {
+        if (scene == null) return;
+        scene.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button != 2) return;
+            onSceneMiddleClick();
+        });
+    }
+
+    private static void onSceneMiddleClick() {
+        if (!sceneReflectionInit) initSceneReflection();
+        if (currentScene == null || sceneRendererField == null) return;
+        try {
+            var renderer = sceneRendererField.get(currentScene);
+            if (renderer == null) return;
+            Object traceResult = null;
+            if (rendererTraceField != null) {
+                traceResult = rendererTraceField.get(renderer);
+            }
+            if (traceResult instanceof BlockHitResult bhr && bhr.getType() != HitResult.Type.MISS) {
+                handleMiddleClick(bhr.getBlockPos());
+            }
+        } catch (Exception ex) {
+            LOG.debug("Middle-click hit-test failed", ex);
+        }
+    }
+
+    public static void jumpToPosition(int x, int y, int z) {
+        if (currentScene == null) return;
+        currentScene.setCenter(new Vector3f(x + 0.5f, y + 0.5f, z + 0.5f));
+    }
+
+    public static void placeBlock(BlockPos pos, BlockState blockState,
+                                  com.l1ght.ebe.editor.history.HistoryManager history) {
+        if (currentWorld == null) return;
+        var oldState = currentWorld.getBlockState(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
         incrementalUpdateCore(pos, true);
 
@@ -304,10 +428,20 @@ public class ViewportFactory {
         syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
+
+        if (history != null) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(),
+                    com.l1ght.ebe.editor.history.HistoryActionType.PLACE,
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState}},
+                    pos.getX(), pos.getY(), pos.getZ(), blockState, 1));
+        }
     }
 
-    public static void deleteBlock(BlockPos pos) {
+    public static void deleteBlock(BlockPos pos,
+                                   com.l1ght.ebe.editor.history.HistoryManager history) {
         if (currentWorld == null) return;
+        var oldState = currentWorld.getBlockState(pos);
         currentWorld.removeBlock(pos);
         incrementalUpdateCore(pos, false);
 
@@ -315,10 +449,20 @@ public class ViewportFactory {
         syncBlockToModel(model, pos, Blocks.AIR.defaultBlockState());
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
+
+        if (history != null) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(),
+                    com.l1ght.ebe.editor.history.HistoryActionType.DELETE,
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, Blocks.AIR.defaultBlockState()}},
+                    pos.getX(), pos.getY(), pos.getZ(), oldState, 1));
+        }
     }
 
-    public static void replaceBlock(BlockPos pos, BlockState blockState) {
+    public static void replaceBlock(BlockPos pos, BlockState blockState,
+                                    com.l1ght.ebe.editor.history.HistoryManager history) {
         if (currentWorld == null) return;
+        var oldState = currentWorld.getBlockState(pos);
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
 
@@ -328,6 +472,14 @@ public class ViewportFactory {
         hasLoadedModel = true;
 
         if (currentScene != null) currentScene.needCompileCache();
+
+        if (history != null) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(),
+                    com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState}},
+                    pos.getX(), pos.getY(), pos.getZ(), blockState, 1));
+        }
     }
 
     private static void incrementalUpdateCore(BlockPos pos, boolean add) {
@@ -387,6 +539,7 @@ public class ViewportFactory {
 
     public static void refreshFromModel(BuildingModel model) {
         if (currentScene == null) return;
+        saveCameraState();
         currentWorld = new TrackedDummyWorld();
         int totalBlocks = 0;
         for (var region : model.getRegions()) {
@@ -464,5 +617,198 @@ public class ViewportFactory {
             }
         }
         return state;
+    }
+
+    private static UIElement createSelectionRectOverlay() {
+        var rect = new UIElement();
+        rect.setId("selectionRect");
+        rect.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(0).top(0).width(0).height(0));
+        rect.style(s -> s.background(Sprites.BORDER).zIndex(200));
+        rect.setDisplay(false);
+        return rect;
+    }
+
+    private static void setupDragSelection(Scene scene) {
+        scene.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button != 0) return;
+            long window = Minecraft.getInstance().getWindow().getWindow();
+            boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            if (!shift) return;
+
+            dragSelecting = true;
+            double[] xpos = new double[1];
+            double[] ypos = new double[1];
+            org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
+            dragStartX = (int) xpos[0];
+            dragStartY = (int) ypos[0];
+            dragCurrentX = dragStartX;
+            dragCurrentY = dragStartY;
+            updateSelectionRect();
+            selectionRectOverlay.setDisplay(true);
+        });
+
+        scene.addEventListener(UIEvents.MOUSE_MOVE, e -> {
+            if (!dragSelecting) return;
+            long window = Minecraft.getInstance().getWindow().getWindow();
+            double[] xpos = new double[1];
+            double[] ypos = new double[1];
+            org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
+            dragCurrentX = (int) xpos[0];
+            dragCurrentY = (int) ypos[0];
+            updateSelectionRect();
+        });
+
+        scene.addEventListener(UIEvents.MOUSE_UP, e -> {
+            if (!dragSelecting) return;
+            dragSelecting = false;
+            selectionRectOverlay.setDisplay(false);
+
+            int minX = Math.min(dragStartX, dragCurrentX);
+            int maxX = Math.max(dragStartX, dragCurrentX);
+            int minY = Math.min(dragStartY, dragCurrentY);
+            int maxY = Math.max(dragStartY, dragCurrentY);
+
+            if (maxX - minX < 3 && maxY - minY < 3) {
+                return;
+            }
+
+            selectBlocksInScreenRect(minX, minY, maxX, maxY);
+        });
+    }
+
+    private static void updateSelectionRect() {
+        int x = Math.min(dragStartX, dragCurrentX);
+        int y = Math.min(dragStartY, dragCurrentY);
+        int w = Math.abs(dragCurrentX - dragStartX);
+        int h = Math.abs(dragCurrentY - dragStartY);
+        selectionRectOverlay.layout(l -> l.left(x).top(y).width(w).height(h));
+    }
+
+    private static void selectBlocksInScreenRect(int minX, int minY, int maxX, int maxY) {
+        if (currentWorld == null) return;
+
+        float fov = (float) Math.toRadians(EBEClientConfig.editorFov.get());
+        var window = Minecraft.getInstance().getWindow();
+        float aspect = (float) window.getGuiScaledWidth() / (float) window.getGuiScaledHeight();
+        float near = 0.1f, far = 1000f;
+
+        float yaw = (float) Math.toRadians(currentScene.getRotationYaw());
+        float pitch = (float) Math.toRadians(currentScene.getRotationPitch());
+        float zoom = currentScene.getZoom();
+        var center = currentScene.getCenter();
+
+        float forwardX = (float) (-Math.sin(yaw) * Math.cos(pitch));
+        float forwardY = (float) Math.sin(pitch);
+        float forwardZ = (float) (-Math.cos(yaw) * Math.cos(pitch));
+        var camPos = new Vector3f(
+                center.x - forwardX * zoom,
+                center.y - forwardY * zoom,
+                center.z - forwardZ * zoom);
+
+        var viewMatrix = new Matrix4f().lookAt(camPos, center, new Vector3f(0, 1, 0));
+        var projMatrix = new Matrix4f().perspective(fov, aspect, near, far);
+        var viewProj = new Matrix4f(projMatrix).mul(viewMatrix);
+
+        int screenW = window.getGuiScaledWidth();
+        int screenH = window.getGuiScaledHeight();
+
+        var bestPerPixel = new LinkedHashMap<Long, int[]>();
+        var depthPerPixel = new LinkedHashMap<Long, Float>();
+        var model = EditorUI.getSession().getModel();
+
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        if (obj == null) continue;
+                        boolean isAir = (obj instanceof BlockState bs && bs.isAir())
+                                || (obj instanceof String s && (s.isEmpty() || s.equals("minecraft:air")));
+                        if (isAir) continue;
+
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+
+                        var worldPos = new Vector4f(wx + 0.5f, wy + 0.5f, wz + 0.5f, 1f);
+                        var clipPos = new Vector4f();
+                        worldPos.mul(viewProj, clipPos);
+
+                        if (clipPos.w <= 0) continue;
+                        float ndcX = clipPos.x / clipPos.w;
+                        float ndcY = clipPos.y / clipPos.w;
+                        if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) continue;
+
+                        int sx = (int) ((ndcX + 1f) * 0.5f * screenW);
+                        int sy = (int) ((1f - ndcY) * 0.5f * screenH);
+
+                        if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
+
+                        long key = ((long) sx & 0xFFFF) | (((long) sy & 0xFFFF) << 16);
+                        float depth = clipPos.z / clipPos.w;
+                        var existing = depthPerPixel.get(key);
+                        if (existing == null || depth < existing) {
+                            depthPerPixel.put(key, depth);
+                            bestPerPixel.put(key, new int[]{wx, wy, wz});
+                        }
+                    }
+                }
+            }
+        }
+
+        var selection = EditorUI.getSelection();
+        selection.clear();
+        for (var pos : bestPerPixel.values()) {
+            selection.add(pos[0], pos[1], pos[2]);
+        }
+
+        var state = EditorUI.getState();
+        state.setSelectedCount(selection.size());
+        EditorUI.updateStatusBar();
+    }
+
+    private static int[] findBestBlockAtScreen(int sx, int sy, Matrix4f viewProj,
+                                                BuildingModel model, int screenW, int screenH) {
+        int[] best = null;
+        float bestDepth = Float.MAX_VALUE;
+
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        if (obj == null) continue;
+                        boolean isAir = (obj instanceof BlockState bs && bs.isAir())
+                                || (obj instanceof String s && (s.isEmpty() || s.equals("minecraft:air")));
+                        if (isAir) continue;
+
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+
+                        var worldPos = new Vector4f(wx + 0.5f, wy + 0.5f, wz + 0.5f, 1f);
+                        var clipPos = new Vector4f();
+                        worldPos.mul(viewProj, clipPos);
+
+                        if (clipPos.w <= 0) continue;
+                        float ndcX = clipPos.x / clipPos.w;
+                        float ndcY = clipPos.y / clipPos.w;
+
+                        int psx = (int) ((ndcX + 1f) * 0.5f * screenW);
+                        int psy = (int) ((1f - ndcY) * 0.5f * screenH);
+
+                        if (psx == sx && psy == sy) {
+                            float depth = clipPos.z / clipPos.w;
+                            if (depth < bestDepth) {
+                                bestDepth = depth;
+                                best = new int[]{wx, wy, wz};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return best;
     }
 }

@@ -4,6 +4,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 public class EditorState {
     private EditorTool activeTool = EditorTool.SELECT;
+    private EditorMode mode = EditorMode.VIEW;
     private String cursorPosition = "0, 0, 0";
     private int cursorX = 0;
     private int cursorY = 0;
@@ -16,6 +17,9 @@ public class EditorState {
 
     public EditorTool getActiveTool() { return activeTool; }
     public void setActiveTool(EditorTool tool) { this.activeTool = tool; }
+
+    public EditorMode getMode() { return mode; }
+    public void setMode(EditorMode mode) { this.mode = mode; }
 
     public String getCursorPosition() { return cursorPosition; }
     public void setCursorPosition(String pos) { this.cursorPosition = pos; }
@@ -44,7 +48,8 @@ public class EditorState {
 
     public String buildStatusText() {
         var sb = new StringBuilder();
-        sb.append(activeTool.name());
+        sb.append(mode.name());
+        sb.append(" | ").append(activeTool.name());
         sb.append(" | ").append(cursorPosition);
         if (!selectedBlock.isEmpty()) {
             sb.append(" | ").append(selectedBlock);

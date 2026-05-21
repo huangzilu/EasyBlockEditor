@@ -12,6 +12,7 @@ public class EBEClientConfig {
     public static final ModConfigSpec.IntValue projectionRenderDistance;
     public static final ModConfigSpec.DoubleValue editorFov;
     public static final ModConfigSpec.DoubleValue flightSpeed;
+    public static final ModConfigSpec.IntValue historyMaxEntries;
     public static final ModConfigSpec.IntValue printerRange;
 
     static {
@@ -43,6 +44,9 @@ public class EBEClientConfig {
         flightSpeed = builder
                 .comment("Free flight camera speed")
                 .defineInRange("flight_speed", 10.0, 1.0, 50.0);
+        historyMaxEntries = builder
+                .comment("Maximum history entries to keep (0 = unlimited)")
+                .defineInRange("history_max_entries", 100, 0, Integer.MAX_VALUE);
         builder.pop();
 
         builder.push("printer");
