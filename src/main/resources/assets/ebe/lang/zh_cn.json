@@ -186,5 +186,15 @@
   "ebe.hints.fill.click": "左键点击切换填充选区",
   "ebe.hints.fill.ctrl": "Ctrl+回车执行填充",
   "ebe.hints.common.undo": "撤销/重做",
-  "ebe.hints.common.clipboard": "复制/粘贴/剪切"
+  "ebe.hints.common.clipboard": "复制/粘贴/剪切",
+  "ebe.editor.replace.title": "替换",
+  "ebe.editor.replace.single": "单个替换",
+  "ebe.editor.replace.batch": "批量替换",
+  "ebe.editor.replace.source": "源方块：",
+  "ebe.editor.replace.target": "目标方块：",
+  "ebe.editor.replace.pick_source": "选取",
+  "ebe.editor.replace.pick_active": "使用活跃",
+  "ebe.editor.replace.use_selected": "使用当前选区",
+  "ebe.editor.replace.using_selection": "使用当前选区",
+  "ebe.editor.replace.execute": "执行替换"
 }

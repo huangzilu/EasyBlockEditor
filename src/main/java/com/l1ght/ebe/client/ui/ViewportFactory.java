@@ -247,6 +247,11 @@ public class ViewportFactory {
 
     private static int loadRegion(Region region) {
         var container = region.getBlocks();
+        var model = EditorUI.getSession().getModel();
+        var layer = model.getLayer(region.getLayerId());
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        boolean layerVisible = layer == null || layer.isVisible();
+        float layerOpacity = layer != null ? layer.getOpacity() : 1.0f;
         int count = 0;
         for (int y = 0; y < region.getSizeY(); y++) {
             for (int z = 0; z < region.getSizeZ(); z++) {
@@ -257,6 +262,10 @@ public class ViewportFactory {
                         int wx = x + region.getOffsetX();
                         int wy = y + region.getOffsetY();
                         int wz = z + region.getOffsetZ();
+
+                        if (!layerVisible) continue;
+                        if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
+
                         currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
                         count++;
                     }
@@ -264,6 +273,10 @@ public class ViewportFactory {
             }
         }
         return count;
+    }
+
+    public static BlockState resolveBlockStatePublic(Object obj) {
+        return resolveBlockState(obj);
     }
 
     private static BlockState resolveBlockState(Object obj) {
@@ -325,6 +338,9 @@ public class ViewportFactory {
         boolean isEditMode = mode == EditorMode.EDIT;
 
         if (isEditMode) {
+            var model = EditorUI.getSession().getModel();
+            if (!model.canEditAt(pos.getX(), pos.getY(), pos.getZ())) return;
+
             switch (tool) {
                 case PLACE -> {
                     var material = state.getActiveBlockState();
@@ -349,8 +365,11 @@ public class ViewportFactory {
 
                 long window = Minecraft.getInstance().getWindow().getWindow();
                 boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+                boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
 
-                if (ctrl) {
+                if (ctrl && shift) {
+                    selectAllSameType(blockState);
+                } else if (ctrl) {
                     selection.toggle(pos.getX(), pos.getY(), pos.getZ());
                 } else {
                     selection.clear();
@@ -621,6 +640,28 @@ public class ViewportFactory {
             }
         }
         return state;
+    }
+
+    private static void selectAllSameType(BlockState targetType) {
+        if (currentWorld == null) return;
+        var selection = EditorUI.getSelection();
+        var model = EditorUI.getSession().getModel();
+        var targetBlock = targetType.getBlock();
+
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        if (obj == null) continue;
+                        var bs = resolveBlockState(obj);
+                        if (!bs.isAir() && bs.getBlock() == targetBlock) {
+                            selection.add(x + region.getOffsetX(), y + region.getOffsetY(), z + region.getOffsetZ());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static UIElement createSelectionRectOverlay() {

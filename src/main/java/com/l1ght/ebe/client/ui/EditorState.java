@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.editor.selection.DisplayFilter;
 import net.minecraft.world.level.block.state.BlockState;
 
 public class EditorState {
@@ -14,6 +15,7 @@ public class EditorState {
     private BlockState activeBlockState;
     private BlockState inspectedBlockState;
     private int fps = 0;
+    private final DisplayFilter displayFilter = new DisplayFilter();
 
     public EditorTool getActiveTool() { return activeTool; }
     public void setActiveTool(EditorTool tool) { this.activeTool = tool; }
@@ -45,6 +47,8 @@ public class EditorState {
 
     public int getFps() { return fps; }
     public void setFps(int fps) { this.fps = fps; }
+
+    public DisplayFilter getDisplayFilter() { return displayFilter; }
 
     public String buildStatusText() {
         var sb = new StringBuilder();

@@ -31,6 +31,8 @@ public class SelectionManager {
             .collect(Collectors.toSet());
     }
 
+    public Set<Long> getAllPacked() { return Collections.unmodifiableSet(selected); }
+
     public boolean isNbtSensitive() { return nbtSensitive; }
     public void setNbtSensitive(boolean v) { this.nbtSensitive = v; }
 }

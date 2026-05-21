@@ -35,9 +35,9 @@ public class EBEFormatIO {
         root.add("metadata", metaJson);
 
         var layersArray = new JsonArray();
-        for (var entry : model.getLayers().entrySet()) {
-            var l = entry.getValue();
+        for (var l : model.getLayers()) {
             var lj = new JsonObject();
+            lj.addProperty("id", l.getId());
             lj.addProperty("name", l.getName());
             lj.addProperty("visible", l.isVisible());
             lj.addProperty("locked", l.isLocked());
@@ -119,7 +119,9 @@ public class EBEFormatIO {
         meta.setCreated(metaJson.get("created").getAsLong());
         meta.setModified(metaJson.has("modified") ? metaJson.get("modified").getAsLong() : meta.getCreated());
 
-        model.clearLayers();
+        while (!model.getLayers().isEmpty()) {
+            model.removeLayer(model.getLayers().get(0).getId());
+        }
         if (root.has("layers")) {
             for (var le : root.getAsJsonArray("layers")) {
                 var lj = le.getAsJsonObject();

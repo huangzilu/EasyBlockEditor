@@ -29,8 +29,11 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.Property;
 import org.lwjgl.glfw.GLFW;
 
+import net.minecraft.world.level.block.state.BlockState;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -74,6 +77,8 @@ public class EditorUI {
 
     private static UIElement keybindHintsPanel;
     private static boolean keybindHintsVisible = true;
+    private static UIElement replacePanel;
+    private static boolean replacePanelVisible = false;
 
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
@@ -314,6 +319,10 @@ public class EditorUI {
         keybindHintsPanel = buildKeybindHintsPanel();
         viewport.addChild(keybindHintsPanel);
 
+        replacePanel = buildReplacePanel();
+        replacePanel.setDisplay(false);
+        viewport.addChild(replacePanel);
+
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
             leftCollapseBtn.setText(Component.literal("▶"));
@@ -481,6 +490,10 @@ public class EditorUI {
         state.setActiveTool(tool);
         highlightCurrentTool();
         refreshKeybindHints();
+        if (replacePanel != null) {
+            replacePanelVisible = (tool == EditorTool.REPLACE);
+            replacePanel.setDisplay(replacePanelVisible);
+        }
     }
 
     private static void undo() {
@@ -730,11 +743,91 @@ public class EditorUI {
     private static UIElement createLayersContent() {
         var container = new UIElement();
         container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).gapAll(2));
-        var placeholder = new Label();
-        placeholder.setText(Component.literal("No layers"));
-        placeholder.textStyle(ts -> ts.textColor(0xFF808080));
-        container.addChild(placeholder);
+        container.setId("layersContent");
+
+        var header = new UIElement();
+        header.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
+        var addBtn = new Button();
+        addBtn.setText(Component.literal("+"));
+        addBtn.layout(l -> l.width(20).height(20));
+        addBtn.setOnClick(e -> {
+            if (session != null) {
+                session.getModel().addLayer("Layer " + session.getModel().getLayers().size(), true, false);
+                refreshLayersList();
+            }
+        });
+        header.addChild(addBtn);
+
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.panel.layers"));
+        title.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+        header.addChild(title);
+        container.addChild(header);
+
+        layersListContainer = new UIElement();
+        layersListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        layersListContainer.setId("layersList");
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.addScrollViewChild(layersListContainer);
+        container.addChild(scroller);
+
+        refreshLayersList();
         return container;
+    }
+
+    private static UIElement layersListContainer;
+
+    public static void refreshLayersList() {
+        if (layersListContainer == null || session == null) return;
+        layersListContainer.clearAllChildren();
+        var layers = session.getModel().getLayers();
+        for (var layer : layers) {
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                    .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(2));
+
+            var visBtn = new Button();
+            visBtn.setText(Component.literal(layer.isVisible() ? "👁" : "   "));
+            visBtn.layout(l -> l.width(20).height(20));
+            visBtn.setOnClick(e -> {
+                layer.setVisible(!layer.isVisible());
+                refreshLayersList();
+                ViewportFactory.refreshFromModel(session.getModel());
+            });
+            row.addChild(visBtn);
+
+            var lockBtn = new Button();
+            lockBtn.setText(Component.literal(layer.isLocked() ? "🔒" : "   "));
+            lockBtn.layout(l -> l.width(20).height(20));
+            lockBtn.setOnClick(e -> {
+                layer.setLocked(!layer.isLocked());
+                refreshLayersList();
+            });
+            row.addChild(lockBtn);
+
+            var nameLbl = new Label();
+            nameLbl.setText(Component.literal(layer.getName()));
+            nameLbl.textStyle(ts -> ts.textColor(layer.isVisible() ? 0xFFFFFFFF : 0xFF808080).fontSize(9));
+            nameLbl.layout(l -> l.flex(1));
+            row.addChild(nameLbl);
+
+            var delBtn = new Button();
+            delBtn.setText(Component.literal("✕"));
+            delBtn.layout(l -> l.width(16).height(16));
+            delBtn.setOnClick(e -> {
+                if (session.getModel().getLayers().size() <= 1) return;
+                session.getModel().removeLayer(layer.getId());
+                refreshLayersList();
+                ViewportFactory.refreshFromModel(session.getModel());
+            });
+            row.addChild(delBtn);
+
+            layersListContainer.addChild(row);
+        }
     }
 
     private static UIElement createMaterialsContent() {
@@ -1151,6 +1244,224 @@ public class EditorUI {
         if (keybindHintsPanel != null) {
             keybindHintsPanel.setDisplay(keybindHintsVisible);
         }
+    }
+
+    private static UIElement buildReplacePanel() {
+        var panel = new UIElement();
+        panel.setId("replacePanel");
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(40).top(40)
+                .minWidth(220).maxWidth(300)
+                .flexDirection(FlexDirection.COLUMN).gapAll(4)
+                .paddingAll(6));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
+
+        var titleRow = new UIElement();
+        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.replace.title"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
+        title.layout(l -> l.flex(1));
+        titleRow.addChild(title);
+
+        var closeBtn = new Button();
+        closeBtn.setText(Component.literal("✕"));
+        closeBtn.layout(l -> l.width(16).height(16));
+        closeBtn.setOnClick(e -> {
+            replacePanelVisible = false;
+            panel.setDisplay(false);
+        });
+        titleRow.addChild(closeBtn);
+        panel.addChild(titleRow);
+
+        var modeRow = new UIElement();
+        modeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+
+        var singleBtn = new Button();
+        singleBtn.setText(Component.translatable("ebe.editor.replace.single"));
+        singleBtn.layout(l -> l.flex(1).height(18));
+        singleBtn.setId("replaceModeSingle");
+        singleBtn.setOnClick(e -> {
+            replaceBatchMode = false;
+            updateReplaceModeHighlight();
+        });
+        modeRow.addChild(singleBtn);
+
+        var batchBtn = new Button();
+        batchBtn.setText(Component.translatable("ebe.editor.replace.batch"));
+        batchBtn.layout(l -> l.flex(1).height(18));
+        batchBtn.setId("replaceModeBatch");
+        batchBtn.setOnClick(e -> {
+            replaceBatchMode = true;
+            updateReplaceModeHighlight();
+        });
+        modeRow.addChild(batchBtn);
+        panel.addChild(modeRow);
+
+        var sourceLabel = new Label();
+        sourceLabel.setText(Component.translatable("ebe.editor.replace.source"));
+        sourceLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        panel.addChild(sourceLabel);
+
+        var sourceRow = new UIElement();
+        sourceRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var sourceBlockLabel = new Label();
+        sourceBlockLabel.setId("replaceSourceBlock");
+        sourceBlockLabel.setText(Component.literal("-"));
+        sourceBlockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        sourceBlockLabel.layout(l -> l.flex(1));
+        sourceRow.addChild(sourceBlockLabel);
+
+        var pickSourceBtn = new Button();
+        pickSourceBtn.setText(Component.translatable("ebe.editor.replace.pick_source"));
+        pickSourceBtn.layout(l -> l.height(16));
+        pickSourceBtn.setOnClick(e -> {
+            var inspected = state.getInspectedBlockState();
+            if (inspected != null) {
+                replaceSourceBlock = inspected.getBlock();
+                updateReplaceSourceDisplay();
+            }
+        });
+        sourceRow.addChild(pickSourceBtn);
+        panel.addChild(sourceRow);
+
+        var useSelectedBtn = new Button();
+        useSelectedBtn.setText(Component.translatable("ebe.editor.replace.use_selected"));
+        useSelectedBtn.layout(l -> l.widthPercent(100).height(18));
+        useSelectedBtn.setOnClick(e -> {
+            replaceUseSelection = !replaceUseSelection;
+            updateReplaceSourceDisplay();
+        });
+        useSelectedBtn.setId("replaceUseSelected");
+        panel.addChild(useSelectedBtn);
+
+        var targetLabel = new Label();
+        targetLabel.setText(Component.translatable("ebe.editor.replace.target"));
+        targetLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        panel.addChild(targetLabel);
+
+        var targetRow = new UIElement();
+        targetRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var targetBlockLabel = new Label();
+        targetBlockLabel.setId("replaceTargetBlock");
+        targetBlockLabel.setText(Component.literal("-"));
+        targetBlockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        targetBlockLabel.layout(l -> l.flex(1));
+        targetRow.addChild(targetBlockLabel);
+
+        var pickTargetBtn = new Button();
+        pickTargetBtn.setText(Component.translatable("ebe.editor.replace.pick_active"));
+        pickTargetBtn.layout(l -> l.height(16));
+        pickTargetBtn.setOnClick(e -> {
+            var active = state.getActiveBlockState();
+            if (active != null) {
+                replaceTargetState = active;
+                updateReplaceTargetDisplay();
+            }
+        });
+        targetRow.addChild(pickTargetBtn);
+        panel.addChild(targetRow);
+
+        var execBtn = new Button();
+        execBtn.setText(Component.translatable("ebe.editor.replace.execute"));
+        execBtn.layout(l -> l.widthPercent(100).height(22));
+        execBtn.setOnClick(e -> executeReplace());
+        panel.addChild(execBtn);
+
+        return panel;
+    }
+
+    private static boolean replaceBatchMode = false;
+    private static net.minecraft.world.level.block.Block replaceSourceBlock = null;
+    private static BlockState replaceTargetState = null;
+    private static boolean replaceUseSelection = false;
+
+    private static void updateReplaceModeHighlight() {
+    }
+
+    private static void updateReplaceSourceDisplay() {
+        var label = UIUtils.findById(replacePanel, "replaceSourceBlock");
+        if (label instanceof Label l) {
+            if (replaceUseSelection) {
+                l.setText(Component.translatable("ebe.editor.replace.using_selection"));
+            } else if (replaceSourceBlock != null) {
+                l.setText(Component.literal(replaceSourceBlock.getDescriptionId()));
+            } else {
+                l.setText(Component.literal("-"));
+            }
+        }
+    }
+
+    private static void updateReplaceTargetDisplay() {
+        var label = UIUtils.findById(replacePanel, "replaceTargetBlock");
+        if (label instanceof Label l) {
+            if (replaceTargetState != null) {
+                l.setText(Component.literal(replaceTargetState.getBlock().getDescriptionId()));
+            } else {
+                l.setText(Component.literal("-"));
+            }
+        }
+    }
+
+    private static void executeReplace() {
+        if (session == null || replaceTargetState == null) return;
+        var model = session.getModel();
+        var selection = getSelection();
+        var history = getHistory();
+
+        if (replaceUseSelection && selection.size() > 0) {
+            var snapshots = new ArrayList<Object[]>();
+            for (var packed : selection.getAllPacked()) {
+                int x = (int) (packed & 0xFFFFFF);
+                int y = (int) ((packed >> 24) & 0xFFFFFF);
+                int z = (int) ((packed >> 48) & 0xFFFFFF);
+                var old = model.getBlockAt(x, y, z);
+                model.setBlockAt(x, y, z, replaceTargetState);
+                snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+            }
+            if (!snapshots.isEmpty()) {
+                history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                        history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                        snapshots.toArray(new Object[0][]),
+                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                        replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
+            }
+        } else if (replaceBatchMode && replaceSourceBlock != null) {
+            var snapshots = new ArrayList<Object[]>();
+            for (var region : model.getRegions()) {
+                for (int y = 0; y < region.getSizeY(); y++) {
+                    for (int z = 0; z < region.getSizeZ(); z++) {
+                        for (int x = 0; x < region.getSizeX(); x++) {
+                            var obj = region.getBlocks().get(x, y, z);
+                            var bs = ViewportFactory.resolveBlockStatePublic(obj);
+                            if (!bs.isAir() && bs.getBlock() == replaceSourceBlock) {
+                                int wx = x + region.getOffsetX();
+                                int wy = y + region.getOffsetY();
+                                int wz = z + region.getOffsetZ();
+                                var old = model.getBlockAt(wx, wy, wz);
+                                model.setBlockAt(wx, wy, wz, replaceTargetState);
+                                snapshots.add(new Object[]{wx, wy, wz, old, replaceTargetState});
+                            }
+                        }
+                    }
+                }
+            }
+            if (!snapshots.isEmpty()) {
+                history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                        history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                        snapshots.toArray(new Object[0][]),
+                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                        replaceSourceBlock.getDescriptionId(), snapshots.size()));
+            }
+        }
+
+        ViewportFactory.refreshFromModel(model);
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     public static void refreshKeybindHints() {

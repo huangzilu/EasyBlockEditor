@@ -5,6 +5,7 @@ public class Region {
     private final int offsetX, offsetY, offsetZ;
     private final int sizeX, sizeY, sizeZ;
     private final BlockDataContainer blocks;
+    private String layerId;
 
     public Region(String name, int offsetX, int offsetY, int offsetZ, int sizeX, int sizeY, int sizeZ) {
         this.name = name;
@@ -25,6 +26,8 @@ public class Region {
     public int getSizeY() { return sizeY; }
     public int getSizeZ() { return sizeZ; }
     public BlockDataContainer getBlocks() { return blocks; }
+    public String getLayerId() { return layerId; }
+    public void setLayerId(String layerId) { this.layerId = layerId; }
 
     public boolean containsWorldPos(int wx, int wy, int wz) {
         int lx = wx - offsetX;
