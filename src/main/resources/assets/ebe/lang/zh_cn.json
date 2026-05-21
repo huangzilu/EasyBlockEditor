@@ -145,5 +145,20 @@
   "ebe.editor.indicator.active": "手中方块",
   "ebe.editor.status.ready": "就绪",
   "ebe.editor.panel.no_layers": "无图层",
-  "itemGroup.ebe": "EasyBlockEditor"
+  "itemGroup.ebe": "EasyBlockEditor",
+  "ebe.key.category": "EasyBlockEditor",
+  "ebe.key.tool_select": "选择工具",
+  "ebe.key.tool_place": "放置工具",
+  "ebe.key.tool_delete": "删除工具",
+  "ebe.key.tool_replace": "替换工具",
+  "ebe.key.tool_grab": "抓取工具",
+  "ebe.key.tool_measure": "测量工具",
+  "ebe.key.tool_fill": "填充工具",
+  "ebe.key.fly_forward": "自由飞行前进",
+  "ebe.key.fly_back": "自由飞行后退",
+  "ebe.key.fly_left": "自由飞行左移",
+  "ebe.key.fly_right": "自由飞行右移",
+  "ebe.key.fly_up": "自由飞行上升",
+  "ebe.key.fly_down": "自由飞行下降",
+  "ebe.editor.material_list": "材料清单"
 }

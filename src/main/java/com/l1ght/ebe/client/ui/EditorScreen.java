@@ -34,6 +34,12 @@ public class EditorScreen extends Screen {
     }
 
     @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (EditorUI.handleKeyPress(keyCode, scanCode, modifiers)) return true;
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
     public boolean isPauseScreen() {
         return false;
     }

@@ -145,5 +145,20 @@
   "ebe.editor.indicator.active": "Active",
   "ebe.editor.status.ready": "Ready",
   "ebe.editor.panel.no_layers": "No layers",
-  "itemGroup.ebe": "EasyBlockEditor"
+  "itemGroup.ebe": "EasyBlockEditor",
+  "ebe.key.category": "EasyBlockEditor",
+  "ebe.key.tool_select": "Select Tool",
+  "ebe.key.tool_place": "Place Tool",
+  "ebe.key.tool_delete": "Delete Tool",
+  "ebe.key.tool_replace": "Replace Tool",
+  "ebe.key.tool_grab": "Grab Tool",
+  "ebe.key.tool_measure": "Measure Tool",
+  "ebe.key.tool_fill": "Fill Tool",
+  "ebe.key.fly_forward": "Free Flight Forward",
+  "ebe.key.fly_back": "Free Flight Back",
+  "ebe.key.fly_left": "Free Flight Left",
+  "ebe.key.fly_right": "Free Flight Right",
+  "ebe.key.fly_up": "Free Flight Up",
+  "ebe.key.fly_down": "Free Flight Down",
+  "ebe.editor.material_list": "Material List"
 }

@@ -1,6 +1,8 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.client.keybind.EBEKeyMappings;
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -17,12 +19,17 @@ import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,7 +37,7 @@ public class EditorUI {
 
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
-    private static final Map<EditorTool, Button> toolButtons = new EnumMap<>(EditorTool.class);
+    private static final Map<EditorTool, UIElement> toolbarButtons = new EnumMap<>(EditorTool.class);
     private static UIElement rootElement;
     private static UIElement contentArea;
 
@@ -42,6 +49,12 @@ public class EditorUI {
     private static boolean leftPanelVisible = true;
     private static boolean rightPanelVisible = true;
     private static boolean blockIndicatorVisible = true;
+
+    private static UIElement toolbarPanel;
+    private static boolean toolbarExpanded = true;
+
+    private static UIElement materialListContainer;
+    private static ScrollerView materialListScroller;
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
@@ -239,6 +252,9 @@ public class EditorUI {
         content.addChild(rightPanel);
         content.addChild(rightCollapseBtn);
 
+        toolbarPanel = buildToolbar();
+        viewport.addChild(toolbarPanel);
+
         var blockIndicator = buildBlockIndicator();
         viewport.addChild(blockIndicator);
         blockIndicatorPanel = blockIndicator;
@@ -258,36 +274,104 @@ public class EditorUI {
         return content;
     }
 
-    private static Button buildCollapseButton(boolean isLeft) {
-        var btn = new Button();
-        btn.setText(Component.literal(isLeft ? "◀" : "▶"));
-        btn.layout(l -> l.width(14).heightPercent(100));
+    // ========== Toolbar ==========
+
+    private static UIElement buildToolbar() {
+        var panel = new UIElement();
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(4).topPercent(50)
+                .flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2)
+                .width(30));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(90));
+        panel.setId("toolbarPanel");
+
+        var collapseBtn = buildToolbarCollapseBtn();
+        panel.addChild(collapseBtn);
+
+        for (var tool : EditorTool.values()) {
+            var btn = buildToolbarButton(tool);
+            toolbarButtons.put(tool, btn);
+            panel.addChild(btn);
+        }
+
+        highlightCurrentTool();
+        return panel;
+    }
+
+    private static UIElement buildToolbarCollapseBtn() {
+        var btn = new UIElement();
+        btn.layout(l -> l.width(26).height(10));
         btn.style(s -> s.background(Sprites.RECT_DARK));
-        btn.setId(isLeft ? "leftCollapseBtn" : "rightCollapseBtn");
-        btn.setOnClick(e -> {
-            if (isLeft) toggleLeftPanel();
-            else toggleRightPanel();
+        btn.setId("toolbarCollapseBtn");
+
+        var inner = new Label();
+        inner.setText(Component.literal(toolbarExpanded ? "◀" : "▶"));
+        inner.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(8));
+        btn.addChild(inner);
+
+        btn.addEventListener(UIEvents.MOUSE_DOWN, e -> toggleToolbar());
+        return btn;
+    }
+
+    private static void toggleToolbar() {
+        toolbarExpanded = !toolbarExpanded;
+        toolbarButtons.values().forEach(b -> b.setDisplay(toolbarExpanded));
+        var btn = findById(rootElement, "toolbarCollapseBtn");
+        if (btn != null) {
+            var inner = btn.getChildren().stream()
+                    .filter(c -> c instanceof Label)
+                    .map(c -> (Label) c)
+                    .findFirst().orElse(null);
+            if (inner != null) {
+                inner.setText(Component.literal(toolbarExpanded ? "◀" : "▶"));
+            }
+        }
+    }
+
+    private static UIElement buildToolbarButton(EditorTool tool) {
+        var btn = new UIElement();
+        btn.layout(l -> l.width(26).height(26).paddingAll(2));
+        btn.style(s -> s.background(Sprites.RECT_RD));
+        registerTooltip(btn, Component.translatable(tool.getTranslationKey()));
+
+        var iconStack = getToolIcon(tool);
+        if (iconStack != null) {
+            btn.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
+        }
+
+        btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) selectTool(tool);
         });
         return btn;
     }
 
-    private static void toggleLeftPanel() {
-        leftPanelVisible = !leftPanelVisible;
-        leftPanel.setDisplay(leftPanelVisible);
-        leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
+    private static ItemStack getToolIcon(EditorTool tool) {
+        return switch (tool) {
+            case SELECT -> new ItemStack(Items.STICK);
+            case PLACE -> new ItemStack(Items.STONE);
+            case DELETE -> new ItemStack(Items.BARRIER);
+            case REPLACE -> new ItemStack(Items.PAPER);
+            case GRAB -> new ItemStack(Items.ENDER_EYE);
+            case MEASURE -> new ItemStack(Items.COMPASS);
+            case FILL -> new ItemStack(Items.WATER_BUCKET);
+        };
     }
 
-    private static void toggleRightPanel() {
-        rightPanelVisible = !rightPanelVisible;
-        rightPanel.setDisplay(rightPanelVisible);
-        rightCollapseBtn.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
+    private static void registerTooltip(UIElement el, Component tooltip) {
+        el.addEventListener(UIEvents.MOUSE_ENTER, e -> el.style(s -> s.tooltips(tooltip)));
     }
 
-    private static void toggleBlockIndicator() {
-        blockIndicatorVisible = !blockIndicatorVisible;
-        if (blockIndicatorPanel != null) {
-            blockIndicatorPanel.setDisplay(blockIndicatorVisible);
+    private static void highlightCurrentTool() {
+        var active = state.getActiveTool();
+        for (var entry : toolbarButtons.entrySet()) {
+            var bg = entry.getKey() == active ? Sprites.RECT_RD_DARK : Sprites.RECT_RD;
+            entry.getValue().style(s -> s.background(bg));
         }
+    }
+
+    private static void selectTool(EditorTool tool) {
+        state.setActiveTool(tool);
+        highlightCurrentTool();
     }
 
     // ========== Block Indicator ==========
@@ -329,9 +413,7 @@ public class EditorUI {
         var iconWrap = new UIElement();
         iconWrap.setId(iconId);
         iconWrap.layout(l -> l.width(24).height(24));
-        iconWrap.style(s -> s.backgroundTexture(
-                new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
-                        net.minecraft.world.item.Items.AIR)));
+        iconWrap.style(s -> s.backgroundTexture(new ItemStackTexture(Items.AIR)));
         row.addChild(iconWrap);
 
         var infoCol = new UIElement();
@@ -379,8 +461,7 @@ public class EditorUI {
 
         if (bs != null && !bs.isAir()) {
             if (iconWrap != null) {
-                iconWrap.style(s -> s.backgroundTexture(
-                        new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(bs.getBlock().asItem())));
+                iconWrap.style(s -> s.backgroundTexture(new ItemStackTexture(bs.getBlock().asItem())));
             }
             if (nameLabel instanceof Label l) {
                 l.setText(bs.getBlock().getName());
@@ -400,9 +481,7 @@ public class EditorUI {
             }
         } else {
             if (iconWrap != null) {
-                iconWrap.style(s -> s.backgroundTexture(
-                        new com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture(
-                                net.minecraft.world.item.Items.AIR)));
+                iconWrap.style(s -> s.backgroundTexture(new ItemStackTexture(Items.AIR)));
             }
             if (nameLabel instanceof Label l) {
                 l.setText(Component.translatable("ebe.editor.palette.selected_none"));
@@ -538,50 +617,158 @@ public class EditorUI {
         }
     }
 
-    // ========== Bottom Bar ==========
+    private static Button buildCollapseButton(boolean isLeft) {
+        var btn = new Button();
+        btn.setText(Component.literal(isLeft ? "◀" : "▶"));
+        btn.layout(l -> l.width(14).heightPercent(100));
+        btn.style(s -> s.background(Sprites.RECT_DARK));
+        btn.setId(isLeft ? "leftCollapseBtn" : "rightCollapseBtn");
+        btn.setOnClick(e -> {
+            if (isLeft) toggleLeftPanel();
+            else toggleRightPanel();
+        });
+        return btn;
+    }
+
+    private static void toggleLeftPanel() {
+        leftPanelVisible = !leftPanelVisible;
+        leftPanel.setDisplay(leftPanelVisible);
+        leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
+    }
+
+    private static void toggleRightPanel() {
+        rightPanelVisible = !rightPanelVisible;
+        rightPanel.setDisplay(rightPanelVisible);
+        rightCollapseBtn.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
+    }
+
+    private static void toggleBlockIndicator() {
+        blockIndicatorVisible = !blockIndicatorVisible;
+        if (blockIndicatorPanel != null) {
+            blockIndicatorPanel.setDisplay(blockIndicatorVisible);
+        }
+    }
+
+    // ========== Bottom Bar (Material List) ==========
 
     private static UIElement buildBottomBar() {
         var bar = new UIElement();
         bar.layout(l -> l.widthPercent(100).height(28).flexDirection(FlexDirection.ROW)
                 .alignItems(AlignItems.CENTER).paddingHorizontal(4).gapAll(2));
         bar.style(s -> s.background(Sprites.BORDER));
+        bar.setId("bottomBar");
 
-        for (var tool : EditorTool.values()) {
-            bar.addChild(toolButton(tool));
-        }
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.material_list"));
+        title.textStyle(ts -> ts.textColor(0xFFCCCCCC).textShadow(false).fontSize(10));
+        bar.addChild(title);
+
+        var sep = new UIElement();
+        sep.layout(l -> l.width(1).heightPercent(80));
+        sep.style(s -> s.background(Sprites.RECT_DARK));
+        bar.addChild(sep);
+
+        var materialsScroller = new ScrollerView();
+        materialsScroller.layout(l -> l.flex(1).heightPercent(100));
+        materialListScroller = materialsScroller;
+        materialListContainer = new UIElement();
+        materialListContainer.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER).paddingHorizontal(4));
+        materialsScroller.addScrollViewChild(materialListContainer);
+        bar.addChild(materialsScroller);
+
+        updateMaterialList();
 
         var spacer = new UIElement();
-        spacer.layout(l -> l.flex(1));
+        spacer.layout(l -> l.width(8));
         bar.addChild(spacer);
 
         var status = new Label();
-        status.setText(Component.literal(state.buildStatusText()));
-        status.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false));
+        status.setText(Component.literal(""));
+        status.textStyle(ts -> ts.textColor(0xFFE0E0E0).textShadow(false).fontSize(9));
         status.setId("statusBar");
         bar.addChild(status);
 
         return bar;
     }
 
-    private static Button toolButton(EditorTool tool) {
-        var btn = new Button();
-        btn.setText(Component.translatable(tool.getTranslationKey()));
-        btn.layout(l -> l.height(20).paddingHorizontal(6));
-        btn.addEventListener(UIEvents.CLICK, e -> {
-            if (e.button == 0) selectTool(tool);
-        });
-        toolButtons.put(tool, btn);
-        if (tool == state.getActiveTool()) {
-            btn.style(s -> s.background(Sprites.RECT_RD_DARK));
-        }
-        return btn;
+    public static void refreshMaterialList() {
+        updateMaterialList();
     }
 
-    private static void selectTool(EditorTool tool) {
-        var prev = toolButtons.get(state.getActiveTool());
-        if (prev != null) prev.style(s -> s.background(Sprites.RECT_RD));
-        state.setActiveTool(tool);
-        var next = toolButtons.get(tool);
-        if (next != null) next.style(s -> s.background(Sprites.RECT_RD_DARK));
+    private static void updateMaterialList() {
+        if (materialListContainer == null) return;
+        materialListContainer.clearAllChildren();
+
+        var model = session.getModel();
+        if (model != null && !model.getRegions().isEmpty()) {
+            Map<net.minecraft.world.level.block.Block, Integer> counts = new LinkedHashMap<>();
+            for (var region : model.getRegions()) {
+                var blocks = region.getBlocks();
+                for (int y = 0; y < region.getSizeY(); y++) {
+                    for (int z = 0; z < region.getSizeZ(); z++) {
+                        for (int x = 0; x < region.getSizeX(); x++) {
+                            var obj = blocks.get(x, y, z);
+                            if (obj instanceof net.minecraft.world.level.block.state.BlockState bs && !bs.isAir()) {
+                                counts.merge(bs.getBlock(), 1, Integer::sum);
+                            } else if (obj instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
+                                var loc = net.minecraft.resources.ResourceLocation.parse(
+                                        s.contains("[") ? s.substring(0, s.indexOf('[')) : s);
+                                BuiltInRegistries.BLOCK.getOptional(loc)
+                                        .ifPresent(block -> counts.merge(block, 1, Integer::sum));
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (var entry : counts.entrySet()) {
+                var row = new UIElement();
+                row.layout(l -> l.flexDirection(FlexDirection.ROW).gapAll(2).alignItems(AlignItems.CENTER));
+
+                var icon = new UIElement();
+                icon.layout(l -> l.width(14).height(14));
+                icon.style(s -> s.backgroundTexture(new ItemStackTexture(entry.getKey().asItem())));
+                row.addChild(icon);
+
+                var countLabel = new Label();
+                countLabel.setText(Component.literal("×" + entry.getValue()));
+                countLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+                row.addChild(countLabel);
+
+                materialListContainer.addChild(row);
+            }
+        }
+    }
+
+    // ========== Status Bar ==========
+
+    public static void updateStatusBar() {
+        if (rootElement == null) return;
+        var status = findById(rootElement, "statusBar");
+        if (status instanceof Label l) {
+            l.setText(Component.literal(state.buildStatusText()));
+        }
+    }
+
+    // ========== Key Input Handler (called from EditorScreen) ==========
+
+    public static boolean handleKeyPress(int keyCode, int scanCode, int modifiers) {
+        if (EBEKeyMappings.TOOL_SELECT.matches(keyCode, scanCode)) { selectTool(EditorTool.SELECT); return true; }
+        if (EBEKeyMappings.TOOL_PLACE.matches(keyCode, scanCode)) { selectTool(EditorTool.PLACE); return true; }
+        if (EBEKeyMappings.TOOL_DELETE.matches(keyCode, scanCode)) { selectTool(EditorTool.DELETE); return true; }
+        if (EBEKeyMappings.TOOL_REPLACE.matches(keyCode, scanCode)) { selectTool(EditorTool.REPLACE); return true; }
+        if (EBEKeyMappings.TOOL_GRAB.matches(keyCode, scanCode)) { selectTool(EditorTool.GRAB); return true; }
+        if (EBEKeyMappings.TOOL_MEASURE.matches(keyCode, scanCode)) { selectTool(EditorTool.MEASURE); return true; }
+        if (EBEKeyMappings.TOOL_FILL.matches(keyCode, scanCode)) { selectTool(EditorTool.FILL); return true; }
+        return false;
+    }
+
+    static UIElement findById(UIElement root, String id) {
+        if (id.equals(root.getId())) return root;
+        for (var child : root.getChildren()) {
+            var found = findById(child, id);
+            if (found != null) return found;
+        }
+        return null;
     }
 }
