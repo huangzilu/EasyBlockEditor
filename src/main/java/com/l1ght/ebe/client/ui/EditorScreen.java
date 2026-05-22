@@ -22,6 +22,7 @@ public class EditorScreen extends Screen {
     @Override
     public void onClose() {
         ViewportFactory.saveCameraState();
+        ViewportFactory.releaseViewportSession("editor-close");
         BlockPaletteUI.saveState();
         saveHistory();
         super.onClose();
@@ -30,6 +31,7 @@ public class EditorScreen extends Screen {
     @Override
     public void removed() {
         ViewportFactory.saveCameraState();
+        ViewportFactory.releaseViewportSession("editor-removed");
         BlockPaletteUI.saveState();
         saveHistory();
         super.removed();

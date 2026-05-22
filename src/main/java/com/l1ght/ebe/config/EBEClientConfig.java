@@ -13,6 +13,7 @@ public class EBEClientConfig {
     public static final ModConfigSpec.DoubleValue editorFov;
     public static final ModConfigSpec.DoubleValue flightSpeed;
     public static final ModConfigSpec.IntValue historyMaxEntries;
+    public static final ModConfigSpec.ConfigValue<String> viewportShaderMode;
     public static final ModConfigSpec.IntValue printerRange;
 
     static {
@@ -43,10 +44,13 @@ public class EBEClientConfig {
                 .defineInRange("fov", 60.0, 30.0, 120.0);
         flightSpeed = builder
                 .comment("Free flight camera speed")
-                .defineInRange("flight_speed", 0.5, 0.05, 50.0);
+                .defineInRange("flight_speed", 1.0, 0.05, 50.0);
         historyMaxEntries = builder
                 .comment("Maximum history entries to keep (0 = unlimited)")
                 .defineInRange("history_max_entries", 100, 0, Integer.MAX_VALUE);
+        viewportShaderMode = builder
+                .comment("3D viewport shader mode: off, auto, iris, iris_full. Auto only probes when a shader pack is active.")
+                .define("viewport_shader_mode", "auto");
         builder.pop();
 
         builder.push("printer");

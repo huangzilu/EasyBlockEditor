@@ -23,6 +23,7 @@ public class SettingsUI {
     public static void showSettings(UIElement parent) {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.editor.settings").getString());
+        dialog.setAutoClose(false);
         dialog.overlay.layout(l -> l.width(380).heightPercent(80));
 
         var tabView = new TabView();
@@ -98,7 +99,7 @@ public class SettingsUI {
                 Component.translatable("ebe.settings.flight_speed").getString(),
                 EBEClientConfig.flightSpeed::get,
                 v -> { EBEClientConfig.flightSpeed.set(v.doubleValue()); EBEClientConfig.SPEC.save(); },
-                0.5, false
+                1.0, true
         ).setRange(0.05, 50.0).setWheel(0.1));
 
         group.addConfigurator(new NumberConfigurator(
@@ -108,8 +109,37 @@ public class SettingsUI {
                 100, false
         ).setRange(0, 10000).setWheel(10));
 
+        group.addConfigurator(new SelectorConfigurator<>(
+                Component.translatable("ebe.settings.viewport_shader_mode").getString(),
+                () -> normalizeViewportShaderMode(EBEClientConfig.viewportShaderMode.get()),
+                v -> {
+                    EBEClientConfig.viewportShaderMode.set(v);
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onShaderModeChanged();
+                },
+                "auto", false,
+                List.of("off", "auto", "iris"),
+                mode -> Component.translatable("ebe.settings.viewport_shader_mode." + mode).getString()
+        ));
+
         scroller.addScrollViewChild(group);
+
+        var probeButton = new Button()
+                .setText(Component.translatable("ebe.settings.shader_probe"))
+                .setOnClick(e -> ViewportFactory.loadShaderProbeScene());
+        probeButton.layout(l -> l.widthPercent(100).height(24));
+        scroller.addScrollViewChild(probeButton);
+
         return scroller;
+    }
+
+    private static String normalizeViewportShaderMode(String mode) {
+        if ("off".equals(mode) || "auto".equals(mode) || "iris".equals(mode)) {
+            return mode;
+        }
+        EBEClientConfig.viewportShaderMode.set("off");
+        EBEClientConfig.SPEC.save();
+        return "off";
     }
 
     private static UIElement createProjectionTab() {

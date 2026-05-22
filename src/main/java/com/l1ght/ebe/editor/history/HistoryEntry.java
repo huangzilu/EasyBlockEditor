@@ -9,10 +9,17 @@ public class HistoryEntry {
     private final int primaryZ;
     private final Object primaryBlock;
     private final int affectedCount;
+    private final long timestamp;
 
     public HistoryEntry(int id, HistoryActionType actionType, Object[][] snapshots,
                         int primaryX, int primaryY, int primaryZ,
                         Object primaryBlock, int affectedCount) {
+        this(id, actionType, snapshots, primaryX, primaryY, primaryZ, primaryBlock, affectedCount, System.currentTimeMillis());
+    }
+
+    public HistoryEntry(int id, HistoryActionType actionType, Object[][] snapshots,
+                        int primaryX, int primaryY, int primaryZ,
+                        Object primaryBlock, int affectedCount, long timestamp) {
         this.id = id;
         this.actionType = actionType;
         this.snapshots = snapshots;
@@ -21,6 +28,7 @@ public class HistoryEntry {
         this.primaryZ = primaryZ;
         this.primaryBlock = primaryBlock;
         this.affectedCount = affectedCount;
+        this.timestamp = timestamp;
     }
 
     public int getId() { return id; }
@@ -31,4 +39,5 @@ public class HistoryEntry {
     public int getPrimaryZ() { return primaryZ; }
     public Object getPrimaryBlock() { return primaryBlock; }
     public int getAffectedCount() { return affectedCount; }
+    public long getTimestamp() { return timestamp; }
 }

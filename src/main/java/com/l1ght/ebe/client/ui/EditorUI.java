@@ -1,14 +1,19 @@
 package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.client.keybind.EBEKeyMappings;
+import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
+import com.l1ght.ebe.projection.PrinterController;
+import com.l1ght.ebe.projection.PrinterMode;
+import com.l1ght.ebe.projection.ProjectionManager;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
@@ -102,11 +107,16 @@ public class EditorUI {
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
     private static boolean toolbarVisible = true;
+    private static float toolbarOffsetX = 4, toolbarOffsetY = 0;
+    private static boolean toolbarDragging = false;
+    private static float toolbarDragStartX, toolbarDragStartY, toolbarDragOriginX, toolbarDragOriginY;
 
     private static UIElement materialListContainer;
     private static UIElement propertiesContainer;
     private static int displayFilterMode = 0;
     private static UIElement displayFilterContentContainer;
+    private static String selectedHeatmapBtnId = "heatmapBtn_0";
+    private static String selectedPrinterModeBtnId = "printerModeBtn_0";
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
@@ -146,6 +156,7 @@ public class EditorUI {
                 activeDivider = 0;
             }
             if (e.button == 0 && draggingPanel != null) draggingPanel = null;
+            if (e.button == 0) toolbarDragging = false;
         }, true);
 
         rootElement.addEventListener(UIEvents.MOUSE_MOVE, e -> {
@@ -153,6 +164,15 @@ public class EditorUI {
                 float newX = e.x - panelDragOffsetX;
                 float newY = e.y - panelDragOffsetY;
                 draggingPanel.layout(l -> l.left(newX).top(newY));
+            }
+            if (toolbarDragging) {
+                float dx = e.x - toolbarDragStartX;
+                float dy = e.y - toolbarDragStartY;
+                toolbarOffsetX = toolbarDragOriginX + dx;
+                toolbarOffsetY = toolbarDragOriginY + dy;
+                if (toolbarPanel != null) {
+                    toolbarPanel.layout(l -> l.left(toolbarOffsetX).top(toolbarOffsetY));
+                }
             }
         }, true);
 
@@ -167,7 +187,7 @@ public class EditorUI {
         var theme = EBEClientConfig.theme.get();
         return switch (theme) {
             case "mc" -> StylesheetManager.MC;
-            case "modern" -> StylesheetManager.MODERN;
+            case "modern" -> StylesheetManager.GDP;
             default -> StylesheetManager.GDP;
         };
     }
@@ -198,8 +218,26 @@ public class EditorUI {
                 menuButton("ebe.editor.menu.edit", buildEditMenu()),
                 menuButton("ebe.editor.menu.view", buildViewMenu()),
                 menuButton("ebe.editor.menu.tool", buildToolMenu()),
+                menuButton("ebe.projection.panel", buildProjectionMenu()),
                 menuButton("ebe.editor.menu.help", buildHelpMenu())
         );
+
+        var spacer = new UIElement();
+        spacer.layout(l -> l.flex(1));
+        bar.addChild(spacer);
+
+        var settingsBtn = new UIElement();
+        settingsBtn.layout(l -> l.width(22).height(22).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
+        var settingsIcon = new UIElement();
+        settingsIcon.layout(l -> l.width(18).height(18));
+        settingsIcon.style(s -> s.backgroundTexture(EditorIcons.SETTINGS));
+        settingsBtn.addChild(settingsIcon);
+        settingsBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) SettingsUI.showSettings(rootElement);
+        });
+        registerTooltip(settingsBtn, Component.translatable("ebe.editor.menu.settings"));
+        bar.addChild(settingsBtn);
+
         return bar;
     }
 
@@ -345,7 +383,6 @@ public class EditorUI {
         root.child("ebe.editor.block_palette", () -> BlockPaletteUI.togglePalette(rootElement));
         root.child("ebe.editor.block_indicator", () -> toggleBlockIndicator());
         root.child("ebe.editor.keybind_hints", () -> toggleKeybindHints());
-        root.child("ebe.editor.settings", () -> SettingsUI.showSettings(rootElement));
         return root;
     }
 
@@ -359,6 +396,526 @@ public class EditorUI {
         var root = new MenuTreeNode("help");
         root.child("ebe.name");
         return root;
+    }
+
+    private static MenuTreeNode buildProjectionMenu() {
+        var root = new MenuTreeNode("projection");
+        root.child("ebe.projection.panel", () -> toggleProjectionPanel());
+        return root;
+    }
+
+    private static UIElement projectionPanel;
+    private static boolean projectionPanelVisible = false;
+
+    private static void toggleProjectionPanel() {
+        if (projectionPanelVisible && projectionPanel != null) {
+            projectionPanel.removeSelf();
+            projectionPanelVisible = false;
+            return;
+        }
+        showProjectionPanel();
+    }
+
+    private static void showProjectionPanel() {
+        if (projectionPanel != null) projectionPanel.removeSelf();
+
+        var panel = new Dialog();
+        panel.setTitle("ebe.projection.panel");
+        panel.windowMode(10, 30, 280, 420);
+        panel.setAutoClose(false);
+        panel.setClickOutsideClose(false);
+
+        var tabContainer = new UIElement();
+        tabContainer.layout(l -> l.widthPercent(100).flex(1).flexDirection(FlexDirection.COLUMN));
+        tabContainer.setId("projectionTabContainer");
+
+        var tabBar = new UIElement();
+        tabBar.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(1));
+        tabBar.setId("projectionTabBar");
+
+        var statusTab = new Button();
+        statusTab.setText(Component.translatable("ebe.projection.status"));
+        statusTab.layout(l -> l.flex(1).height(16));
+        statusTab.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        statusTab.setId("projTabStatus");
+        statusTab.setOnClick(e -> switchProjectionTab(0));
+        tabBar.addChild(statusTab);
+
+        var placeTab = new Button();
+        placeTab.setText(Component.translatable("ebe.projection.place_tab"));
+        placeTab.layout(l -> l.flex(1).height(16));
+        placeTab.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        placeTab.setId("projTabPlace");
+        placeTab.setOnClick(e -> switchProjectionTab(1));
+        tabBar.addChild(placeTab);
+
+        var adjustTab = new Button();
+        adjustTab.setText(Component.translatable("ebe.projection.adjust_tab"));
+        adjustTab.layout(l -> l.flex(1).height(16));
+        adjustTab.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        adjustTab.setId("projTabAdjust");
+        adjustTab.setOnClick(e -> switchProjectionTab(2));
+        tabBar.addChild(adjustTab);
+
+        tabContainer.addChild(tabBar);
+
+        var contentArea = new UIElement();
+        contentArea.layout(l -> l.widthPercent(100).flex(1));
+        contentArea.setId("projectionTabContent");
+        tabContainer.addChild(contentArea);
+
+        panel.addContent(tabContainer);
+        panel.addButton(new Button()
+                .setOnClick(e -> { panel.close(); projectionPanelVisible = false; })
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        panel.show(rootElement);
+
+        projectionPanel = panel.overlay;
+        projectionPanelVisible = true;
+        switchProjectionTab(0);
+    }
+
+    private static int currentProjectionTab = 0;
+
+    private static void switchProjectionTab(int index) {
+        currentProjectionTab = index;
+        var contentArea = findById(rootElement, "projectionTabContent");
+        if (contentArea == null) return;
+        contentArea.clearAllChildren();
+
+        for (int i = 0; i < 3; i++) {
+            int idx = i;
+            var tabBtn = findById(rootElement, switch (idx) {
+                case 0 -> "projTabStatus";
+                case 1 -> "projTabPlace";
+                default -> "projTabAdjust";
+            });
+            if (tabBtn != null) {
+                tabBtn.style(s -> s.background(idx == index ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+
+        switch (index) {
+            case 0 -> contentArea.addChild(createProjectionStatusTab());
+            case 1 -> contentArea.addChild(createProjectionPlaceTab());
+            case 2 -> contentArea.addChild(createProjectionAdjustTab());
+        }
+    }
+
+    private static UIElement createProjectionStatusTab() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(4));
+
+        var proj = ProjectionManager.getProjection();
+
+        if (proj == null) {
+            var emptyLabel = new Label();
+            emptyLabel.setText(Component.translatable("ebe.projection.no_projection"));
+            emptyLabel.textStyle(ts -> ts.textColor(0xFF888888).fontSize(10).textShadow(false));
+            container.addChild(emptyLabel);
+
+            var selectBtn = new Button();
+            selectBtn.setText(Component.translatable("ebe.projection.select_projection"));
+            selectBtn.layout(l -> l.widthPercent(100).height(18));
+            selectBtn.setOnClick(e -> {
+                if (session != null && session.getModel() != null) {
+                    ProjectionManager.selectProjection(session.getModel());
+                    switchProjectionTab(0);
+                }
+            });
+            container.addChild(selectBtn);
+            return container;
+        }
+
+        var statusRow = new UIElement();
+        statusRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+        var statusLabel = new Label();
+        boolean loaded = ProjectionManager.isProjectionLoaded();
+        statusLabel.setText(Component.translatable(loaded ? "ebe.projection.loaded" : "ebe.projection.unloaded"));
+        statusLabel.textStyle(ts -> ts.textColor(loaded ? 0xFF55FF55 : 0xFFFF5555).fontSize(10).textShadow(false));
+        statusRow.addChild(statusLabel);
+        container.addChild(statusRow);
+
+        var nameLabel = new Label();
+        var projName = session != null ? session.getCurrentName() : "Unknown";
+        nameLabel.setText(Component.literal(projName));
+        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(nameLabel);
+
+        var btnRow = new UIElement();
+        btnRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+
+        var selectBtn = new Button();
+        selectBtn.setText(Component.translatable("ebe.projection.select_projection"));
+        selectBtn.layout(l -> l.flex(1).height(16));
+        selectBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        selectBtn.setOnClick(e -> {
+            if (session != null && session.getModel() != null) {
+                ProjectionManager.selectProjection(session.getModel());
+                switchProjectionTab(0);
+            }
+        });
+        btnRow.addChild(selectBtn);
+
+        if (loaded) {
+            var unloadBtn = new Button();
+            unloadBtn.setText(Component.translatable("ebe.projection.unload_projection"));
+            unloadBtn.layout(l -> l.flex(1).height(16));
+            unloadBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+            unloadBtn.setOnClick(e -> {
+                ProjectionManager.unloadProjection();
+                switchProjectionTab(0);
+            });
+            btnRow.addChild(unloadBtn);
+        } else {
+            var loadBtn = new Button();
+            loadBtn.setText(Component.translatable("ebe.projection.load_projection"));
+            loadBtn.layout(l -> l.flex(1).height(16));
+            loadBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+            loadBtn.setOnClick(e -> {
+                ProjectionManager.loadProjection();
+                switchProjectionTab(0);
+            });
+            btnRow.addChild(loadBtn);
+        }
+
+        container.addChild(btnRow);
+
+        var dimLabel = new Label();
+        var mc = Minecraft.getInstance();
+        var level = mc.level;
+        String dimName = level != null ? level.dimension().location().toString() : "N/A";
+        dimLabel.setText(Component.translatable("ebe.projection.dimension").append(Component.literal(": " + dimName)));
+        dimLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAAA).textShadow(false));
+        container.addChild(dimLabel);
+
+        var coordLabel = new Label();
+        coordLabel.setText(Component.translatable("ebe.projection.coordinates").append(Component.literal(
+                ": (" + proj.getMinX() + "," + proj.getMinY() + "," + proj.getMinZ() + ") - (" +
+                proj.getMaxX() + "," + proj.getMaxY() + "," + proj.getMaxZ() + ")")));
+        coordLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAAA).textShadow(false));
+        container.addChild(coordLabel);
+
+        ProjectionManager.calculateProgress();
+        var progressLabel = new Label();
+        progressLabel.setId("projProgressLabel");
+        progressLabel.setText(Component.translatable("ebe.projection.blocks_placed",
+                ProjectionManager.getProgressPlaced(), ProjectionManager.getProgressTotal()));
+        progressLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFDDDDDD).textShadow(false));
+        container.addChild(progressLabel);
+
+        if (loaded && Minecraft.getInstance().player != null && Minecraft.getInstance().player.isCreative()) {
+            var placeAllBtn = new Button();
+            placeAllBtn.setText(Component.translatable("ebe.projection.place_all"));
+            placeAllBtn.layout(l -> l.widthPercent(100).height(18));
+            placeAllBtn.setOnClick(e -> ProjectionManager.placeAll());
+            container.addChild(placeAllBtn);
+        }
+
+        return container;
+    }
+
+    private static UIElement createProjectionPlaceTab() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(4));
+
+        if (ProjectionManager.getProjection() == null) {
+            var emptyLabel = new Label();
+            emptyLabel.setText(Component.translatable("ebe.projection.no_projection"));
+            emptyLabel.textStyle(ts -> ts.textColor(0xFF888888).fontSize(10).textShadow(false));
+            container.addChild(emptyLabel);
+            return container;
+        }
+
+        var placeModeLabel = new Label();
+        placeModeLabel.setText(Component.translatable("ebe.projection.place_tab"));
+        placeModeLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(placeModeLabel);
+
+        var playerBtn = new Button();
+        playerBtn.setText(Component.translatable("ebe.projection.place_at_player"));
+        playerBtn.layout(l -> l.widthPercent(100).height(16));
+        playerBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        playerBtn.setOnClick(e -> {
+            var mc = Minecraft.getInstance();
+            if (mc.player != null) {
+                ProjectionManager.setProjectionOrigin(mc.player.blockPosition());
+                switchProjectionTab(currentProjectionTab);
+            }
+        });
+        container.addChild(playerBtn);
+
+        var customLabel = new Label();
+        customLabel.setText(Component.translatable("ebe.projection.place_custom"));
+        customLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        container.addChild(customLabel);
+
+        var origin = ProjectionManager.getProjectionOrigin();
+
+        var xRow = buildCoordRow("X", origin.getX(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(val, ProjectionManager.getProjectionOrigin().getY(), ProjectionManager.getProjectionOrigin().getZ()));
+            switchProjectionTab(currentProjectionTab);
+        });
+        container.addChild(xRow);
+
+        var yRow = buildCoordRow("Y", origin.getY(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(ProjectionManager.getProjectionOrigin().getX(), val, ProjectionManager.getProjectionOrigin().getZ()));
+            switchProjectionTab(currentProjectionTab);
+        });
+        container.addChild(yRow);
+
+        var zRow = buildCoordRow("Z", origin.getZ(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(ProjectionManager.getProjectionOrigin().getX(), ProjectionManager.getProjectionOrigin().getY(), val));
+            switchProjectionTab(currentProjectionTab);
+        });
+        container.addChild(zRow);
+
+        var centerLabel = new Label();
+        centerLabel.setText(Component.translatable("ebe.projection.center_point"));
+        centerLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(centerLabel);
+
+        var proj = ProjectionManager.getProjection();
+        String[] cornerNames = {"ebe.projection.center_corner_tl", "ebe.projection.center_corner_tr", "ebe.projection.center_corner_bl", "ebe.projection.center_corner_br"};
+        BlockPos[] corners = proj != null ? new BlockPos[]{
+                new BlockPos(proj.getMinX(), proj.getMinY(), proj.getMinZ()),
+                new BlockPos(proj.getMaxX(), proj.getMinY(), proj.getMinZ()),
+                new BlockPos(proj.getMinX(), proj.getMaxY(), proj.getMaxZ()),
+                new BlockPos(proj.getMaxX(), proj.getMaxY(), proj.getMaxZ())
+        } : new BlockPos[]{BlockPos.ZERO, BlockPos.ZERO, BlockPos.ZERO, BlockPos.ZERO};
+
+        for (int i = 0; i < 4; i++) {
+            var cornerBtn = new Button();
+            int finalI = i;
+            cornerBtn.setText(Component.translatable(cornerNames[i]));
+            cornerBtn.layout(l -> l.widthPercent(100).height(16));
+            cornerBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+            cornerBtn.setOnClick(e -> {
+                if (proj != null) proj.setCenterPoint(corners[finalI]);
+                switchProjectionTab(currentProjectionTab);
+            });
+            container.addChild(cornerBtn);
+        }
+
+        var customCenterLabel = new Label();
+        customCenterLabel.setText(Component.translatable("ebe.projection.center_custom"));
+        customCenterLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        container.addChild(customCenterLabel);
+
+        if (proj != null) {
+            var cp = proj.getCenterPoint();
+            var cxRow = buildCoordRow("CX", cp.getX(), (val) -> {
+                proj.setCenterPoint(new BlockPos(val, cp.getY(), cp.getZ()));
+                switchProjectionTab(currentProjectionTab);
+            });
+            container.addChild(cxRow);
+            var cyRow = buildCoordRow("CY", cp.getY(), (val) -> {
+                proj.setCenterPoint(new BlockPos(cp.getX(), val, cp.getZ()));
+                switchProjectionTab(currentProjectionTab);
+            });
+            container.addChild(cyRow);
+            var czRow = buildCoordRow("CZ", cp.getZ(), (val) -> {
+                proj.setCenterPoint(new BlockPos(cp.getX(), cp.getY(), val));
+                switchProjectionTab(currentProjectionTab);
+            });
+            container.addChild(czRow);
+        }
+
+        var sep = new UIElement();
+        sep.layout(l -> l.widthPercent(100).height(4));
+        container.addChild(sep);
+
+        var placeBtn = new Button();
+        placeBtn.setText(Component.translatable("ebe.projection.place_tab"));
+        placeBtn.layout(l -> l.widthPercent(100).height(20));
+        placeBtn.textStyle(ts -> ts.fontSize(10).textShadow(false));
+        placeBtn.setOnClick(e -> {
+            if (session != null && session.getModel() != null) {
+                ProjectionManager.selectProjection(session.getModel());
+                ProjectionManager.loadProjection();
+                switchProjectionTab(0);
+            }
+        });
+        container.addChild(placeBtn);
+
+        return container;
+    }
+
+    private static UIElement createProjectionAdjustTab() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(4));
+
+        var proj = ProjectionManager.getProjection();
+        if (proj == null) {
+            var emptyLabel = new Label();
+            emptyLabel.setText(Component.translatable("ebe.projection.no_projection"));
+            emptyLabel.textStyle(ts -> ts.textColor(0xFF888888).fontSize(10).textShadow(false));
+            container.addChild(emptyLabel);
+            return container;
+        }
+
+        var posLabel = new Label();
+        posLabel.setText(Component.translatable("ebe.projection.position"));
+        posLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(posLabel);
+
+        var shiftHint = new Label();
+        shiftHint.setText(Component.translatable("ebe.projection.shift_hint"));
+        shiftHint.textStyle(ts -> ts.fontSize(7).textColor(0xFF888888).textShadow(false));
+        container.addChild(shiftHint);
+
+        var origin = ProjectionManager.getProjectionOrigin();
+        var xRow = buildCoordRow("X", origin.getX(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(val, origin.getY(), origin.getZ()));
+            switchProjectionTab(2);
+        });
+        container.addChild(xRow);
+        var yRow = buildCoordRow("Y", origin.getY(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(origin.getX(), val, origin.getZ()));
+            switchProjectionTab(2);
+        });
+        container.addChild(yRow);
+        var zRow = buildCoordRow("Z", origin.getZ(), (val) -> {
+            ProjectionManager.setProjectionOrigin(new BlockPos(origin.getX(), origin.getY(), val));
+            switchProjectionTab(2);
+        });
+        container.addChild(zRow);
+
+        var rotLabel = new Label();
+        rotLabel.setText(Component.translatable("ebe.projection.rotation"));
+        rotLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(rotLabel);
+
+        var facingLabel = new Label();
+        facingLabel.setId("projFacingLabel");
+        facingLabel.setText(Component.translatable("ebe.projection.facing").append(Component.literal(": " + proj.getFacing().getName())));
+        facingLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAAA).textShadow(false));
+        container.addChild(facingLabel);
+
+        var rotBtnRow = new UIElement();
+        rotBtnRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+
+        var ccwBtn = new Button();
+        ccwBtn.setText(Component.translatable("ebe.projection.rotate_ccw"));
+        ccwBtn.layout(l -> l.flex(1).height(16));
+        ccwBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        ccwBtn.setOnClick(e -> { proj.rotateCounterClockwise90(); switchProjectionTab(2); });
+        rotBtnRow.addChild(ccwBtn);
+
+        var cwBtn = new Button();
+        cwBtn.setText(Component.translatable("ebe.projection.rotate_cw"));
+        cwBtn.layout(l -> l.flex(1).height(16));
+        cwBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        cwBtn.setOnClick(e -> { proj.rotateClockwise90(); switchProjectionTab(2); });
+        rotBtnRow.addChild(cwBtn);
+
+        var r180Btn = new Button();
+        r180Btn.setText(Component.translatable("ebe.projection.rotate_180"));
+        r180Btn.layout(l -> l.flex(1).height(16));
+        r180Btn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        r180Btn.setOnClick(e -> { proj.rotate180(); switchProjectionTab(2); });
+        rotBtnRow.addChild(r180Btn);
+
+        container.addChild(rotBtnRow);
+
+        var resetRotBtn = new Button();
+        resetRotBtn.setText(Component.translatable("ebe.projection.reset_rotation"));
+        resetRotBtn.layout(l -> l.widthPercent(100).height(16));
+        resetRotBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        resetRotBtn.setOnClick(e -> { proj.setRotation(net.minecraft.world.level.block.Rotation.NONE); proj.setMirror(net.minecraft.world.level.block.Mirror.NONE); switchProjectionTab(2); });
+        container.addChild(resetRotBtn);
+
+        var mirrorLabel = new Label();
+        mirrorLabel.setText(Component.translatable("ebe.projection.mirror"));
+        mirrorLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(mirrorLabel);
+
+        var mirrorRow = new UIElement();
+        mirrorRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+
+        var lrBtn = new Button();
+        lrBtn.setText(Component.translatable("ebe.projection.mirror_lr"));
+        lrBtn.layout(l -> l.flex(1).height(16));
+        lrBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        lrBtn.setOnClick(e -> { proj.toggleMirrorLeftRight(); switchProjectionTab(2); });
+        mirrorRow.addChild(lrBtn);
+
+        var fbBtn = new Button();
+        fbBtn.setText(Component.translatable("ebe.projection.mirror_fb"));
+        fbBtn.layout(l -> l.flex(1).height(16));
+        fbBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        fbBtn.setOnClick(e -> { proj.toggleMirrorFrontBack(); switchProjectionTab(2); });
+        mirrorRow.addChild(fbBtn);
+
+        container.addChild(mirrorRow);
+
+        var centerLabel = new Label();
+        centerLabel.setText(Component.translatable("ebe.projection.center"));
+        centerLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        container.addChild(centerLabel);
+
+        var cp = proj.getCenterPoint();
+        var cxRow = buildCoordRow("CX", cp.getX(), (val) -> {
+            proj.setCenterPoint(new BlockPos(val, cp.getY(), cp.getZ()));
+            switchProjectionTab(2);
+        });
+        container.addChild(cxRow);
+        var cyRow = buildCoordRow("CY", cp.getY(), (val) -> {
+            proj.setCenterPoint(new BlockPos(cp.getX(), val, cp.getZ()));
+            switchProjectionTab(2);
+        });
+        container.addChild(cyRow);
+        var czRow = buildCoordRow("CZ", cp.getZ(), (val) -> {
+            proj.setCenterPoint(new BlockPos(cp.getX(), cp.getY(), val));
+            switchProjectionTab(2);
+        });
+        container.addChild(czRow);
+
+        return container;
+    }
+
+    private static UIElement buildCoordRow(String axis, int value, java.util.function.IntConsumer onChange) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(2));
+
+        var axisLabel = new Label();
+        axisLabel.setText(Component.literal(axis + ":"));
+        axisLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAAA).textShadow(false));
+        axisLabel.layout(l -> l.width(20).flexShrink(0));
+        row.addChild(axisLabel);
+
+        var minusBtn = new Button();
+        minusBtn.setText(Component.literal("-"));
+        minusBtn.layout(l -> l.width(16).height(16).flexShrink(0));
+        minusBtn.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        minusBtn.setOnClick(e -> {
+            int step = UIElement.isShiftDown() ? 10 : 1;
+            onChange.accept(value - step);
+        });
+        row.addChild(minusBtn);
+
+        var valField = new TextField();
+        valField.setText(String.valueOf(value), false);
+        valField.layout(l -> l.flex(1).height(16));
+        valField.setNumbersOnlyInt(-100000, 100000);
+        valField.setTextResponder(newText -> {
+            try { onChange.accept(Integer.parseInt(newText)); } catch (NumberFormatException ignored) {}
+        });
+        row.addChild(valField);
+
+        var plusBtn = new Button();
+        plusBtn.setText(Component.literal("+"));
+        plusBtn.layout(l -> l.width(16).height(16).flexShrink(0));
+        plusBtn.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        plusBtn.setOnClick(e -> {
+            int step = UIElement.isShiftDown() ? 10 : 1;
+            onChange.accept(value + step);
+        });
+        row.addChild(plusBtn);
+
+        return row;
     }
 
     // ========== Content Area ==========
@@ -387,6 +944,15 @@ public class EditorUI {
 
         toolbarPanel = buildToolbar();
         viewport.addChild(toolbarPanel);
+
+        viewport.addEventListener(UIEvents.LAYOUT_CHANGED, e -> {
+            if (toolbarOffsetY == 0 && toolbarPanel != null) {
+                float vpHeight = viewport.getSizeHeight();
+                float tbHeight = toolbarPanel.getSizeHeight();
+                toolbarOffsetY = Math.max(0, (vpHeight - tbHeight) / 2);
+                toolbarPanel.layout(l -> l.left(toolbarOffsetX).top(toolbarOffsetY));
+            }
+        });
 
         var blockIndicator = buildBlockIndicator();
         viewport.addChild(blockIndicator);
@@ -425,11 +991,14 @@ public class EditorUI {
     private static UIElement buildToolbar() {
         var panel = new UIElement();
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(4).topPercent(50)
+                .left(toolbarOffsetX).top(toolbarOffsetY)
                 .flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2)
                 .width(30));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(90));
         panel.setId("toolbarPanel");
+
+        var dragHandle = buildToolbarDragHandle();
+        panel.addChild(dragHandle);
 
         var collapseBtn = buildToolbarCollapseBtn();
         panel.addChild(collapseBtn);
@@ -443,13 +1012,58 @@ public class EditorUI {
         var modeSep = new UIElement();
         modeSep.layout(l -> l.widthPercent(100).height(1));
         modeSep.style(s -> s.background(Sprites.RECT_DARK));
+        modeSep.setId("toolbarModeSep");
         panel.addChild(modeSep);
 
         var modeBtn = buildModeToggleButton();
         panel.addChild(modeBtn);
 
+        var modeSep2 = new UIElement();
+        modeSep2.layout(l -> l.widthPercent(100).height(1));
+        modeSep2.style(s -> s.background(Sprites.RECT_DARK));
+        modeSep2.setId("toolbarResetSep");
+        panel.addChild(modeSep2);
+
+        var resetCamBtn = new UIElement();
+        resetCamBtn.layout(l -> l.width(26).height(26).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
+        resetCamBtn.style(s -> s.background(Sprites.RECT_RD));
+        var resetCamIcon = new UIElement();
+        resetCamIcon.layout(l -> l.width(20).height(20));
+        resetCamIcon.style(s -> s.backgroundTexture(EditorIcons.HOME));
+        resetCamBtn.addChild(resetCamIcon);
+        resetCamBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) ViewportFactory.resetCamera();
+        });
+        registerTooltip(resetCamBtn, Component.translatable("ebe.editor.reset_camera"));
+        resetCamBtn.setId("toolbarResetBtn");
+        panel.addChild(resetCamBtn);
+
         highlightCurrentTool();
         return panel;
+    }
+
+    private static UIElement buildToolbarDragHandle() {
+        var handle = new UIElement();
+        handle.layout(l -> l.widthPercent(100).height(6));
+        handle.style(s -> s.background(Sprites.RECT_DARK));
+        handle.setId("toolbarDragHandle");
+
+        var dots = new Label();
+        dots.setText(Component.literal("···"));
+        dots.textStyle(ts -> ts.fontSize(7).textColor(0xFF888888).textShadow(false));
+        handle.addChild(dots);
+
+        handle.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                toolbarDragging = true;
+                toolbarDragStartX = e.x;
+                toolbarDragStartY = e.y;
+                toolbarDragOriginX = toolbarOffsetX;
+                toolbarDragOriginY = toolbarOffsetY;
+                e.stopImmediatePropagation();
+            }
+        });
+        return handle;
     }
 
     private static UIElement buildToolbarCollapseBtn() {
@@ -470,6 +1084,10 @@ public class EditorUI {
     private static void toggleToolbar() {
         toolbarExpanded = !toolbarExpanded;
         toolbarButtons.values().forEach(b -> b.setDisplay(toolbarExpanded));
+        for (var id : new String[]{"toolbarModeSep", "toolbar_mode_btn", "toolbarResetSep", "toolbarResetBtn"}) {
+            var el = findById(rootElement, id);
+            if (el != null) el.setDisplay(toolbarExpanded);
+        }
         var btn = findById(rootElement, "toolbarCollapseBtn");
         if (btn != null) {
             var inner = btn.getChildren().stream()
@@ -534,11 +1152,11 @@ public class EditorUI {
         btn.setId("toolbar_mode_btn");
         updateModeButtonStyle(btn);
 
-        var label = new Label();
-        label.setId("modeBtnLabel");
-        label.setText(Component.literal("👁"));
-        label.textStyle(ts -> ts.fontSize(14));
-        btn.addChild(label);
+        var icon = new UIElement();
+        icon.setId("modeBtnIcon");
+        icon.layout(l -> l.width(20).height(20));
+        icon.style(s -> s.backgroundTexture(EditorIcons.VIEW_MODE));
+        btn.addChild(icon);
 
         btn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) toggleMode();
@@ -553,9 +1171,9 @@ public class EditorUI {
         } else {
             btn.style(s -> s.background(Sprites.RECT_RD_DARK));
         }
-        var modeLabel = findById(btn, "modeBtnLabel");
-        if (modeLabel instanceof Label l) {
-            l.setText(mode == EditorMode.VIEW ? Component.literal("👁") : Component.literal("✏"));
+        var modeIcon = findById(btn, "modeBtnIcon");
+        if (modeIcon != null) {
+            modeIcon.style(s -> s.backgroundTexture(mode == EditorMode.VIEW ? EditorIcons.VIEW_MODE : EditorIcons.EDIT_MODE));
         }
         registerTooltip(btn, Component.translatable(mode.getKey()));
     }
@@ -612,6 +1230,26 @@ public class EditorUI {
 
     private static void goToHistoryEntry(int displayIdx) {
         int count = history.goToEntryCount(displayIdx);
+        if (count <= 0) return;
+        var undone = history.popUndoEntries(count);
+        var model = session.getModel();
+        var allReversed = new ArrayList<Object[]>();
+        for (var entry : undone) {
+            for (var s : entry.getSnapshots()) {
+                int x = (int) s[0], y = (int) s[1], z = (int) s[2];
+                model.setBlockAt(x, y, z, s[3]);
+                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
+            }
+        }
+        ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
+        refreshMaterialList();
+        refreshHistoryList();
+    }
+
+    private static void rollbackToTag(com.l1ght.ebe.editor.history.HistoryManager.VersionTag tag) {
+        int tagEntryIndex = history.findEntryIndexById(tag.entryId());
+        if (tagEntryIndex < 0) return;
+        int count = history.undoSize() - 1 - tagEntryIndex;
         if (count <= 0) return;
         var undone = history.popUndoEntries(count);
         var model = session.getModel();
@@ -835,17 +1473,35 @@ public class EditorUI {
         displayTab.setText(Component.translatable("ebe.editor.panel.display"));
         tabView.addTab(displayTab, wrapInScroller(buildDisplayFilterTab()));
 
+        var heatmapTab = new Tab();
+        heatmapTab.setText(Component.translatable("ebe.editor.panel.heatmap"));
+        tabView.addTab(heatmapTab, wrapInScroller(createHeatmapContent()));
+
+        var printerTab = new Tab();
+        printerTab.setText(Component.translatable("ebe.editor.panel.printer"));
+        tabView.addTab(printerTab, wrapInScroller(createPrinterContent()));
+
         panel.addChild(tabView);
         return panel;
     }
 
     private static UIElement createFilesContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+
+        var openFolderBtn = new Button();
+        openFolderBtn.setText(Component.translatable("ebe.editor.open_folder"));
+        openFolderBtn.layout(l -> l.widthPercent(100).height(18));
+        openFolderBtn.setOnClick(e -> ImportDialog.openSchematicFolder());
+        container.addChild(openFolderBtn);
+
         var treeList = createFileTree();
         var scroller = new ScrollerView();
-        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.layout(l -> l.widthPercent(100).flex(1));
         scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(treeList);
-        return scroller;
+        container.addChild(scroller);
+        return container;
     }
 
     private static UIElement createLayersContent() {
@@ -1051,17 +1707,49 @@ public class EditorUI {
 
     private static UIElement createMaterialsContent() {
         var container = new UIElement();
-        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(2));
         container.setId("materialsContent");
 
+        var header = new UIElement();
+        header.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
+        var exportBtn = new UIElement();
+        exportBtn.layout(l -> l.width(20).height(20));
+        exportBtn.style(s -> s.backgroundTexture(EditorIcons.SAVE));
+        exportBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) exportMaterialList(); });
+        registerTooltip(exportBtn, Component.translatable("ebe.materials.export"));
+        header.addChild(exportBtn);
+
+        var compareBtn = new UIElement();
+        compareBtn.layout(l -> l.width(20).height(20));
+        compareBtn.style(s -> s.backgroundTexture(EditorIcons.SEARCH));
+        compareBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) toggleInventoryCompare(); });
+        registerTooltip(compareBtn, Component.translatable("ebe.materials.compare_inventory"));
+        header.addChild(compareBtn);
+
+        var diffBtn = new UIElement();
+        diffBtn.layout(l -> l.width(20).height(20));
+        diffBtn.style(s -> s.backgroundTexture(EditorIcons.DIFF));
+        diffBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showMaterialDiffDialog(); });
+        registerTooltip(diffBtn, Component.translatable("ebe.materials.diff_calc"));
+        header.addChild(diffBtn);
+
+        var totalLabel = new Label();
+        totalLabel.setId("materialTotalLabel");
+        totalLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAAA).textShadow(false));
+        totalLabel.layout(l -> l.flex(1));
+        header.addChild(totalLabel);
+
+        container.addChild(header);
+
         materialListContainer = new UIElement();
-        materialListContainer.layout(l -> l.flexDirection(FlexDirection.ROW).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP)
-                .gapAll(4).alignItems(AlignItems.CENTER));
+        materialListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1));
         materialListContainer.setId("materialsList");
 
         var scroller = new ScrollerView();
-        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
-        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.NEVER).horizontalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(materialListContainer);
         container.addChild(scroller);
 
@@ -1071,7 +1759,7 @@ public class EditorUI {
 
     private static UIElement createHistoryContent() {
         var container = new UIElement();
-        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(2));
         container.setId("historyContent");
 
         var header = new UIElement();
@@ -1082,25 +1770,50 @@ public class EditorUI {
         undoBtn.layout(l -> l.width(20).height(20));
         undoBtn.style(s -> s.backgroundTexture(EditorIcons.UNDO));
         undoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) undo(); });
+        registerTooltip(undoBtn, Component.translatable("ebe.editor.undo"));
         header.addChild(undoBtn);
 
         var redoBtn = new UIElement();
         redoBtn.layout(l -> l.width(20).height(20));
         redoBtn.style(s -> s.backgroundTexture(EditorIcons.REDO));
         redoBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) redo(); });
+        registerTooltip(redoBtn, Component.translatable("ebe.editor.redo"));
         header.addChild(redoBtn);
 
-        var clearBtn = new Button();
-        clearBtn.setText(Component.literal("✕"));
+        var tagBtn = new UIElement();
+        tagBtn.layout(l -> l.width(20).height(20));
+        tagBtn.style(s -> s.backgroundTexture(EditorIcons.TAG));
+        tagBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showCreateVersionTagDialog(); });
+        registerTooltip(tagBtn, Component.translatable("ebe.history.create_tag"));
+        header.addChild(tagBtn);
+
+        var branchBtn = new UIElement();
+        branchBtn.layout(l -> l.width(20).height(20));
+        branchBtn.style(s -> s.backgroundTexture(EditorIcons.BRANCH));
+        branchBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showBranchSwitchDialog(); });
+        registerTooltip(branchBtn, Component.translatable("ebe.history.switch_branch"));
+        header.addChild(branchBtn);
+
+        var clearBtn = new UIElement();
         clearBtn.layout(l -> l.width(20).height(20));
-        clearBtn.style(s -> s.background(Sprites.RECT_RD));
-        clearBtn.setOnClick(e -> { history.clear(); refreshHistoryList(); });
+        clearBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+        clearBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) { history.clear(); refreshHistoryList(); } });
+        registerTooltip(clearBtn, Component.translatable("ebe.history.clear"));
         header.addChild(clearBtn);
 
         container.addChild(header);
 
+        var branchLabel = new Label();
+        branchLabel.setId("historyBranchLabel");
+        branchLabel.layout(l -> l.widthPercent(100).paddingHorizontal(2));
+        branchLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAFF).textShadow(false));
+        branchLabel.setText(Component.literal("⌥ " + history.getCurrentBranch()));
+        branchLabel.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showBranchSwitchDialog(); });
+        registerTooltip(branchLabel, Component.translatable("ebe.history.switch_branch"));
+        container.addChild(branchLabel);
+
         historyListContainer = new UIElement();
-        historyListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1).paddingTop(2));
+        historyListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1));
 
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).flex(1));
@@ -1395,68 +2108,468 @@ public class EditorUI {
         ViewportFactory.refreshFromModel(session.getModel());
     }
 
+    private static UIElement createHeatmapContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        container.setId("heatmapContent");
+
+        var currentModeLabel = new Label();
+        currentModeLabel.setId("heatmapCurrentMode");
+        currentModeLabel.setText(Component.translatable(ViewportFactory.getHeatmapMode().getTranslationKey()));
+        currentModeLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(9).textShadow(false));
+        container.addChild(currentModeLabel);
+
+        var modeLabel = new Label();
+        modeLabel.setText(Component.translatable("ebe.heatmap.off"));
+        modeLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        container.addChild(modeLabel);
+
+        var modeRow = new UIElement();
+        modeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP).gapAll(3));
+        modeRow.setId("heatmapModeRow");
+
+        HeatmapMode[] modes = HeatmapMode.values();
+        for (int i = 0; i < modes.length; i++) {
+            final int idx = i;
+            final HeatmapMode mode = modes[i];
+            var btn = new Button();
+            btn.setText(Component.translatable(mode.getTranslationKey()));
+            btn.layout(l -> l.height(18).paddingHorizontal(4));
+            btn.setId("heatmapBtn_" + i);
+            btn.style(s -> s.background(idx == ViewportFactory.getHeatmapMode().ordinal() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            btn.setOnClick(e -> {
+                ViewportFactory.setHeatmapMode(mode);
+                selectedHeatmapBtnId = "heatmapBtn_" + idx;
+                updateHeatmapModeHighlight();
+                updateHeatmapCurrentMode();
+            });
+            modeRow.addChild(btn);
+        }
+        container.addChild(modeRow);
+
+        selectedHeatmapBtnId = "heatmapBtn_" + ViewportFactory.getHeatmapMode().ordinal();
+        return container;
+    }
+
+    private static void updateHeatmapModeHighlight() {
+        for (int i = 0; i < HeatmapMode.values().length; i++) {
+            final String btnId = "heatmapBtn_" + i;
+            var btn = UIUtils.findById(rightPanel, btnId);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(btnId.equals(selectedHeatmapBtnId) ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void updateHeatmapCurrentMode() {
+        var label = UIUtils.findById(rightPanel, "heatmapCurrentMode");
+        if (label instanceof Label l) {
+            l.setText(Component.translatable(ViewportFactory.getHeatmapMode().getTranslationKey()));
+        }
+    }
+
+    private static UIElement createPrinterContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        container.setId("printerContent");
+
+        var currentModeLabel = new Label();
+        currentModeLabel.setId("printerCurrentMode");
+        currentModeLabel.setText(Component.translatable(PrinterController.getMode().getTranslationKey()));
+        currentModeLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(9).textShadow(false));
+        container.addChild(currentModeLabel);
+
+        var modeRow = new UIElement();
+        modeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP).gapAll(3));
+        modeRow.setId("printerModeRow");
+
+        PrinterMode[] modes = PrinterMode.values();
+        for (int i = 0; i < modes.length; i++) {
+            final int idx = i;
+            final PrinterMode mode = modes[i];
+            var btn = new Button();
+            btn.setText(Component.translatable(mode.getTranslationKey()));
+            btn.layout(l -> l.height(18).paddingHorizontal(4));
+            btn.setId("printerModeBtn_" + i);
+            btn.style(s -> s.background(idx == PrinterController.getMode().ordinal() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            btn.setOnClick(e -> {
+                PrinterController.setMode(mode);
+                selectedPrinterModeBtnId = "printerModeBtn_" + idx;
+                updatePrinterModeHighlight();
+                updatePrinterCurrentMode();
+                updatePrinterToggleBtn();
+            });
+            modeRow.addChild(btn);
+        }
+        container.addChild(modeRow);
+
+        selectedPrinterModeBtnId = "printerModeBtn_" + PrinterController.getMode().ordinal();
+
+        var toggleBtn = new Button();
+        toggleBtn.setId("printerToggleBtn");
+        toggleBtn.setText(Component.translatable("ebe.printer.toggle"));
+        toggleBtn.layout(l -> l.widthPercent(100).height(22));
+        toggleBtn.style(s -> s.background(PrinterController.isActive() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+        toggleBtn.setOnClick(e -> {
+            PrinterController.toggle();
+            updatePrinterToggleBtn();
+        });
+        container.addChild(toggleBtn);
+
+        var rangeLabel = new Label();
+        rangeLabel.setId("printerRangeLabel");
+        rangeLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        rangeLabel.layout(l -> l.widthPercent(100));
+        var projection = ProjectionManager.getProjection();
+        if (projection != null && ProjectionManager.isProjectionLoaded()) {
+            rangeLabel.setText(Component.literal(
+                    "[%d, %d, %d] ~ [%d, %d, %d]".formatted(
+                            projection.getMinX(), projection.getMinY(), projection.getMinZ(),
+                            projection.getMaxX(), projection.getMaxY(), projection.getMaxZ())));
+        } else {
+            rangeLabel.setText(Component.translatable("ebe.projection.no_projection"));
+        }
+        container.addChild(rangeLabel);
+
+        var missingLabel = new Label();
+        missingLabel.setId("printerMissingLabel");
+        missingLabel.textStyle(ts -> ts.textColor(0xFFFF4444).fontSize(9).textShadow(false));
+        missingLabel.layout(l -> l.widthPercent(100));
+        updatePrinterMissingMaterials(missingLabel);
+        container.addChild(missingLabel);
+
+        return container;
+    }
+
+    private static void updatePrinterModeHighlight() {
+        for (int i = 0; i < PrinterMode.values().length; i++) {
+            final String btnId = "printerModeBtn_" + i;
+            var btn = UIUtils.findById(rightPanel, btnId);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(btnId.equals(selectedPrinterModeBtnId) ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void updatePrinterCurrentMode() {
+        var label = UIUtils.findById(rightPanel, "printerCurrentMode");
+        if (label instanceof Label l) {
+            l.setText(Component.translatable(PrinterController.getMode().getTranslationKey()));
+        }
+    }
+
+    private static void updatePrinterToggleBtn() {
+        var btn = UIUtils.findById(rightPanel, "printerToggleBtn");
+        if (btn instanceof Button b) {
+            b.style(s -> s.background(PrinterController.isActive() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+        }
+    }
+
+    private static void updatePrinterMissingMaterials(Label label) {
+        var projection = ProjectionManager.getProjection();
+        if (projection == null) {
+            label.setText(Component.literal(""));
+            return;
+        }
+        var mc = Minecraft.getInstance();
+        var player = mc.player;
+        if (player == null) {
+            label.setText(Component.literal(""));
+            return;
+        }
+        var inventory = player.getInventory();
+        Map<net.minecraft.world.level.block.Block, Integer> needed = new java.util.LinkedHashMap<>();
+        for (var pb : projection.getBlocks()) {
+            var block = pb.state().getBlock();
+            needed.merge(block, 1, Integer::sum);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (var entry : needed.entrySet()) {
+            int have = 0;
+            for (var stack : inventory.items) {
+                if (stack.is(entry.getKey().asItem())) {
+                    have += stack.getCount();
+                }
+            }
+            int missing = entry.getValue() - have;
+            if (missing > 0) {
+                if (!sb.isEmpty()) sb.append(", ");
+                sb.append(entry.getKey().getName().getString()).append(" ×").append(missing);
+            }
+        }
+        if (sb.isEmpty()) {
+            label.setText(Component.literal(""));
+        } else {
+            label.setText(Component.literal(sb.toString()));
+        }
+    }
+
     public static void refreshHistoryList() {
         if (historyListContainer == null) return;
         historyListContainer.clearAllChildren();
 
+        var branchLabel = findById(rootElement, "historyBranchLabel");
+        if (branchLabel instanceof Label bl) {
+            bl.setText(Component.literal("⌥ " + history.getCurrentBranch()));
+        }
+
+        var tags = history.getVersionTags();
         var entries = history.getUndoEntries();
-        if (entries.isEmpty()) {
+        if (entries.isEmpty() && tags.isEmpty()) {
             var empty = new Label();
-            empty.setText(Component.literal("No history"));
+            empty.setText(Component.translatable("ebe.history.empty"));
             empty.textStyle(ts -> ts.textColor(0xFF707070).fontSize(9));
             historyListContainer.addChild(empty);
             return;
         }
 
+        var tagMap = new java.util.HashMap<Integer, com.l1ght.ebe.editor.history.HistoryManager.VersionTag>();
+        for (var tag : tags) {
+            tagMap.put(tag.entryId(), tag);
+        }
+
         int idx = entries.size();
         for (int i = entries.size() - 1; i >= 0; i--) {
             var entry = entries.get(i);
+            var tag = tagMap.get(entry.getId());
+            if (tag != null) {
+                var tagRow = buildVersionTagRow(tag);
+                historyListContainer.addChild(tagRow);
+            }
             var row = buildHistoryRow(entry, idx--);
             historyListContainer.addChild(row);
         }
     }
 
+    private static UIElement buildVersionTagRow(com.l1ght.ebe.editor.history.HistoryManager.VersionTag tag) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)
+                .paddingHorizontal(4).paddingVertical(2).gapAll(1));
+        row.style(s -> s.background(Sprites.RECT_RD));
+
+        var topLine = new UIElement();
+        topLine.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
+        var label = new Label();
+        label.setText(Component.literal(tag.label()));
+        label.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
+        label.layout(l -> l.flex(1));
+        topLine.addChild(label);
+
+        var rollbackBtn = new UIElement();
+        rollbackBtn.layout(l -> l.width(14).height(14));
+        rollbackBtn.style(s -> s.background(Sprites.RECT_DARK));
+        var rollbackIcon = new Label();
+        rollbackIcon.setText(Component.literal("↩"));
+        rollbackIcon.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        rollbackBtn.addChild(rollbackIcon);
+        rollbackBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) rollbackToTag(tag);
+        });
+        registerTooltip(rollbackBtn, Component.translatable("ebe.history.rollback_tag"));
+        topLine.addChild(rollbackBtn);
+
+        row.addChild(topLine);
+
+        if (!tag.description().isEmpty()) {
+            var desc = new Label();
+            desc.setText(Component.literal(tag.description()));
+            desc.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false));
+            row.addChild(desc);
+        }
+
+        var time = new Label();
+        time.setText(Component.literal(formatTimestamp(tag.timestamp())));
+        time.textStyle(ts -> ts.textColor(0xFF888888).fontSize(8).textShadow(false));
+        row.addChild(time);
+
+        return row;
+    }
+
     private static UIElement buildHistoryRow(com.l1ght.ebe.editor.history.HistoryEntry entry, int displayIdx) {
         var row = new UIElement();
-        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(4).paddingVertical(2));
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)
+                .paddingHorizontal(4).paddingVertical(3).gapAll(2));
         row.style(s -> s.background(Sprites.RECT_DARK));
 
+        var topLine = new UIElement();
+        topLine.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+
         var icon = new UIElement();
-        icon.layout(l -> l.width(18).height(18));
+        icon.layout(l -> l.width(16).height(16).flexShrink(0));
         if (entry.getPrimaryBlock() instanceof net.minecraft.world.level.block.state.BlockState bs) {
             icon.style(s -> s.backgroundTexture(new ItemStackTexture(bs.getBlock().asItem())));
         } else {
             icon.style(s -> s.background(Sprites.RECT_RD));
         }
-        row.addChild(icon);
+        topLine.addChild(icon);
 
-        var infoCol = new UIElement();
-        infoCol.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
-
-        var title = new Label();
         var actionName = Component.translatable(entry.getActionType().getKey());
         var countStr = entry.getAffectedCount() > 1 ? " ×" + entry.getAffectedCount() : "";
-        title.setText(Component.literal("#" + displayIdx + " ").append(actionName).append(countStr));
-        title.textStyle(ts -> ts.textColor(0xFFDDDDDD).fontSize(10));
-        infoCol.addChild(title);
+        var title = new Label();
+        title.setText(Component.literal("#" + displayIdx + " ").append(actionName).append(Component.literal(countStr)));
+        title.textStyle(ts -> ts.textColor(0xFFDDDDDD).fontSize(10).textShadow(false));
+        title.layout(l -> l.flex(1).flexShrink(1));
+        topLine.addChild(title);
 
-        var pos = new Label();
-        pos.setText(Component.literal(entry.getPrimaryX() + ", " + entry.getPrimaryY() + ", " + entry.getPrimaryZ()));
-        pos.textStyle(ts -> ts.textColor(0xFF808080).fontSize(9));
-        infoCol.addChild(pos);
-
-        row.addChild(infoCol);
-
-        var jumpBtn = new Button();
-        jumpBtn.setText(Component.literal("↩"));
-        jumpBtn.layout(l -> l.width(16).height(16));
+        var jumpBtn = new UIElement();
+        jumpBtn.layout(l -> l.width(16).height(16).flexShrink(0));
         jumpBtn.style(s -> s.background(Sprites.RECT_RD));
+        var jumpLabel = new Label();
+        jumpLabel.setText(Component.literal("↩"));
+        jumpLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        jumpBtn.addChild(jumpLabel);
         var displayIdxCapture = displayIdx;
-        jumpBtn.setOnClick(e -> goToHistoryEntry(displayIdxCapture));
-        row.addChild(jumpBtn);
+        jumpBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) goToHistoryEntry(displayIdxCapture); });
+        registerTooltip(jumpBtn, Component.translatable("ebe.history.go_to"));
+        topLine.addChild(jumpBtn);
+
+        row.addChild(topLine);
+
+        var bottomLine = new UIElement();
+        bottomLine.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)
+                .paddingLeft(20).gapAll(0));
+
+        var posLabel = new Label();
+        posLabel.setText(Component.literal(entry.getPrimaryX() + ", " + entry.getPrimaryY() + ", " + entry.getPrimaryZ()));
+        posLabel.textStyle(ts -> ts.textColor(0xFF808080).fontSize(8).textShadow(false));
+        bottomLine.addChild(posLabel);
+
+        var timeLabel = new Label();
+        timeLabel.setText(Component.literal(formatTimestamp(entry.getTimestamp())));
+        timeLabel.textStyle(ts -> ts.textColor(0xFF666666).fontSize(8).textShadow(false));
+        bottomLine.addChild(timeLabel);
+
+        row.addChild(bottomLine);
 
         return row;
+    }
+
+    private static String formatTimestamp(long timestamp) {
+        var sdf = new java.text.SimpleDateFormat("HH:mm:ss");
+        return sdf.format(new java.util.Date(timestamp));
+    }
+
+    private static void showCreateVersionTagDialog() {
+        var dialog = new Dialog();
+        dialog.setTitle("ebe.history.dialog.tag_title");
+        dialog.darkenBackground();
+
+        var labelField = new TextField().setText("v" + (history.getVersionTags().size() + 1), false);
+        labelField.layout(layout -> layout.widthPercent(100));
+        labelField.setTextValidator(text -> text != null && !text.isBlank());
+
+        var labelLabel = new Label();
+        labelLabel.setText(Component.translatable("ebe.history.dialog.tag_label"));
+        labelLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        dialog.addContent(labelLabel);
+        dialog.addContent(labelField);
+
+        var descField = new TextField().setText("", false);
+        descField.layout(layout -> layout.widthPercent(100));
+        descField.setAnyString();
+
+        var descLabel = new Label();
+        descLabel.setText(Component.translatable("ebe.history.dialog.tag_desc"));
+        descLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        dialog.addContent(descLabel);
+        dialog.addContent(descField);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> {
+                    history.createVersionTag(labelField.getText().trim(), descField.getText().trim());
+                    dialog.close();
+                    refreshHistoryList();
+                })
+                .setText("ebe.history.dialog.confirm")
+                .addClass("__confirm-button__"));
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        dialog.show(rootElement);
+    }
+
+    private static void showCreateBranchDialog() {
+        var dialog = new Dialog();
+        dialog.setTitle("ebe.history.dialog.branch_title");
+        dialog.darkenBackground();
+
+        var nameField = new TextField().setText("branch-" + history.getBranches().size(), false);
+        nameField.layout(layout -> layout.widthPercent(100));
+        nameField.setTextValidator(text -> text != null && !text.isBlank() && text.matches("[a-zA-Z0-9_-]+"));
+
+        var nameLabel = new Label();
+        nameLabel.setText(Component.translatable("ebe.history.dialog.branch_name"));
+        nameLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        dialog.addContent(nameLabel);
+        dialog.addContent(nameField);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> {
+                    history.createBranch(nameField.getText().trim());
+                    history.switchBranch(nameField.getText().trim());
+                    dialog.close();
+                    refreshHistoryList();
+                })
+                .setText("ebe.history.dialog.confirm")
+                .addClass("__confirm-button__"));
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        dialog.show(rootElement);
+    }
+
+    private static void showBranchSwitchDialog() {
+        var branches = history.getBranches();
+        if (branches.size() <= 1) {
+            showCreateBranchDialog();
+            return;
+        }
+
+        var dialog = new Dialog();
+        dialog.setTitle("ebe.history.dialog.branch_title");
+        dialog.darkenBackground();
+
+        for (var branch : branches) {
+            var btn = new Button();
+            boolean isCurrent = branch.name().equals(history.getCurrentBranch());
+            btn.setText(Component.literal((isCurrent ? "● " : "○ ") + branch.name()));
+            btn.layout(l -> l.widthPercent(100).height(18));
+            btn.textStyle(ts -> ts.fontSize(9).textColor(isCurrent ? 0xFF55FF55 : 0xFFDDDDDD).textShadow(false));
+            if (!isCurrent) {
+                var branchName = branch.name();
+                btn.setOnClick(e -> {
+                    history.switchBranch(branchName);
+                    dialog.close();
+                    refreshHistoryList();
+                });
+            }
+            dialog.addContent(btn);
+        }
+
+        var sep = new UIElement();
+        sep.layout(l -> l.widthPercent(100).height(4));
+        dialog.addContent(sep);
+
+        var createBtn = new Button();
+        createBtn.setText(Component.translatable("ebe.history.create_branch"));
+        createBtn.layout(l -> l.widthPercent(100).height(18));
+        createBtn.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        createBtn.setOnClick(e -> {
+            dialog.close();
+            showCreateBranchDialog();
+        });
+        dialog.addContent(createBtn);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        dialog.show(rootElement);
     }
 
     private static UIElement createPropertiesContent() {
@@ -1938,17 +3051,21 @@ public class EditorUI {
     private static FileTreeNode buildFileSystemTree() {
         var dir = Path.of(EBEClientConfig.schematicDir.get());
         var root = FileTreeNode.ofDirectory(dir);
-        if (Files.exists(dir)) {
-            try (var stream = Files.list(dir)) {
-                stream.sorted(Comparator
-                        .comparing((Path p) -> !Files.isDirectory(p))
-                        .thenComparing(Path::getFileName))
-                        .forEach(p -> root.addChild(Files.isDirectory(p)
-                                ? FileTreeNode.ofDirectory(p)
-                                : FileTreeNode.ofFile(p)));
-            } catch (Exception ignored) {}
-        }
+        loadDirectoryChildren(root, dir);
         return root;
+    }
+
+    private static void loadDirectoryChildren(FileTreeNode parent, Path dir) {
+        if (!Files.exists(dir)) return;
+        try (var stream = Files.list(dir)) {
+            stream.sorted(Comparator
+                    .comparing((Path p) -> !Files.isDirectory(p))
+                    .thenComparing(Path::getFileName))
+                    .limit(500)
+                    .forEach(p -> parent.addChild(Files.isDirectory(p)
+                            ? FileTreeNode.ofDirectory(p)
+                            : FileTreeNode.ofFile(p)));
+        } catch (Exception ignored) {}
     }
 
     private static void onFileSelected(Path file) {
@@ -3714,56 +4831,327 @@ public class EditorUI {
         updateMaterialList();
     }
 
+    private static boolean showInventoryCompare = false;
+
+    private static void toggleInventoryCompare() {
+        showInventoryCompare = !showInventoryCompare;
+        updateMaterialList();
+    }
+
+    private static void showMaterialDiffDialog() {
+        var tags = history.getVersionTags();
+        if (tags.isEmpty()) {
+            Dialog.showNotification("ebe.materials.diff_calc",
+                    Component.translatable("ebe.history.empty").getString(), (Runnable) null)
+                    .show(rootElement);
+            return;
+        }
+
+        var dialog = new Dialog();
+        dialog.setTitle("ebe.materials.diff_calc");
+        dialog.darkenBackground();
+
+        var fromLabel = new Label();
+        fromLabel.setText(Component.translatable("ebe.materials.diff_from_tag"));
+        fromLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
+        dialog.addContent(fromLabel);
+
+        var tagButtons = new UIElement();
+        tagButtons.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+
+        for (var tag : tags) {
+            var btn = new Button();
+            btn.setText(Component.literal(tag.label() + " (" + formatTimestamp(tag.timestamp()) + ")"));
+            btn.textStyle(ts -> ts.fontSize(9).textShadow(false));
+            btn.layout(l -> l.widthPercent(100));
+            var capturedTag = tag;
+            btn.setOnClick(e -> {
+                dialog.close();
+                showMaterialDiffResult(capturedTag);
+            });
+            tagButtons.addChild(btn);
+        }
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).height(120));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(tagButtons);
+        dialog.addContent(scroller);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        dialog.show(rootElement);
+    }
+
+    private static void showMaterialDiffResult(com.l1ght.ebe.editor.history.HistoryManager.VersionTag tag) {
+        var diff = history.computeMaterialDiffFromTag(tag);
+        if (diff.isEmpty()) return;
+
+        var dialog = new Dialog();
+        dialog.setTitle(Component.translatable("ebe.materials.diff_calc").getString() + ": " + tag.label());
+        dialog.darkenBackground();
+
+        var listContainer = new UIElement();
+        listContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1));
+
+        var added = new ArrayList<Map.Entry<String, Integer>>();
+        var removed = new ArrayList<Map.Entry<String, Integer>>();
+        for (var entry : diff.entrySet()) {
+            if (entry.getValue() > 0) added.add(entry);
+            else removed.add(entry);
+        }
+
+        if (!added.isEmpty()) {
+            var addedHeader = new Label();
+            addedHeader.setText(Component.translatable("ebe.materials.diff_added"));
+            addedHeader.textStyle(ts -> ts.textColor(0xFF55FF55).fontSize(9).textShadow(false));
+            listContainer.addChild(addedHeader);
+            for (var entry : added) {
+                var row = new UIElement();
+                row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(4));
+                var name = new Label();
+                name.setText(Component.literal(entry.getKey()));
+                name.textStyle(ts -> ts.fontSize(8).textColor(0xFFDDDDDD).textShadow(false));
+                name.layout(l -> l.flex(1));
+                row.addChild(name);
+                var count = new Label();
+                count.setText(Component.literal("+" + entry.getValue()));
+                count.textStyle(ts -> ts.fontSize(8).textColor(0xFF55FF55).textShadow(false));
+                row.addChild(count);
+                listContainer.addChild(row);
+            }
+        }
+
+        if (!removed.isEmpty()) {
+            var removedHeader = new Label();
+            removedHeader.setText(Component.translatable("ebe.materials.diff_removed"));
+            removedHeader.textStyle(ts -> ts.textColor(0xFFFF5555).fontSize(9).textShadow(false));
+            listContainer.addChild(removedHeader);
+            for (var entry : removed) {
+                var row = new UIElement();
+                row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(4));
+                var name = new Label();
+                name.setText(Component.literal(entry.getKey()));
+                name.textStyle(ts -> ts.fontSize(8).textColor(0xFFDDDDDD).textShadow(false));
+                name.layout(l -> l.flex(1));
+                row.addChild(name);
+                var count = new Label();
+                count.setText(Component.literal(String.valueOf(entry.getValue())));
+                count.textStyle(ts -> ts.fontSize(8).textColor(0xFFFF5555).textShadow(false));
+                row.addChild(count);
+                listContainer.addChild(row);
+            }
+        }
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).height(200));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(listContainer);
+        dialog.addContent(scroller);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.confirm")
+                .addClass("__confirm-button__"));
+        dialog.show(rootElement);
+    }
+
     private static void updateMaterialList() {
         if (materialListContainer == null) return;
         materialListContainer.clearAllChildren();
 
         var model = session.getModel();
-        if (model != null && !model.getRegions().isEmpty()) {
-            Map<net.minecraft.world.level.block.Block, Integer> counts = new LinkedHashMap<>();
-            for (var region : model.getRegions()) {
-                var blocks = region.getBlocks();
-                for (int y = 0; y < region.getSizeY(); y++) {
-                    for (int z = 0; z < region.getSizeZ(); z++) {
-                        for (int x = 0; x < region.getSizeX(); x++) {
-                            var obj = blocks.get(x, y, z);
-                            if (obj instanceof net.minecraft.world.level.block.state.BlockState bs && !bs.isAir()) {
-                                counts.merge(bs.getBlock(), 1, Integer::sum);
-                            } else if (obj instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
-                                var locStr = s.contains("[") ? s.substring(0, s.indexOf('[')) : s;
-                                var loc = net.minecraft.resources.ResourceLocation.parse(locStr);
-                                BuiltInRegistries.BLOCK.getOptional(loc)
-                                        .ifPresent(block -> counts.merge(block, 1, Integer::sum));
-                            }
+        if (model == null || model.getRegions().isEmpty()) return;
+
+        record BlockKey(net.minecraft.world.level.block.Block block, String nbt) {}
+        Map<BlockKey, Integer> counts = new LinkedHashMap<>();
+        Map<String, List<BlockKey>> byMod = new LinkedHashMap<>();
+
+        for (var region : model.getRegions()) {
+            var blocks = region.getBlocks();
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = blocks.get(x, y, z);
+                        net.minecraft.world.level.block.Block block = null;
+                        if (obj instanceof net.minecraft.world.level.block.state.BlockState bs && !bs.isAir()) {
+                            block = bs.getBlock();
+                        } else if (obj instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
+                            var locStr = s.contains("[") ? s.substring(0, s.indexOf('[')) : s;
+                            var loc = net.minecraft.resources.ResourceLocation.parse(locStr);
+                            var opt = BuiltInRegistries.BLOCK.getOptional(loc);
+                            if (opt.isEmpty()) continue;
+                            block = opt.get();
                         }
+                        if (block == null) continue;
+
+                        var beNbt = region.getBlockEntity(x, y, z);
+                        String nbtKey = "";
+                        if (beNbt != null && !beNbt.isEmpty()) {
+                            var cleaned = beNbt.copy();
+                            cleaned.remove("x"); cleaned.remove("y"); cleaned.remove("z"); cleaned.remove("id");
+                            nbtKey = cleaned.toString();
+                        }
+                        var key = new BlockKey(block, nbtKey);
+                        counts.merge(key, 1, Integer::sum);
                     }
                 }
             }
+        }
 
-            for (var entry : counts.entrySet()) {
-                var block = entry.getKey();
+        for (var entry : counts.entrySet()) {
+            var modId = BuiltInRegistries.BLOCK.getKey(entry.getKey().block()).getNamespace();
+            byMod.computeIfAbsent(modId, k -> new ArrayList<>()).add(entry.getKey());
+        }
+
+        var mc = Minecraft.getInstance();
+        var player = mc.player;
+        Map<net.minecraft.world.item.Item, Integer> inventoryCounts = new LinkedHashMap<>();
+        if (showInventoryCompare && player != null) {
+            for (var stack : player.getInventory().items) {
+                if (!stack.isEmpty()) {
+                    inventoryCounts.merge(stack.getItem(), stack.getCount(), Integer::sum);
+                }
+            }
+        }
+
+        int totalBlocks = counts.values().stream().mapToInt(Integer::intValue).sum();
+        int totalTypes = counts.size();
+        var totalLabel = findById(rootElement, "materialTotalLabel");
+        if (totalLabel instanceof Label tl) {
+            tl.setText(Component.translatable("ebe.materials.total", totalBlocks, totalTypes));
+        }
+
+        for (var modEntry : byMod.entrySet()) {
+            var modId = modEntry.getKey();
+            var modBlocks = modEntry.getValue();
+
+            var modHeader = new UIElement();
+            modHeader.layout(l -> l.widthPercent(100).paddingHorizontal(2).paddingVertical(1));
+            modHeader.style(s -> s.background(Sprites.RECT_RD));
+            var modLabel = new Label();
+            modLabel.setText(Component.literal(modId + " (" + modBlocks.size() + ")"));
+            modLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAFF).textShadow(false));
+            modHeader.addChild(modLabel);
+            materialListContainer.addChild(modHeader);
+
+            for (var blockKey : modBlocks) {
+                var count = counts.get(blockKey);
+                var block = blockKey.block();
                 var item = block.asItem();
-                var modId = BuiltInRegistries.ITEM.getKey(item).getNamespace();
                 var blockName = block.getName().getString();
-                var tooltipText = Component.literal(blockName + "\n" + ChatFormatting.GRAY + modId);
+                var hasNbt = !blockKey.nbt().isEmpty();
 
                 var row = new UIElement();
-                row.layout(l -> l.flexDirection(FlexDirection.COLUMN).alignItems(AlignItems.CENTER).gapAll(1));
+                row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)
+                        .paddingHorizontal(4).paddingVertical(2).gapAll(1));
+                row.style(s -> s.background(Sprites.RECT_DARK));
+
+                var mainLine = new UIElement();
+                mainLine.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP));
 
                 var icon = new UIElement();
-                icon.layout(l -> l.width(24).height(24));
+                icon.layout(l -> l.width(16).height(16).flexShrink(0));
                 icon.style(s -> s.backgroundTexture(new ItemStackTexture(item)));
+                var tooltipText = Component.literal(blockName + (hasNbt ? " [NBT]" : "") + "\n" + net.minecraft.ChatFormatting.GRAY + modId);
                 icon.addEventListener(UIEvents.MOUSE_ENTER, e -> icon.style(s -> s.tooltips(tooltipText)));
-                row.addChild(icon);
+                mainLine.addChild(icon);
 
-                var countLabel = new Label();
-                countLabel.setText(Component.literal("×" + entry.getValue()));
-                countLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).textShadow(false).fontSize(8));
-                row.addChild(countLabel);
+                var nameLabel = new Label();
+                nameLabel.setText(Component.literal(blockName + (hasNbt ? " *" : "")));
+                nameLabel.textStyle(ts -> ts.fontSize(9).textColor(hasNbt ? 0xFFAAFFFF : 0xFFDDDDDD).textShadow(false));
+                nameLabel.layout(l -> l.flex(1).minWidth(0));
+                mainLine.addChild(nameLabel);
+
+                if (showInventoryCompare) {
+                    int invCount = inventoryCounts.getOrDefault(item, 0);
+                    int diff = count - invCount;
+                    var diffLabel = new Label();
+                    if (diff <= 0) {
+                        diffLabel.setText(Component.literal(count + "/" + invCount + " ✓"));
+                        diffLabel.textStyle(ts -> ts.fontSize(8).textColor(0xFF55FF55).textShadow(false));
+                    } else {
+                        diffLabel.setText(Component.literal(count + "/" + invCount + " -" + diff));
+                        diffLabel.textStyle(ts -> ts.fontSize(8).textColor(0xFFFF5555).textShadow(false));
+                    }
+                    diffLabel.layout(l -> l.width(60).flexShrink(0));
+                    mainLine.addChild(diffLabel);
+                } else {
+                    var countLabel = new Label();
+                    countLabel.setText(Component.literal("×" + count));
+                    countLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFCCCCCC).textShadow(false));
+                    countLabel.layout(l -> l.width(40).flexShrink(0));
+                    mainLine.addChild(countLabel);
+                }
+
+                row.addChild(mainLine);
+
+                if (hasNbt) {
+                    var nbtHint = new Label();
+                    var shortNbt = blockKey.nbt().length() > 60 ? blockKey.nbt().substring(0, 57) + "..." : blockKey.nbt();
+                    nbtHint.setText(Component.literal("NBT: " + shortNbt));
+                    nbtHint.textStyle(ts -> ts.fontSize(7).textColor(0xFF888888).textShadow(false));
+                    row.addChild(nbtHint);
+                }
 
                 materialListContainer.addChild(row);
             }
         }
+    }
+
+    private static void exportMaterialList() {
+        var model = session.getModel();
+        if (model == null) return;
+
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (var region : model.getRegions()) {
+            var blocks = region.getBlocks();
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = blocks.get(x, y, z);
+                        if (obj instanceof net.minecraft.world.level.block.state.BlockState bs && !bs.isAir()) {
+                            var key = BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
+                            counts.merge(key, 1, Integer::sum);
+                        } else if (obj instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
+                            var locStr = s.contains("[") ? s.substring(0, s.indexOf('[')) : s;
+                            counts.merge(locStr, 1, Integer::sum);
+                        }
+                    }
+                }
+            }
+        }
+
+        try {
+            var dir = Path.of(EBEClientConfig.schematicDir.get());
+            Files.createDirectories(dir);
+            var baseName = session.getCurrentName();
+
+            var csvFile = dir.resolve(baseName + "_materials.csv");
+            try (var writer = Files.newBufferedWriter(csvFile)) {
+                writer.write("block,count\n");
+                for (var entry : counts.entrySet()) {
+                    writer.write(entry.getKey() + "," + entry.getValue() + "\n");
+                }
+            }
+
+            var jsonFile = dir.resolve(baseName + "_materials.json");
+            var jsonArr = new com.google.gson.JsonArray();
+            for (var entry : counts.entrySet()) {
+                var obj = new com.google.gson.JsonObject();
+                obj.addProperty("block", entry.getKey());
+                obj.addProperty("count", entry.getValue());
+                jsonArr.add(obj);
+            }
+            try (var writer = Files.newBufferedWriter(jsonFile)) {
+                new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(jsonArr, writer);
+            }
+        } catch (Exception ignored) {}
     }
 
     // ========== Status Bar ==========

@@ -1,6 +1,11 @@
 package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.client.keybind.EBEKeyMappings;
+import com.l1ght.ebe.client.compat.IrisCompat;
+import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
+import com.l1ght.ebe.client.renderer.HeatmapMode;
+import com.l1ght.ebe.client.renderer.HeatmapRenderHook;
+import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
@@ -8,15 +13,21 @@ import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
+import com.lowdragmc.lowdraglib2.client.scene.FBOWorldSceneRenderer;
+import com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook;
+import com.lowdragmc.lowdraglib2.client.scene.WorldSceneRenderer;
+import com.lowdragmc.lowdraglib2.math.Size;
 import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 
 import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
 import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -47,7 +58,9 @@ public class ViewportFactory {
     private static final int FBO_THRESHOLD = 5000;
     private static final int DELTA_OVERLAY_THRESHOLD = 256;
     private static final int DEFERRED_COMPILE_FRAMES = 60;
-    private static final int SMALL_SCENE_THRESHOLD = 10000;
+    private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
+    private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
+    private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
 
     private static final List<PendingBlockDelta> pendingDeltas = new ArrayList<>();
     private static int framesSinceLastEdit = 0;
@@ -64,8 +77,23 @@ public class ViewportFactory {
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
+    private static SectionedWorldSceneRenderer sectionedRenderer;
+    private static final HeatmapRenderHook heatmapHook = new HeatmapRenderHook();
     private static boolean hasLoadedModel = false;
     private static boolean firstOpen = true;
+    private static boolean shaderProbeLoggedForViewport = false;
+    private static boolean shaderProbeSceneActive = false;
+    private static boolean irisViewportPassActive = false;
+    private static int irisViewportPassFrame = 0;
+    private static boolean irisBeginProbeLogged = false;
+    private static boolean irisFinalizeProbeLogged = false;
+    private static int irisFboWidth = -1;
+    private static int irisFboHeight = -1;
+    private static int irisOffscreenBeginFailures = 0;
+    private static boolean irisOffscreenDisabledForSession = false;
+    private static int pendingIrisFboWidth = -1;
+    private static int pendingIrisFboHeight = -1;
+    private static int pendingIrisFboStableFrames = 0;
 
     private static float savedYaw = -135;
     private static float savedPitch = 25;
@@ -136,13 +164,15 @@ public class ViewportFactory {
     }
 
     public static UIElement create3DViewport() {
+        stopIrisViewportPass("viewport-create");
+        resetShaderProbeLogState();
         currentWorld = new TrackedDummyWorld();
 
         currentScene = new Scene();
         currentScene.layout(l -> l.flex(1));
         currentScene.setId("viewport");
 
-        currentScene.createScene(currentWorld);
+        createSceneRenderer();
 
         var session = EditorUI.getSession();
         boolean hasContent = hasLoadedModel || (session != null && !session.getModel().getRegions().isEmpty());
@@ -167,37 +197,136 @@ public class ViewportFactory {
         setupDragSelection(currentScene);
 
         currentScene.setRenderSelect(false);
-        currentScene.setAfterWorldRender(scene -> {
-            var sel = EditorUI.getSelection();
-            if (!sel.isEmpty()) {
-                var poseStack = new PoseStack();
-                for (var packed : sel.getAllPacked()) {
-                    int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
-                    int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
-                    int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
-                    RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.15f, 0.35f, 0.85f, 1.005f);
-                }
-            }
-
-            if (!pendingDeltas.isEmpty()) {
-                renderPendingDeltasOverlay();
-            }
-
-            if (deferredCompileScheduled) {
-                framesSinceLastEdit++;
-                if (framesSinceLastEdit >= DEFERRED_COMPILE_FRAMES) {
-                    deferredCompileScheduled = false;
-                    pendingDeltas.clear();
-                    currentScene.needCompileCache();
-                }
-            }
-        });
+        installViewportCallbacks();
 
         selectionRectOverlay = createSelectionRectOverlay();
         currentScene.addChild(selectionRectOverlay);
 
+        logShaderProbe("viewport-created");
         firstOpen = false;
         return currentScene;
+    }
+
+    private static void installViewportCallbacks() {
+        if (currentScene == null) {
+            return;
+        }
+        currentScene.setBeforeWorldRender(ViewportFactory::handleBeforeWorldRender);
+        currentScene.setAfterWorldRender(ViewportFactory::handleAfterWorldRender);
+    }
+
+    private static void handleBeforeWorldRender(Scene scene) {
+        if (!shouldRunExperimentalIrisViewportPass()) {
+            return;
+        }
+        if (currentScene == null || !(currentScene.getRenderer() instanceof FBOWorldSceneRenderer)) {
+            return;
+        }
+        if (irisViewportPassActive) {
+            IrisCompat.forceRestoreViewportShaderState("stale-before-world-render");
+            irisViewportPassActive = false;
+        }
+        RenderTarget viewportTarget = getActiveViewportRenderTarget();
+        if (viewportTarget == null) {
+            LOG.warn("Iris viewport pass requested, but the active LDLib2 renderer is not an FBO renderer");
+            return;
+        }
+        irisViewportPassActive = IrisCompat.beginOffscreenViewportShaderPass("before-world-render", viewportTarget);
+        irisViewportPassFrame = 0;
+        if (!irisViewportPassActive) {
+            irisOffscreenBeginFailures++;
+            if (irisOffscreenBeginFailures >= 3) {
+                irisOffscreenDisabledForSession = true;
+                LOG.warn("Disabling Iris offscreen viewport renderer for this editor session after {} failed begin attempts", irisOffscreenBeginFailures);
+            }
+            return;
+        }
+        irisOffscreenBeginFailures = 0;
+        if (!irisBeginProbeLogged) {
+            irisBeginProbeLogged = true;
+            logShaderProbe("after-iris-begin");
+        }
+    }
+
+    private static void handleAfterWorldRender(Scene scene) {
+        var sel = EditorUI.getSelection();
+        if (!sel.isEmpty()) {
+            var poseStack = new PoseStack();
+            for (var packed : sel.getAllPacked()) {
+                int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+                int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+                int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+                RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.15f, 0.35f, 0.85f, 1.005f);
+            }
+        }
+
+        if (!pendingDeltas.isEmpty()) {
+            renderPendingDeltasOverlay();
+        }
+
+        if (deferredCompileScheduled) {
+            framesSinceLastEdit++;
+            if (framesSinceLastEdit >= DEFERRED_COMPILE_FRAMES) {
+                deferredCompileScheduled = false;
+                pendingDeltas.clear();
+                if (currentScene != null) {
+                    currentScene.needCompileCache();
+                }
+            }
+        }
+
+        if (!shaderProbeLoggedForViewport && shouldProbeViewportShaders()) {
+            shaderProbeLoggedForViewport = true;
+            logShaderProbe("after-world-render");
+        }
+
+        if (irisViewportPassActive) {
+            IrisCompat.endOffscreenViewportShaderPass("after-world-render", shouldRunFullIrisViewportComposite());
+            irisViewportPassActive = false;
+            irisViewportPassFrame = 0;
+            if (!irisFinalizeProbeLogged) {
+                irisFinalizeProbeLogged = true;
+                logShaderProbe("after-iris-finalize");
+            }
+        }
+    }
+
+    public static void onShaderModeChanged() {
+        stopIrisViewportPass("settings-changed");
+        resetShaderProbeLogState();
+        rebuildCurrentRenderer(false);
+        logShaderProbe("settings-changed");
+    }
+
+    public static void loadShaderProbeScene() {
+        if (currentScene == null) {
+            LOG.warn("Cannot load shader probe scene before viewport exists");
+            return;
+        }
+
+        saveCameraState();
+
+        var probeModel = new BuildingModel();
+        probeModel.addRegion("shader_probe", 0, 0, 0, 5, 3, 3);
+        probeModel.getMetadata().setName("shader_probe");
+        probeModel.getMetadata().setSize(5, 3, 3);
+        probeModel.setBlockAt(1, 1, 1, Blocks.STONE.defaultBlockState());
+        probeModel.setBlockAt(2, 1, 1, Blocks.GLASS.defaultBlockState());
+        probeModel.setBlockAt(3, 1, 1, Blocks.GLOWSTONE.defaultBlockState());
+
+        loadFromModel(probeModel, true);
+        shaderProbeSceneActive = true;
+        savedYaw = -45;
+        savedPitch = 20;
+        savedZoom = 5;
+        savedCenter = new Vector3f(2, 1, 1);
+        currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+        currentScene.setZoom(savedZoom);
+        currentScene.setCenter(savedCenter);
+
+        EditorUI.getSelection().clear();
+        resetShaderProbeLogState();
+        logShaderProbe("shader-probe-scene-loaded");
     }
 
     public static void loadFromModel(BuildingModel model) {
@@ -221,7 +350,7 @@ public class ViewportFactory {
 
         LOG.info("Total blocks: {}", totalBlocksAdded);
 
-        currentScene.createScene(currentWorld);
+        createSceneRenderer();
         currentScene.useCacheBuffer(totalBlocksAdded > FBO_THRESHOLD);
 
         refreshRenderedCore(autoCamera);
@@ -233,6 +362,7 @@ public class ViewportFactory {
         }
 
         hasLoadedModel = true;
+        shaderProbeSceneActive = false;
         LOG.info("Model loaded: {} blocks, autoCamera={}", totalBlocksAdded, autoCamera);
     }
 
@@ -248,8 +378,29 @@ public class ViewportFactory {
         }
     }
 
+    public static void forceRestoreIrisState(String stage) {
+        stopIrisViewportPass(stage);
+    }
+
+    public static void releaseViewportSession(String stage) {
+        stopIrisViewportPass(stage);
+        // Scene owns its renderer lifetime and releases it from onRemoved().
+        // Releasing it here as well can double-destroy the FBO when the editor
+        // is reopened, which shows up as a white frame with a black stale area.
+        currentScene = null;
+        currentWorld = null;
+        selectionRectOverlay = null;
+        shaderProbeSceneActive = false;
+        irisFboWidth = -1;
+        irisFboHeight = -1;
+        resetShaderProbeLogState();
+        IrisCompat.releaseOffscreenViewportResources();
+    }
+
     public static void tickCamera() {
+        tickIrisViewportFailsafe();
         if (currentScene == null) return;
+        ensureIrisViewportFboSize();
         if (EditorUI.isTextFieldFocused()) return;
 
         var mc = Minecraft.getInstance();
@@ -403,14 +554,17 @@ public class ViewportFactory {
 
             switch (tool) {
                 case PLACE -> {
+                    if (shaderProbeSceneActive) return;
                     var material = state.getActiveBlockState();
                     placeBlock(pos.relative(face), material != null ? material : Blocks.STONE.defaultBlockState(), history);
                 }
                 case DELETE -> {
+                    if (shaderProbeSceneActive) return;
                     deleteBlock(pos, history);
                     selection.remove(pos.getX(), pos.getY(), pos.getZ());
                 }
                 case REPLACE -> {
+                    if (shaderProbeSceneActive) return;
                     var material = state.getActiveBlockState();
                     replaceBlock(pos, material != null ? material : Blocks.GLASS.defaultBlockState(), history);
                 }
@@ -498,6 +652,13 @@ public class ViewportFactory {
         }
     }
 
+    public static void resetCamera() {
+        if (currentScene == null) return;
+        currentScene.setCenter(new Vector3f(0.5f, 0.5f, 0.5f));
+        currentScene.setCameraYawAndPitch(-135, 25);
+        currentScene.setZoom(8);
+    }
+
     public static void jumpToPosition(int x, int y, int z) {
         if (currentScene == null) return;
         currentScene.setCenter(new Vector3f(x + 0.5f, y + 0.5f, z + 0.5f));
@@ -581,14 +742,7 @@ public class ViewportFactory {
 
     private static void scheduleDeferredCompile() {
         if (currentScene == null) return;
-        int blockCount = getSceneCore() != null ? getSceneCore().size() : 0;
-        if (blockCount < SMALL_SCENE_THRESHOLD) {
-            pendingDeltas.clear();
-            currentScene.needCompileCache();
-        } else {
-            framesSinceLastEdit = 0;
-            deferredCompileScheduled = true;
-        }
+        currentScene.needCompileCache();
     }
 
     private static void renderPendingDeltasOverlay() {
@@ -726,19 +880,21 @@ public class ViewportFactory {
 
     public static void clearModel() {
         hasLoadedModel = false;
+        shaderProbeSceneActive = false;
         savedYaw = -135;
         savedPitch = 25;
         savedZoom = 8;
         savedCenter = new Vector3f(3, 2, 3);
         if (currentScene != null && currentWorld != null) {
             currentWorld = new TrackedDummyWorld();
-            currentScene.createScene(currentWorld);
+            createSceneRenderer();
             refreshRenderedCore(true);
         }
     }
 
     public static void refreshFromModel(BuildingModel model) {
         if (currentScene == null) return;
+        shaderProbeSceneActive = false;
         saveCameraState();
         currentWorld = new TrackedDummyWorld();
         var displayFilter = EditorUI.getState().getDisplayFilter();
@@ -762,7 +918,7 @@ public class ViewportFactory {
                 }
             }
         }
-        currentScene.createScene(currentWorld);
+        createSceneRenderer();
         currentScene.useCacheBuffer(totalBlocks > FBO_THRESHOLD);
         refreshRenderedCore(false);
         currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
@@ -779,10 +935,276 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        currentScene.setRenderedCore(positions, null, autoCamera);
+        ISceneBlockRenderHook hook = createCombinedHook();
+        currentScene.setRenderedCore(positions, hook, autoCamera);
+        if (sectionedRenderer != null && heatmapHook.isActive()) {
+            sectionedRenderer.needCompileCache();
+        }
     }
 
+    private static ISceneBlockRenderHook createCombinedHook() {
+        if (heatmapHook.isActive()) {
+            return heatmapHook;
+        }
+        return createIrisRenderHookIfNeeded();
+    }
 
+    public static void setHeatmapMode(HeatmapMode mode) {
+        heatmapHook.setMode(mode);
+        if (currentScene != null) {
+            refreshRenderedCore(false);
+        }
+    }
+
+    public static HeatmapMode getHeatmapMode() {
+        return heatmapHook.getMode();
+    }
+
+    private static ISceneBlockRenderHook createIrisRenderHookIfNeeded() {
+        if (!shouldRunExperimentalIrisViewportPass()) {
+            return null;
+        }
+        return new ISceneBlockRenderHook() {
+            @Override
+            public void apply(RenderType layer) {
+                if (layer == RenderType.translucent()) {
+                    IrisCompat.setViewportRenderPhase("TERRAIN_TRANSLUCENT");
+                } else if (layer == RenderType.cutoutMipped()) {
+                    IrisCompat.setViewportRenderPhase("TERRAIN_CUTOUT_MIPPED");
+                } else if (layer == RenderType.cutout()) {
+                    IrisCompat.setViewportRenderPhase("TERRAIN_CUTOUT");
+                } else if (layer == RenderType.tripwire()) {
+                    IrisCompat.setViewportRenderPhase("TRIPWIRE");
+                } else {
+                    IrisCompat.setViewportRenderPhase("TERRAIN_SOLID");
+                }
+            }
+        };
+    }
+
+    private static boolean shouldProbeViewportShaders() {
+        return IrisCompat.shouldAttemptViewportShaders(getViewportShaderMode());
+    }
+
+    private static boolean shouldRunExperimentalIrisViewportPass() {
+        return shouldUseIrisOffscreenRenderer();
+    }
+
+    private static boolean shouldRunFullIrisViewportComposite() {
+        return true;
+    }
+
+    private static String getViewportShaderMode() {
+        var mode = EBEClientConfig.viewportShaderMode.get();
+        if (!"off".equals(mode) && !"auto".equals(mode) && !"iris".equals(mode)) {
+            LOG.warn("Unknown viewport shader mode '{}', falling back to off", mode);
+            EBEClientConfig.viewportShaderMode.set("off");
+            EBEClientConfig.SPEC.save();
+            return "off";
+        }
+        return mode;
+    }
+
+    private static void rebuildCurrentRenderer(boolean autoCamera) {
+        if (currentScene == null || currentWorld == null) {
+            return;
+        }
+        saveCameraState();
+        createSceneRenderer();
+        refreshRenderedCore(autoCamera);
+        currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+        currentScene.setZoom(savedZoom);
+        currentScene.setCenter(savedCenter);
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+    }
+
+    private static void createSceneRenderer() {
+        if (currentScene == null || currentWorld == null) {
+            return;
+        }
+
+        boolean useIrisFbo = shouldUseIrisOffscreenRenderer();
+        Size fboSize = useIrisFbo ? getIrisViewportFboSize() : null;
+        boolean createIrisFbo = useIrisFbo && fboSize != null;
+        currentScene.createScene(currentWorld, createIrisFbo, fboSize);
+        if (createIrisFbo) {
+            installCachedIrisRenderer(fboSize);
+        }
+        if (createIrisFbo) {
+            irisFboWidth = fboSize.width;
+            irisFboHeight = fboSize.height;
+            LOG.info("Created Iris offscreen viewport renderer: {}x{}", irisFboWidth, irisFboHeight);
+        } else {
+            irisFboWidth = -1;
+            irisFboHeight = -1;
+        }
+        resetPendingIrisFboResize();
+        installViewportCallbacks();
+    }
+
+    private static void installCachedIrisRenderer(Size fboSize) {
+        if (currentScene == null || currentWorld == null || fboSize == null) {
+            return;
+        }
+        try {
+            initSceneReflection();
+            if (sceneRendererField == null) {
+                return;
+            }
+            var renderer = new CachedIrisWorldSceneRenderer(currentWorld, fboSize.width, fboSize.height);
+            renderer.useCacheBuffer(currentScene.isUseCache());
+            renderer.useOrtho(currentScene.isUseOrtho());
+            renderer.setAfterWorldRender(currentScene::renderBlockOverLay);
+            renderer.setCameraLookAt(
+                    currentScene.getCenter(),
+                    currentScene.camZoom(),
+                    Math.toRadians(currentScene.getRotationYaw()),
+                    Math.toRadians(currentScene.getRotationPitch())
+            );
+            sceneRendererField.set(currentScene, renderer);
+        } catch (Exception e) {
+            LOG.warn("Failed to install cached Iris viewport renderer", e);
+        }
+    }
+
+    private static boolean shouldUseIrisOffscreenRenderer() {
+        if (!"iris".equals(getViewportShaderMode())) {
+            return false;
+        }
+        if (irisOffscreenDisabledForSession) {
+            return false;
+        }
+        var probe = IrisCompat.probe("offscreen-mode-check");
+        return probe.irisLoaded() && probe.shaderPackInUse();
+    }
+
+    private static Size getIrisViewportFboSize() {
+        int width = IRIS_VIEWPORT_FBO_DEFAULT_SIZE;
+        int height = IRIS_VIEWPORT_FBO_DEFAULT_SIZE;
+        if (currentScene != null) {
+            int sceneWidth = Math.round(currentScene.getSizeWidth());
+            int sceneHeight = Math.round(currentScene.getSizeHeight());
+            if (sceneWidth >= IRIS_VIEWPORT_FBO_MIN_SIZE && sceneHeight >= IRIS_VIEWPORT_FBO_MIN_SIZE) {
+                var window = Minecraft.getInstance().getWindow();
+                width = Math.round(sceneWidth * (window.getWidth() / (float) window.getGuiScaledWidth()));
+                height = Math.round(sceneHeight * (window.getHeight() / (float) window.getGuiScaledHeight()));
+            }
+        }
+        return Size.of(Math.max(IRIS_VIEWPORT_FBO_MIN_SIZE, width), Math.max(IRIS_VIEWPORT_FBO_MIN_SIZE, height));
+    }
+
+    private static void ensureIrisViewportFboSize() {
+        if (currentScene == null || currentWorld == null) {
+            return;
+        }
+
+        boolean shouldUseIrisFbo = shouldUseIrisOffscreenRenderer();
+        WorldSceneRenderer renderer = currentScene.getRenderer();
+        if (!shouldUseIrisFbo) {
+            if (renderer instanceof FBOWorldSceneRenderer) {
+                rebuildCurrentRenderer(false);
+            }
+            return;
+        }
+
+        if (!(renderer instanceof FBOWorldSceneRenderer fboRenderer)) {
+            rebuildCurrentRenderer(false);
+            return;
+        }
+
+        Size size = getIrisViewportFboSize();
+        if (size.width != irisFboWidth || size.height != irisFboHeight) {
+            if (size.width != pendingIrisFboWidth || size.height != pendingIrisFboHeight) {
+                pendingIrisFboWidth = size.width;
+                pendingIrisFboHeight = size.height;
+                pendingIrisFboStableFrames = 1;
+                return;
+            }
+            pendingIrisFboStableFrames++;
+            if (pendingIrisFboStableFrames < IRIS_VIEWPORT_RESIZE_STABLE_FRAMES) {
+                return;
+            }
+            fboRenderer.setFBOSize(size.width, size.height);
+            irisFboWidth = size.width;
+            irisFboHeight = size.height;
+            resetPendingIrisFboResize();
+            LOG.info("Resized Iris offscreen viewport renderer: {}x{}", irisFboWidth, irisFboHeight);
+        } else {
+            resetPendingIrisFboResize();
+        }
+    }
+
+    private static RenderTarget getActiveViewportRenderTarget() {
+        if (currentScene == null) {
+            return null;
+        }
+        WorldSceneRenderer renderer = currentScene.getRenderer();
+        if (renderer instanceof FBOWorldSceneRenderer fboRenderer) {
+            return fboRenderer.getFbo();
+        }
+        return null;
+    }
+
+    private static void resetShaderProbeLogState() {
+        shaderProbeLoggedForViewport = false;
+        irisBeginProbeLogged = false;
+        irisFinalizeProbeLogged = false;
+        irisOffscreenBeginFailures = 0;
+        irisOffscreenDisabledForSession = false;
+        resetPendingIrisFboResize();
+    }
+
+    private static void resetPendingIrisFboResize() {
+        pendingIrisFboWidth = -1;
+        pendingIrisFboHeight = -1;
+        pendingIrisFboStableFrames = 0;
+    }
+
+    private static void tickIrisViewportFailsafe() {
+        if (!irisViewportPassActive) {
+            return;
+        }
+        irisViewportPassFrame++;
+        if (irisViewportPassFrame > 1) {
+            stopIrisViewportPass("tick-failsafe");
+        }
+    }
+
+    private static void stopIrisViewportPass(String stage) {
+        irisViewportPassActive = false;
+        irisViewportPassFrame = 0;
+        IrisCompat.forceRestoreViewportShaderState(stage);
+    }
+
+    private static void logShaderProbe(String stage) {
+        var mode = getViewportShaderMode();
+        var probe = IrisCompat.probe(stage);
+        if ("off".equals(mode)) {
+            LOG.info("Iris viewport probe [{}]: disabled by EBE setting", stage);
+            return;
+        }
+
+        LOG.info(
+                "Iris viewport probe [{}]: mode={}, irisLoaded={}, shadersEnabled={}, shaderPackInUse={}, pipelinePresent={}, pipeline={}, shaderOverrideActive={}, phase={}, compositeCandidate={}, error={}",
+                stage,
+                mode,
+                probe.irisLoaded(),
+                probe.shadersEnabled(),
+                probe.shaderPackInUse(),
+                probe.pipelinePresent(),
+                probe.pipelineClassName(),
+                probe.shaderOverrideActive(),
+                probe.phaseName(),
+                probe.shaderCompositeCandidate(),
+                probe.error()
+        );
+
+        if ("iris".equals(mode) && !probe.irisLoaded()) {
+            LOG.warn("Iris viewport shader mode is forced, but Iris is not loaded");
+        } else if ("after-world-render".equals(stage) && probe.irisLoaded() && probe.shaderPackInUse() && !probe.shaderOverrideActive()) {
+            LOG.warn("Iris shader pack is active, but LDLib2 viewport rendering has not entered Iris shader override at stage '{}'", stage);
+        }
+    }
 
     private static void addDemoBlocks(TrackedDummyWorld world) {
         for (int x = 0; x < 7; x++) {

@@ -5,6 +5,7 @@ import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.config.EBEServerConfig;
 import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.item.ArchitectToolboxItem;
+import com.l1ght.ebe.network.EBENetwork;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.CreativeModeTab;
@@ -51,6 +52,8 @@ public class EBEMod {
 
         EBEClientConfig.register(modContainer);
         EBEServerConfig.register(modContainer);
+
+        EBENetwork.register(modEventBus);
 
         modEventBus.addListener(this::onLoadComplete);
 

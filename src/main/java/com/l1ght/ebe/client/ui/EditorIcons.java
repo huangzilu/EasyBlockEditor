@@ -22,6 +22,12 @@ public final class EditorIcons {
     public static final SpriteTexture SELECT = SpriteTexture.of("ebe:textures/gui/icon_select.png");
     public static final SpriteTexture PENCIL = SpriteTexture.of("ebe:textures/gui/icon_pencil.png");
     public static final SpriteTexture ERASER = SpriteTexture.of("ebe:textures/gui/icon_eraser.png");
+    public static final SpriteTexture VIEW_MODE = SpriteTexture.of("ebe:textures/gui/icon_mode_view.png");
+    public static final SpriteTexture EDIT_MODE = SpriteTexture.of("ebe:textures/gui/icon_mode_edit.png");
+    public static final SpriteTexture HOME = SpriteTexture.of("ebe:textures/gui/icon_home.png");
+    public static final SpriteTexture TAG = SpriteTexture.of("ebe:textures/gui/icon_tag.png");
+    public static final SpriteTexture BRANCH = SpriteTexture.of("ebe:textures/gui/icon_branch.png");
+    public static final SpriteTexture DIFF = SpriteTexture.of("ebe:textures/gui/icon_diff.png");
 
     private EditorIcons() {}
 }

@@ -14,7 +14,8 @@ import java.util.function.Consumer;
 public class ImportDialog {
 
     public static void showOpen(UIElement parent, Consumer<Path> onFileSelected) {
-        var dir = new File(System.getProperty("user.home"));
+        var dir = Path.of(EBEClientConfig.schematicDir.get()).toFile();
+        if (!dir.exists()) dir.mkdirs();
         Dialog.showFileDialog("ebe.editor.open", dir, true,
                 Dialog.suffixFilter(".litematic", ".schem", ".nbt", ".schematic", ".ebe"),
                 file -> {
@@ -25,7 +26,8 @@ public class ImportDialog {
     }
 
     public static void showImport(UIElement parent, Consumer<Path> onFileSelected) {
-        var dir = new File(System.getProperty("user.home"));
+        var dir = Path.of(EBEClientConfig.schematicDir.get()).toFile();
+        if (!dir.exists()) dir.mkdirs();
         Dialog.showFileDialog("ebe.editor.import", dir, true,
                 Dialog.suffixFilter(".litematic", ".schem", ".nbt", ".schematic", ".ebe"),
                 file -> {
@@ -43,5 +45,23 @@ public class ImportDialog {
                         }
                     }
                 }).show(parent);
+    }
+
+    public static void openSchematicFolder() {
+        try {
+            var dir = Path.of(EBEClientConfig.schematicDir.get());
+            Files.createDirectories(dir);
+            net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                try {
+                    java.awt.Desktop.getDesktop().open(dir.toFile());
+                } catch (Exception e) {
+                    try {
+                        Runtime.getRuntime().exec("explorer " + dir.toAbsolutePath());
+                    } catch (Exception ignored) {}
+                }
+            });
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }

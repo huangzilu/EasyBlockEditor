@@ -8,6 +8,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class EBEFormatIOTest {
 
+    private BuildingModel.Layer findLayer(BuildingModel model, String name) {
+        return model.getLayers().stream()
+                .filter(l -> name.equals(l.getName())).findFirst().orElse(null);
+    }
+
     @Test
     void testRoundTrip(@TempDir Path dir) throws Exception {
         var file = dir.resolve("test.ebe");
@@ -65,10 +70,16 @@ class EBEFormatIOTest {
         var loaded = EBEFormatIO.read(file);
 
         assertEquals(3, loaded.getLayers().size());
-        assertTrue(loaded.getLayers().get("default").isVisible());
-        assertTrue(loaded.getLayers().get("walls").isVisible());
-        assertFalse(loaded.getLayers().get("roof").isVisible());
-        assertTrue(loaded.getLayers().get("roof").isLocked());
+        var defaultLayer = findLayer(loaded, "default");
+        assertNotNull(defaultLayer);
+        assertTrue(defaultLayer.isVisible());
+        var walls = findLayer(loaded, "walls");
+        assertNotNull(walls);
+        assertTrue(walls.isVisible());
+        var roof = findLayer(loaded, "roof");
+        assertNotNull(roof);
+        assertFalse(roof.isVisible());
+        assertTrue(roof.isLocked());
     }
 
     @Test

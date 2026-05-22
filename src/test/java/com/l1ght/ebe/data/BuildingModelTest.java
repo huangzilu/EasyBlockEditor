@@ -11,7 +11,7 @@ class BuildingModelTest {
         assertEquals("Untitled", model.getMetadata().getName());
         assertEquals(0, model.getRegions().size());
         assertEquals(1, model.getLayers().size());
-        assertTrue(model.getLayers().containsKey("default"));
+        assertEquals("default", model.getLayers().get(0).getName());
     }
 
     @Test
@@ -68,8 +68,14 @@ class BuildingModelTest {
         model.addLayer("walls", true, false);
         model.addLayer("foundation", true, true);
         assertEquals(4, model.getLayers().size());
-        assertTrue(model.getLayers().get("foundation").isLocked());
-        assertFalse(model.getLayers().get("roof").isLocked());
+        var foundation = model.getLayers().stream()
+                .filter(l -> "foundation".equals(l.getName())).findFirst().orElse(null);
+        assertNotNull(foundation);
+        assertTrue(foundation.isLocked());
+        var roof = model.getLayers().stream()
+                .filter(l -> "roof".equals(l.getName())).findFirst().orElse(null);
+        assertNotNull(roof);
+        assertFalse(roof.isLocked());
     }
 
     @Test
