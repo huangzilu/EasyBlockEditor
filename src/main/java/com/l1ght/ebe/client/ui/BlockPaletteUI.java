@@ -5,6 +5,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
@@ -24,6 +25,7 @@ import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.slf4j.Logger;
@@ -33,6 +35,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 @OnlyIn(Dist.CLIENT)
 public class BlockPaletteUI {
@@ -48,6 +51,8 @@ public class BlockPaletteUI {
     private static boolean persistedOpen = false;
     private static float persistedLeft = 8;
     private static float persistedTop = 30;
+    private static Consumer<BlockState> pendingCallback = null;
+    private static Dialog pendingCallbackDialog = null;
 
     private static final int SLOT_SIZE = 18;
     private static final int SLOTS_PER_ROW = 9;
@@ -418,6 +423,7 @@ public class BlockPaletteUI {
 
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).maxHeight(200));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
 
         var grid = new UIElement();
         grid.layout(l -> l.width(GRID_WIDTH).flexDirection(FlexDirection.ROW)
@@ -447,6 +453,149 @@ public class BlockPaletteUI {
         scroller.addScrollViewChild(grid);
         container.addChild(scroller);
 
+        return container;
+    }
+
+    public static void openWithCallback(UIElement parent, Consumer<BlockState> callback) {
+        pendingCallback = callback;
+        var dialog = new Dialog();
+        dialog.setTitle(Component.translatable("ebe.editor.palette.browse_all").getString());
+        dialog.overlay.layout(l -> l.width(GRID_WIDTH + 40).maxHeightPercent(80));
+        pendingCallbackDialog = dialog;
+
+        var searchRow = new UIElement();
+        searchRow.layout(l -> l.widthPercent(100).height(20).flexDirection(FlexDirection.ROW).gapAll(4));
+        var searchLabel = new Label();
+        searchLabel.setText(Component.literal("🔍"));
+        searchLabel.textStyle(ts -> ts.textShadow(false));
+        searchRow.addChild(searchLabel);
+        var searchInput = new TextField();
+        searchInput.layout(l -> l.flex(1).height(18));
+        searchInput.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.editor.palette.search")));
+        searchRow.addChild(searchInput);
+        dialog.addContent(searchRow);
+
+        var tabView = new TabView();
+        tabView.layout(l -> l.widthPercent(100).flex(1));
+        tabView.setId("browseCallbackTabView");
+        tabView.tabScroller(s -> s.scrollerStyle(style -> style.horizontalScrollDisplay(com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay.ALWAYS)));
+
+        var tabMap = buildTabMap();
+        List<ItemStack> allBlocks = new ArrayList<>();
+        for (var items : tabMap.values()) allBlocks.addAll(items);
+        if (!allBlocks.isEmpty()) {
+            var allTab = new Tab();
+            allTab.layout(l -> l.width(22).height(22).paddingAll(3));
+            var allIcon = new UIElement();
+            allIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            allIcon.style(s -> s.backgroundTexture(Sprites.RECT_DARK));
+            allIcon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                allIcon.style(s2 -> s2.tooltips(Component.translatable("ebe.editor.palette.tab_all")));
+            });
+            allTab.addChild(allIcon);
+            tabView.addTab(allTab, buildCallbackScrolledGrid(allBlocks));
+        }
+
+        for (var entry : tabMap.entrySet()) {
+            var tab = entry.getKey();
+            var tabItems = entry.getValue();
+            if (tabItems.isEmpty()) continue;
+            var tabBtn = new Tab();
+            tabBtn.layout(l -> l.width(22).height(22).paddingAll(3));
+            if (tab != null) {
+                var iconStack = tab.getIconItem();
+                var iconEl = new UIElement();
+                iconEl.layout(l -> l.widthPercent(100).heightPercent(100));
+                if (iconStack != null && !iconStack.isEmpty()) {
+                    iconEl.style(s -> s.backgroundTexture(new ItemStackTexture(iconStack)));
+                }
+                var tabName = tab.getDisplayName();
+                iconEl.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                    iconEl.style(s2 -> s2.tooltips(tabName));
+                });
+                tabBtn.addChild(iconEl);
+            }
+            tabView.addTab(tabBtn, buildCallbackScrolledGrid(tabItems));
+        }
+
+        var searchResultsContainer = new UIElement();
+        searchResultsContainer.setId("callbackSearchResults");
+        searchResultsContainer.layout(l -> l.widthPercent(100).flex(1));
+        searchResultsContainer.setDisplay(false);
+        dialog.addContent(searchResultsContainer);
+
+        searchInput.setTextResponder(text -> {
+            var filter = text.toLowerCase();
+            if (filter.isEmpty()) {
+                tabView.setDisplay(true);
+                searchResultsContainer.setDisplay(false);
+                new ArrayList<>(searchResultsContainer.getChildren()).forEach(UIElement::removeSelf);
+                return;
+            }
+            List<ItemStack> filtered = new ArrayList<>();
+            for (var items : tabMap.values()) {
+                for (var stack : items) {
+                    if (stack.getItem() instanceof BlockItem bi) {
+                        var name = bi.getBlock().getName().getString().toLowerCase();
+                        var id = BuiltInRegistries.BLOCK.getKey(bi.getBlock()).toString().toLowerCase();
+                        if (name.contains(filter) || id.contains(filter)) {
+                            filtered.add(stack.copy());
+                        }
+                    }
+                }
+            }
+            tabView.setDisplay(false);
+            new ArrayList<>(searchResultsContainer.getChildren()).forEach(UIElement::removeSelf);
+            searchResultsContainer.addChild(buildCallbackScrolledGrid(filtered));
+            searchResultsContainer.setDisplay(true);
+        });
+
+        dialog.addContent(tabView);
+        dialog.addButton(new Button()
+                .setText(Component.translatable("ebe.editor.palette.close"))
+                .setOnClick(e -> {
+                    pendingCallback = null;
+                    pendingCallbackDialog = null;
+                    dialog.close();
+                }));
+        dialog.show(parent);
+    }
+
+    private static UIElement buildCallbackScrolledGrid(List<ItemStack> items) {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).maxHeight(200));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        var grid = new UIElement();
+        grid.layout(l -> l.width(GRID_WIDTH).flexDirection(FlexDirection.ROW)
+                .flexWrap(FlexWrap.WRAP).gapAll(1));
+        for (var stack : items) {
+            if (!(stack.getItem() instanceof BlockItem bi)) continue;
+            var slotEl = new UIElement();
+            slotEl.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+            slotEl.style(s -> s.background(Sprites.RECT_DARK));
+            var icon = new UIElement();
+            icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bi)));
+            icon.addEventListener(UIEvents.CLICK, e -> {
+                if (pendingCallback != null) {
+                    pendingCallback.accept(bi.getBlock().defaultBlockState());
+                }
+                if (pendingCallbackDialog != null) {
+                    pendingCallbackDialog.close();
+                }
+                pendingCallback = null;
+                pendingCallbackDialog = null;
+            });
+            icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+                icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
+            });
+            slotEl.addChild(icon);
+            grid.addChild(slotEl);
+        }
+        scroller.addScrollViewChild(grid);
+        container.addChild(scroller);
         return container;
     }
 }

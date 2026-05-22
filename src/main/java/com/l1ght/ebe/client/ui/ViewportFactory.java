@@ -10,7 +10,11 @@ import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
+
+import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
+import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -61,6 +65,13 @@ public class ViewportFactory {
     private static int dragStartX, dragStartY;
     private static int dragCurrentX, dragCurrentY;
     private static UIElement selectionRectOverlay;
+
+    public static boolean isDragSelecting() { return dragSelecting; }
+
+    private static void setSceneDraggable(boolean value) {
+        if (currentScene == null) return;
+        currentScene.setDraggable(value);
+    }
 
     @SuppressWarnings("unchecked")
     private static Set<BlockPos> getSceneCore() {
@@ -138,6 +149,19 @@ public class ViewportFactory {
         setupSceneMiddleClick(currentScene);
         setupDragSelection(currentScene);
 
+        currentScene.setRenderSelect(false);
+        currentScene.setAfterWorldRender(scene -> {
+            var sel = EditorUI.getSelection();
+            if (sel.isEmpty()) return;
+            var poseStack = new PoseStack();
+            for (var packed : sel.getAllPacked()) {
+                int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+                int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+                int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+                RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.2f, 0.5f, 1.0f, 1.005f);
+            }
+        });
+
         selectionRectOverlay = createSelectionRectOverlay();
         currentScene.addChild(selectionRectOverlay);
 
@@ -195,14 +219,19 @@ public class ViewportFactory {
 
     public static void tickCamera() {
         if (currentScene == null) return;
+        if (EditorUI.isTextFieldFocused()) return;
 
-        long window = net.minecraft.client.Minecraft.getInstance().getWindow().getWindow();
+        var mc = Minecraft.getInstance();
+        long window = mc.getWindow().getWindow();
         double yawDeg = currentScene.getRotationYaw();
         double pitchDeg = currentScene.getRotationPitch();
         float yawRad = (float) Math.toRadians(yawDeg);
         float pitchRad = (float) Math.toRadians(pitchDeg);
         float speed = EBEClientConfig.flightSpeed.get().floatValue();
         var center = new Vector3f(currentScene.getCenter());
+
+        boolean shiftHeld = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+        setSceneDraggable(!shiftHeld);
 
         float cp = (float) Math.cos(pitchRad);
         float fx = (float) (cp * Math.cos(yawRad));
@@ -216,11 +245,11 @@ public class ViewportFactory {
         boolean moved = false;
 
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_W) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
-            center.add(fx * speed, fy * speed, fz * speed);
+            center.add(-fx * speed, -fy * speed, -fz * speed);
             moved = true;
         }
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_S) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
-            center.add(-fx * speed, -fy * speed, -fz * speed);
+            center.add(fx * speed, fy * speed, fz * speed);
             moved = true;
         }
         if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_A) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
@@ -346,7 +375,10 @@ public class ViewportFactory {
                     var material = state.getActiveBlockState();
                     placeBlock(pos.relative(face), material != null ? material : Blocks.STONE.defaultBlockState(), history);
                 }
-                case DELETE -> deleteBlock(pos, history);
+                case DELETE -> {
+                    deleteBlock(pos, history);
+                    selection.remove(pos.getX(), pos.getY(), pos.getZ());
+                }
                 case REPLACE -> {
                     var material = state.getActiveBlockState();
                     replaceBlock(pos, material != null ? material : Blocks.GLASS.defaultBlockState(), history);
@@ -564,8 +596,10 @@ public class ViewportFactory {
         if (currentScene == null) return;
         saveCameraState();
         currentWorld = new TrackedDummyWorld();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
         int totalBlocks = 0;
         for (var region : model.getRegions()) {
+            if (!model.isLayerVisible(region.getLayerId())) continue;
             for (int y = 0; y < region.getSizeY(); y++) {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
@@ -575,6 +609,7 @@ public class ViewportFactory {
                             int wx = x + region.getOffsetX();
                             int wy = y + region.getOffsetY();
                             int wz = z + region.getOffsetZ();
+                            if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
                             currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
                             totalBlocks++;
                         }
@@ -611,7 +646,7 @@ public class ViewportFactory {
                                                         net.minecraft.client.renderer.RenderType layer, float partialTicks) {
                     var selection = EditorUI.getSelection();
                     if (selection.contains(pos.getX(), pos.getY(), pos.getZ())) {
-                        wrapperBuffer.setColorMultiplier(0.6f, 0.8f, 1.0f, 0.7f);
+                        wrapperBuffer.setColorMultiplier(0.5f, 0.7f, 1.0f, 0.85f);
                     }
                 }
             };
@@ -661,6 +696,9 @@ public class ViewportFactory {
         var selection = EditorUI.getSelection();
         var model = EditorUI.getSession().getModel();
         var targetBlock = targetType.getBlock();
+        boolean nbtSensitive = selection.isNbtSensitive();
+        var state = EditorUI.getState();
+        var targetNbt = nbtSensitive ? model.getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ()) : null;
 
         for (var region : model.getRegions()) {
             for (int y = 0; y < region.getSizeY(); y++) {
@@ -670,6 +708,13 @@ public class ViewportFactory {
                         if (obj == null) continue;
                         var bs = resolveBlockState(obj);
                         if (!bs.isAir() && bs.getBlock() == targetBlock) {
+                            if (nbtSensitive) {
+                                int wx = x + region.getOffsetX();
+                                int wy = y + region.getOffsetY();
+                                int wz = z + region.getOffsetZ();
+                                var nbt = model.getBlockEntityNbt(wx, wy, wz);
+                                if (!nbtEquals(targetNbt, nbt)) continue;
+                            }
                             selection.add(x + region.getOffsetX(), y + region.getOffsetY(), z + region.getOffsetZ());
                         }
                     }
@@ -678,14 +723,48 @@ public class ViewportFactory {
         }
     }
 
+    private static boolean nbtEquals(net.minecraft.nbt.CompoundTag a, net.minecraft.nbt.CompoundTag b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.equals(b);
+    }
+
     private static UIElement createSelectionRectOverlay() {
-        var rect = new UIElement();
-        rect.setId("selectionRect");
-        rect.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+        var container = new UIElement();
+        container.setId("selectionRect");
+        container.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .left(0).top(0).width(0).height(0));
-        rect.style(s -> s.background(Sprites.BORDER).zIndex(200));
-        rect.setDisplay(false);
-        return rect;
+        container.setDisplay(false);
+
+        var top = new UIElement();
+        top.setId("selRectTop");
+        top.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(0).top(0).widthPercent(100).height(2));
+        top.style(s -> s.background(Sprites.RECT_RD));
+        container.addChild(top);
+
+        var bottom = new UIElement();
+        bottom.setId("selRectBottom");
+        bottom.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(0).bottom(0).widthPercent(100).height(2));
+        bottom.style(s -> s.background(Sprites.RECT_RD));
+        container.addChild(bottom);
+
+        var left = new UIElement();
+        left.setId("selRectLeft");
+        left.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(0).top(0).width(2).heightPercent(100));
+        left.style(s -> s.background(Sprites.RECT_RD));
+        container.addChild(left);
+
+        var right = new UIElement();
+        right.setId("selRectRight");
+        right.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .right(0).top(0).width(2).heightPercent(100));
+        right.style(s -> s.background(Sprites.RECT_RD));
+        container.addChild(right);
+
+        return container;
     }
 
     private static void setupDragSelection(Scene scene) {
@@ -702,13 +781,9 @@ public class ViewportFactory {
             if (!shift) return;
 
             dragSelecting = true;
-            var mc = Minecraft.getInstance();
-            double guiScale = mc.getWindow().getGuiScale();
-            double[] xpos = new double[1];
-            double[] ypos = new double[1];
-            org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
-            dragStartX = (int) (xpos[0] / guiScale);
-            dragStartY = (int) (ypos[0] / guiScale);
+
+            dragStartX = (int) e.x;
+            dragStartY = (int) e.y;
             dragCurrentX = dragStartX;
             dragCurrentY = dragStartY;
             updateSelectionRect();
@@ -717,14 +792,8 @@ public class ViewportFactory {
 
         scene.addEventListener(UIEvents.MOUSE_MOVE, e -> {
             if (!dragSelecting) return;
-            long window = Minecraft.getInstance().getWindow().getWindow();
-            var mc = Minecraft.getInstance();
-            double guiScale = mc.getWindow().getGuiScale();
-            double[] xpos = new double[1];
-            double[] ypos = new double[1];
-            org.lwjgl.glfw.GLFW.glfwGetCursorPos(window, xpos, ypos);
-            dragCurrentX = (int) (xpos[0] / guiScale);
-            dragCurrentY = (int) (ypos[0] / guiScale);
+            dragCurrentX = (int) e.x;
+            dragCurrentY = (int) e.y;
             updateSelectionRect();
         });
 
@@ -747,15 +816,18 @@ public class ViewportFactory {
     }
 
     private static void updateSelectionRect() {
-        int x = Math.min(dragStartX, dragCurrentX);
-        int y = Math.min(dragStartY, dragCurrentY);
+        if (currentScene == null) return;
+        int scenePosX = (int) currentScene.getPositionX();
+        int scenePosY = (int) currentScene.getPositionY();
+        int x = Math.min(dragStartX, dragCurrentX) - scenePosX;
+        int y = Math.min(dragStartY, dragCurrentY) - scenePosY;
         int w = Math.abs(dragCurrentX - dragStartX);
         int h = Math.abs(dragCurrentY - dragStartY);
         selectionRectOverlay.layout(l -> l.left(x).top(y).width(w).height(h));
     }
 
     private static void selectBlocksInScreenRect(int minX, int minY, int maxX, int maxY) {
-        if (currentWorld == null) return;
+        if (currentWorld == null || currentScene == null) return;
 
         float fov = (float) Math.toRadians(EBEClientConfig.editorFov.get());
         var window = Minecraft.getInstance().getWindow();
@@ -783,8 +855,18 @@ public class ViewportFactory {
         int screenW = window.getGuiScaledWidth();
         int screenH = window.getGuiScaledHeight();
 
-        var bestPerPixel = new LinkedHashMap<Long, int[]>();
-        var depthPerPixel = new LinkedHashMap<Long, Float>();
+        int sceneOffX = (int) currentScene.getPositionX();
+        int sceneOffY = (int) currentScene.getPositionY();
+        float sceneW = currentScene.getSizeWidth();
+        float sceneH = currentScene.getSizeHeight();
+
+        int localMinX = minX - sceneOffX;
+        int localMinY = minY - sceneOffY;
+        int localMaxX = maxX - sceneOffX;
+        int localMaxY = maxY - sceneOffY;
+
+        var selection = EditorUI.getSelection();
+        selection.clear();
         var model = EditorUI.getSession().getModel();
 
         for (var region : model.getRegions()) {
@@ -801,41 +883,44 @@ public class ViewportFactory {
                         int wy = y + region.getOffsetY();
                         int wz = z + region.getOffsetZ();
 
-                        var worldPos = new Vector4f(wx + 0.5f, wy + 0.5f, wz + 0.5f, 1f);
-                        var clipPos = new Vector4f();
-                        worldPos.mul(viewProj, clipPos);
-
-                        if (clipPos.w <= 0) continue;
-                        float ndcX = clipPos.x / clipPos.w;
-                        float ndcY = clipPos.y / clipPos.w;
-                        if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) continue;
-
-                        int sx = (int) ((ndcX + 1f) * 0.5f * screenW);
-                        int sy = (int) ((1f - ndcY) * 0.5f * screenH);
-
-                        if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
-
-                        long key = ((long) sx & 0xFFFF) | (((long) sy & 0xFFFF) << 16);
-                        float depth = clipPos.z / clipPos.w;
-                        var existing = depthPerPixel.get(key);
-                        if (existing == null || depth < existing) {
-                            depthPerPixel.put(key, depth);
-                            bestPerPixel.put(key, new int[]{wx, wy, wz});
+                        if (blockFaceIntersectsScreenRect(wx, wy, wz, viewProj, screenW, screenH,
+                                localMinX, localMinY, localMaxX, localMaxY, sceneW, sceneH)) {
+                            selection.add(wx, wy, wz);
                         }
                     }
                 }
             }
         }
 
-        var selection = EditorUI.getSelection();
-        selection.clear();
-        for (var pos : bestPerPixel.values()) {
-            selection.add(pos[0], pos[1], pos[2]);
-        }
-
         var state = EditorUI.getState();
         state.setSelectedCount(selection.size());
         EditorUI.updateStatusBar();
+    }
+
+    private static boolean blockFaceIntersectsScreenRect(int wx, int wy, int wz, Matrix4f viewProj,
+                                                          int screenW, int screenH,
+                                                          int minX, int minY, int maxX, int maxY,
+                                                          float sceneW, float sceneH) {
+        float cx = wx + 0.5f, cy = wy + 0.5f, cz = wz + 0.5f;
+        float[][] faceCenters = {
+                {cx - 0.5f, cy, cz}, {cx + 0.5f, cy, cz},
+                {cx, cy - 0.5f, cz}, {cx, cy + 0.5f, cz},
+                {cx, cy, cz - 0.5f}, {cx, cy, cz + 0.5f}
+        };
+        for (var fc : faceCenters) {
+            var pt = new Vector4f(fc[0], fc[1], fc[2], 1f);
+            var clip = new Vector4f();
+            pt.mul(viewProj, clip);
+            if (clip.w <= 0) continue;
+            float ndcX = clip.x / clip.w;
+            float ndcY = clip.y / clip.w;
+            float sx = (ndcX + 1f) * 0.5f * sceneW;
+            float sy = (1f - ndcY) * 0.5f * sceneH;
+            if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int[] findBestBlockAtScreen(int sx, int sy, Matrix4f viewProj,

@@ -66,7 +66,11 @@ public class DisplayFilter {
     public boolean shouldDisplay(int wx, int wy, int wz, Object blockData) {
         if (mode == FilterMode.ALL) return true;
 
-        if (mode == FilterMode.BY_Y_LAYER || mode == FilterMode.BY_ROW_COLUMN) {
+        if (mode == FilterMode.BY_Y_LAYER) {
+            if (wy < minY || wy > maxY) return false;
+        }
+
+        if (mode == FilterMode.BY_ROW_COLUMN) {
             if (wy < minY || wy > maxY) return false;
             if (wx < minX || wx > maxX) return false;
             if (wz < minZ || wz > maxZ) return false;
@@ -75,11 +79,18 @@ public class DisplayFilter {
         if (mode == FilterMode.BY_BLOCK_TYPE) {
             if (blockData instanceof BlockState bs) {
                 if (!visibleBlockTypes.contains(bs.getBlock())) return false;
+            } else if (blockData instanceof String s) {
+                boolean found = false;
+                for (var block : visibleBlockTypes) {
+                    var id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(block).toString();
+                    if (id.equals(s)) { found = true; break; }
+                }
+                if (!found) return false;
             }
         }
 
         if (mode == FilterMode.BY_SELECTION) {
-            long packed = ((long) wx & 0xFFFFFF) | (((long) wy & 0xFFFFFF) << 24) | (((long) wz & 0xFFFFFF) << 48);
+            long packed = SelectionManager.packPos(wx, wy, wz);
             if (!selectedPositions.contains(packed)) return false;
         }
 

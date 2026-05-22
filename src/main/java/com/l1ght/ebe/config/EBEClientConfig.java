@@ -43,7 +43,7 @@ public class EBEClientConfig {
                 .defineInRange("fov", 60.0, 30.0, 120.0);
         flightSpeed = builder
                 .comment("Free flight camera speed")
-                .defineInRange("flight_speed", 10.0, 1.0, 50.0);
+                .defineInRange("flight_speed", 0.5, 0.05, 50.0);
         historyMaxEntries = builder
                 .comment("Maximum history entries to keep (0 = unlimited)")
                 .defineInRange("history_max_entries", 100, 0, Integer.MAX_VALUE);

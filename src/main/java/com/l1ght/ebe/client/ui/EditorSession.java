@@ -69,6 +69,7 @@ public class EditorSession {
         };
         this.currentFile = file;
         this.dirty = false;
+        EditorUI.getHistory().clear();
         loadHistory();
         EditorUI.refreshHistoryList();
     }

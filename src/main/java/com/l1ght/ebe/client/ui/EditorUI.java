@@ -2,6 +2,7 @@ package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.client.keybind.EBEKeyMappings;
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.editor.selection.DisplayFilter;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
@@ -9,6 +10,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
@@ -22,11 +24,16 @@ import dev.vfyjxf.taffy.style.FlexDirection;
 import dev.vfyjxf.taffy.style.TaffyPosition;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.level.material.MapColor;
 import org.lwjgl.glfw.GLFW;
 
 import net.minecraft.world.level.block.state.BlockState;
@@ -68,8 +75,14 @@ public class EditorUI {
 
     private static UIElement leftPanel;
     private static UIElement rightPanel;
+    private static UIElement leftDivider;
+    private static UIElement rightDivider;
     private static Button leftCollapseBtn;
     private static Button rightCollapseBtn;
+    private static int activeDivider = 0;
+    private static int dividerDragStartX = 0;
+    private static float leftPanelWidthPercent = 15f;
+    private static float rightPanelWidthPercent = 18f;
     private static UIElement blockIndicatorPanel;
     private static boolean leftPanelVisible = true;
     private static boolean rightPanelVisible = true;
@@ -88,6 +101,8 @@ public class EditorUI {
 
     private static UIElement materialListContainer;
     private static UIElement propertiesContainer;
+    private static int displayFilterMode = 0;
+    private static UIElement displayFilterContentContainer;
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
@@ -101,6 +116,32 @@ public class EditorUI {
         contentArea = buildContentArea();
         rootElement.addChild(contentArea);
         rootElement.addChild(buildBottomBar());
+
+        rootElement.addEventListener(UIEvents.MOUSE_MOVE, e -> {
+            if (activeDivider == 0) return;
+            int dx = (int) e.x - dividerDragStartX;
+            dividerDragStartX = (int) e.x;
+
+            float parentWidth = contentArea.getSizeWidth();
+            if (parentWidth <= 0) return;
+            float deltaPercent = (dx / parentWidth) * 100f;
+
+            if (activeDivider == 1) {
+                leftPanelWidthPercent = Math.max(8f, Math.min(35f, leftPanelWidthPercent + deltaPercent));
+                leftPanel.layout(l -> l.widthPercent(leftPanelWidthPercent));
+            } else if (activeDivider == 2) {
+                rightPanelWidthPercent = Math.max(8f, Math.min(35f, rightPanelWidthPercent - deltaPercent));
+                rightPanel.layout(l -> l.widthPercent(rightPanelWidthPercent));
+            }
+        }, true);
+
+        rootElement.addEventListener(UIEvents.MOUSE_UP, e -> {
+            if (activeDivider != 0) {
+                leftDivider.style(s -> s.background(Sprites.RECT_DARK));
+                rightDivider.style(s -> s.background(Sprites.RECT_DARK));
+                activeDivider = 0;
+            }
+        }, true);
 
         BlockPaletteUI.restorePalette(rootElement);
 
@@ -119,6 +160,12 @@ public class EditorUI {
     }
 
     public static EditorState getState() { return state; }
+
+    public static boolean isTextFieldFocused() {
+        if (rootElement == null) return false;
+        var focused = rootElement.getModularUI().getFocusedElement();
+        return focused instanceof com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+    }
     public static EditorSession getSession() { return session; }
     public static com.l1ght.ebe.editor.selection.SelectionManager getSelection() { return selection; }
     public static com.l1ght.ebe.editor.ClipboardManager getClipboard() { return clipboard; }
@@ -301,13 +348,17 @@ public class EditorUI {
 
         leftCollapseBtn = buildCollapseButton(true);
         leftPanel = buildLeftPanel();
+        leftDivider = buildDivider(true);
         var viewport = ViewportFactory.create3DViewport();
+        rightDivider = buildDivider(false);
         rightPanel = buildRightPanel();
         rightCollapseBtn = buildCollapseButton(false);
 
         content.addChild(leftCollapseBtn);
         content.addChild(leftPanel);
+        content.addChild(leftDivider);
         content.addChild(viewport);
+        content.addChild(rightDivider);
         content.addChild(rightPanel);
         content.addChild(rightCollapseBtn);
 
@@ -331,10 +382,12 @@ public class EditorUI {
 
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
+            leftDivider.setDisplay(false);
             leftCollapseBtn.setText(Component.literal("▶"));
         }
         if (!rightPanelVisible) {
             rightPanel.setDisplay(false);
+            rightDivider.setDisplay(false);
             rightCollapseBtn.setText(Component.literal("◀"));
         }
         if (!blockIndicatorVisible) {
@@ -702,7 +755,7 @@ public class EditorUI {
 
     private static UIElement buildLeftPanel() {
         var panel = new UIElement();
-        panel.layout(l -> l.widthPercent(15).minWidth(120).maxWidth(300).flexDirection(FlexDirection.COLUMN));
+        panel.layout(l -> l.widthPercent(leftPanelWidthPercent).minWidth(80).maxWidth(500).heightPercent(100).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
         panel.setId("leftPanel");
 
@@ -721,7 +774,7 @@ public class EditorUI {
 
     private static UIElement buildRightPanel() {
         var panel = new UIElement();
-        panel.layout(l -> l.widthPercent(18).minWidth(150).maxWidth(350).flexDirection(FlexDirection.COLUMN));
+        panel.layout(l -> l.widthPercent(rightPanelWidthPercent).minWidth(80).maxWidth(500).heightPercent(100).flexDirection(FlexDirection.COLUMN));
         panel.style(s -> s.background(Sprites.RECT_DARK));
         panel.setId("rightPanel");
 
@@ -738,6 +791,10 @@ public class EditorUI {
         histTab.setText(Component.translatable("ebe.editor.panel.history"));
         tabView.addTab(histTab, createHistoryContent());
 
+        var displayTab = new Tab();
+        displayTab.setText(Component.translatable("ebe.editor.panel.display"));
+        tabView.addTab(displayTab, buildDisplayFilterTab());
+
         panel.addChild(tabView);
         return panel;
     }
@@ -746,6 +803,7 @@ public class EditorUI {
         var treeList = createFileTree();
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(treeList);
         return scroller;
     }
@@ -782,6 +840,7 @@ public class EditorUI {
 
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(layersListContainer);
         container.addChild(scroller);
 
@@ -790,6 +849,7 @@ public class EditorUI {
     }
 
     private static UIElement layersListContainer;
+    private static String renamingLayerId = null;
 
     public static void refreshLayersList() {
         if (layersListContainer == null || session == null) return;
@@ -800,35 +860,82 @@ public class EditorUI {
             row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
                     .alignItems(AlignItems.CENTER).gapAll(4).paddingHorizontal(2));
 
-            var visBtn = new Button();
+            var visBtn = new UIElement();
             visBtn.layout(l -> l.width(18).height(18));
-            visBtn.style(s -> s.backgroundTexture(layer.isVisible() ? EditorIcons.VISIBLE : EditorIcons.HIDDEN));
-            visBtn.setOnClick(e -> {
+            var visIcon = new UIElement();
+            visIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            visIcon.style(s -> s.backgroundTexture(layer.isVisible() ? EditorIcons.VISIBLE : EditorIcons.HIDDEN));
+            visBtn.addChild(visIcon);
+            registerTooltip(visBtn, Component.translatable("ebe.layer.visible"));
+            visBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button != 0) return;
                 layer.setVisible(!layer.isVisible());
                 refreshLayersList();
                 ViewportFactory.refreshFromModel(session.getModel());
             });
             row.addChild(visBtn);
 
-            var lockBtn = new Button();
+            var lockBtn = new UIElement();
             lockBtn.layout(l -> l.width(18).height(18));
-            lockBtn.style(s -> s.backgroundTexture(layer.isLocked() ? EditorIcons.LOCKED : EditorIcons.UNLOCKED));
-            lockBtn.setOnClick(e -> {
+            var lockIcon = new UIElement();
+            lockIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            lockIcon.style(s -> s.backgroundTexture(layer.isLocked() ? EditorIcons.LOCKED : EditorIcons.UNLOCKED));
+            lockBtn.addChild(lockIcon);
+            registerTooltip(lockBtn, Component.translatable("ebe.layer.locked"));
+            lockBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button != 0) return;
                 layer.setLocked(!layer.isLocked());
                 refreshLayersList();
             });
             row.addChild(lockBtn);
 
-            var nameLbl = new Label();
-            nameLbl.setText(Component.literal(layer.getName()));
-            nameLbl.textStyle(ts -> ts.textColor(layer.isVisible() ? 0xFFFFFFFF : 0xFF808080).fontSize(9));
-            nameLbl.layout(l -> l.flex(1));
-            row.addChild(nameLbl);
+            if (renamingLayerId != null && renamingLayerId.equals(layer.getId())) {
+                var tf = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
+                tf.setText(layer.getName());
+                tf.layout(l -> l.flex(1).height(14));
+                tf.setTextResponder(newName -> {
+                    if (newName != null && !newName.isEmpty()) {
+                        layer.setName(newName);
+                    }
+                });
+                tf.addEventListener(UIEvents.KEY_DOWN, e2 -> {
+                    if (e2.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER || e2.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+                        renamingLayerId = null;
+                        refreshLayersList();
+                    }
+                });
+                tf.addEventListener(UIEvents.BLUR, e2 -> {
+                    renamingLayerId = null;
+                    refreshLayersList();
+                });
+                row.addChild(tf);
+            } else {
+                var nameLbl = new Label();
+                nameLbl.setText(Component.literal(layer.getName()));
+                nameLbl.textStyle(ts -> ts.textColor(layer.isVisible() ? 0xFFFFFFFF : 0xFF808080).fontSize(9));
+                nameLbl.layout(l -> l.flex(1));
+                long[] lastClickTime = {0};
+                nameLbl.addEventListener(UIEvents.MOUSE_DOWN, e2 -> {
+                    if (e2.button != 0) return;
+                    long now = System.currentTimeMillis();
+                    if (now - lastClickTime[0] < 400) {
+                        renamingLayerId = layer.getId();
+                        refreshLayersList();
+                    }
+                    lastClickTime[0] = now;
+                });
+                row.addChild(nameLbl);
+            }
 
-            var delBtn = new Button();
+            var delBtn = new UIElement();
             delBtn.layout(l -> l.width(14).height(14));
-            delBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
-            delBtn.setOnClick(e -> {
+            var delIcon = new UIElement();
+            delIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            delIcon.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+            delBtn.addChild(delIcon);
+            registerTooltip(delBtn, Component.translatable("ebe.editor.deselect"));
+            delBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button != 0) return;
                 if (session.getModel().getLayers().size() <= 1) return;
                 session.getModel().removeLayer(layer.getId());
                 refreshLayersList();
@@ -836,8 +943,70 @@ public class EditorUI {
             });
             row.addChild(delBtn);
 
+            var moveToBtn = new UIElement();
+            moveToBtn.layout(l -> l.width(14).height(14));
+            var moveToIcon = new UIElement();
+            moveToIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+            moveToIcon.style(s -> s.backgroundTexture(EditorIcons.SELECT));
+            moveToBtn.addChild(moveToIcon);
+            registerTooltip(moveToBtn, Component.translatable("ebe.layer.move_selection_to"));
+            moveToBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button != 0) return;
+                if (session == null || selection.isEmpty()) return;
+                for (var region : session.getModel().getRegions()) {
+                    for (int y = 0; y < region.getSizeY(); y++) {
+                        for (int z = 0; z < region.getSizeZ(); z++) {
+                            for (int x = 0; x < region.getSizeX(); x++) {
+                                int wx = x + region.getOffsetX();
+                                int wy = y + region.getOffsetY();
+                                int wz = z + region.getOffsetZ();
+                                if (selection.contains(wx, wy, wz)) {
+                                    region.setLayerId(layer.getId());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                ViewportFactory.refreshFromModel(session.getModel());
+            });
+            row.addChild(moveToBtn);
+
             layersListContainer.addChild(row);
         }
+
+        var actionRow = new UIElement();
+        actionRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .gapAll(2).paddingHorizontal(2).marginTop(4));
+
+        var createLayerBtn = new Button();
+        createLayerBtn.setText(Component.translatable("ebe.layer.create_from_selection"));
+        createLayerBtn.layout(l -> l.flex(1).height(18));
+        createLayerBtn.setOnClick(e -> {
+            if (session == null || selection.isEmpty()) return;
+            var newLayer = session.getModel().addLayer("Layer " + session.getModel().getLayers().size(), true, false);
+            for (var region : session.getModel().getRegions()) {
+                for (int y = 0; y < region.getSizeY(); y++) {
+                    for (int z = 0; z < region.getSizeZ(); z++) {
+                        for (int x = 0; x < region.getSizeX(); x++) {
+                            int wx = x + region.getOffsetX();
+                            int wy = y + region.getOffsetY();
+                            int wz = z + region.getOffsetZ();
+                            if (selection.contains(wx, wy, wz)) {
+                                if (newLayer.getId().equals(region.getLayerId())) continue;
+                                region.setLayerId(newLayer.getId());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(session.getModel());
+        });
+        actionRow.addChild(createLayerBtn);
+
+        layersListContainer.addChild(actionRow);
     }
 
     private static UIElement createMaterialsContent() {
@@ -852,6 +1021,7 @@ public class EditorUI {
 
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(materialListContainer);
         container.addChild(scroller);
 
@@ -893,12 +1063,296 @@ public class EditorUI {
         historyListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1).paddingTop(2));
 
         var scroller = new ScrollerView();
-        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(historyListContainer);
         container.addChild(scroller);
 
         refreshHistoryList();
         return container;
+    }
+
+    private static UIElement buildDisplayFilterTab() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4));
+        container.setId("displayFilterContent");
+
+        var currentModeLabel = new Label();
+        currentModeLabel.setId("displayCurrentMode");
+        currentModeLabel.setText(Component.translatable("ebe.display.filter.mode.all"));
+        currentModeLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(9).textShadow(false));
+        container.addChild(currentModeLabel);
+
+        var modeLabel = new Label();
+        modeLabel.setText(Component.translatable("ebe.display.filter.type"));
+        modeLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        container.addChild(modeLabel);
+
+        var modeRow = new UIElement();
+        modeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP).gapAll(3));
+        modeRow.setId("displayFilterModeRow");
+
+        String[] modeKeys = {
+                "ebe.display.filter.mode.all",
+                "ebe.display.filter.mode.block_type",
+                "ebe.display.filter.mode.y_layer",
+                "ebe.display.filter.mode.row_column",
+                "ebe.display.filter.mode.selection"
+        };
+        for (int i = 0; i < modeKeys.length; i++) {
+            final int idx = i;
+            var btn = new Button();
+            btn.setText(Component.translatable(modeKeys[i]));
+            btn.layout(l -> l.height(18).paddingHorizontal(4));
+            btn.setId("displayModeBtn_" + i);
+            btn.style(s -> s.background(idx == displayFilterMode ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            btn.setOnClick(e -> {
+                displayFilterMode = idx;
+                updateDisplayFilterModeHighlight();
+                updateDisplayFilterContent();
+            });
+            modeRow.addChild(btn);
+        }
+        container.addChild(modeRow);
+
+        displayFilterContentContainer = new UIElement();
+        displayFilterContentContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingTop(4));
+        displayFilterContentContainer.setId("displayFilterParams");
+        container.addChild(displayFilterContentContainer);
+
+        var nbtRow = new UIElement();
+        nbtRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(6).paddingTop(4));
+
+        var nbtBtn = new Button();
+        nbtBtn.setText(Component.translatable("ebe.display.filter.nbt_toggle"));
+        nbtBtn.layout(l -> l.height(18).paddingHorizontal(6));
+        nbtBtn.setId("displayNbtToggle");
+        nbtBtn.style(s -> s.background(Sprites.RECT_RD));
+        nbtBtn.setOnClick(e -> {
+            var filter = state.getDisplayFilter();
+            filter.setNbtSensitive(!filter.isNbtSensitive());
+            nbtBtn.style(s -> s.background(filter.isNbtSensitive() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+        });
+        nbtRow.addChild(nbtBtn);
+        container.addChild(nbtRow);
+
+        var resetBtn = new Button();
+        resetBtn.setText(Component.translatable("ebe.display.filter.reset"));
+        resetBtn.layout(l -> l.widthPercent(100).height(22));
+        resetBtn.style(s -> s.background(Sprites.RECT_RD));
+        resetBtn.setOnClick(e -> {
+            displayFilterMode = 0;
+            state.getDisplayFilter().reset();
+            updateDisplayFilterModeHighlight();
+            updateDisplayFilterContent();
+            updateCurrentModeLabel();
+            var nbtToggle = UIUtils.findById(rightPanel, "displayNbtToggle");
+            if (nbtToggle instanceof Button b) {
+                b.style(s -> s.background(Sprites.RECT_RD));
+            }
+            applyDisplayFilter();
+        });
+        container.addChild(resetBtn);
+
+        updateDisplayFilterContent();
+        return container;
+    }
+
+    private static void updateCurrentModeLabel() {
+        String[] modeKeys = {
+                "ebe.display.filter.mode.all",
+                "ebe.display.filter.mode.block_type",
+                "ebe.display.filter.mode.y_layer",
+                "ebe.display.filter.mode.row_column",
+                "ebe.display.filter.mode.selection"
+        };
+        var label = UIUtils.findById(rightPanel, "displayCurrentMode");
+        if (label instanceof Label l && displayFilterMode < modeKeys.length) {
+            l.setText(Component.translatable(modeKeys[displayFilterMode]));
+        }
+    }
+
+    private static void updateDisplayFilterModeHighlight() {
+        for (int i = 0; i < 5; i++) {
+            final int idx = i;
+            var btn = UIUtils.findById(rightPanel, "displayModeBtn_" + i);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(idx == displayFilterMode ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void updateDisplayFilterContent() {
+        if (displayFilterContentContainer == null) return;
+        displayFilterContentContainer.clearAllChildren();
+
+        if (displayFilterMode == 0) {
+            var applyBtn = new Button();
+            applyBtn.setText(Component.translatable("ebe.display.filter.apply"));
+            applyBtn.layout(l -> l.widthPercent(100).height(22));
+            applyBtn.style(s -> s.background(Sprites.RECT_RD));
+            applyBtn.setOnClick(e -> {
+                applyDisplayFilter();
+                updateCurrentModeLabel();
+            });
+            displayFilterContentContainer.addChild(applyBtn);
+        } else if (displayFilterMode == 1) {
+            var useSelectedBtn = new Button();
+            useSelectedBtn.setText(Component.translatable("ebe.display.filter.use_selected_type"));
+            useSelectedBtn.layout(l -> l.widthPercent(100).height(22));
+            useSelectedBtn.style(s -> s.background(Sprites.RECT_RD));
+            useSelectedBtn.setOnClick(e -> {
+                var active = state.getActiveBlockState();
+                if (active != null) {
+                    var filter = state.getDisplayFilter();
+                    filter.clearVisibleBlockTypes();
+                    filter.addVisibleBlockType(active.getBlock());
+                    applyDisplayFilter();
+                    updateCurrentModeLabel();
+                }
+            });
+            displayFilterContentContainer.addChild(useSelectedBtn);
+        } else if (displayFilterMode == 2) {
+            var minYRow = new UIElement();
+            minYRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var minLabel = new Label();
+            minLabel.setText(Component.translatable("ebe.display.filter.min_y"));
+            minLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            minLabel.layout(l -> l.width(40));
+            minYRow.addChild(minLabel);
+            var minYField = new TextField();
+            minYField.layout(l -> l.flex(1).height(18));
+            minYField.setId("filterMinY");
+            minYField.setText("0");
+            minYRow.addChild(minYField);
+            displayFilterContentContainer.addChild(minYRow);
+
+            var maxYRow = new UIElement();
+            maxYRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var maxLabel = new Label();
+            maxLabel.setText(Component.translatable("ebe.display.filter.max_y"));
+            maxLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            maxLabel.layout(l -> l.width(40));
+            maxYRow.addChild(maxLabel);
+            var maxYField = new TextField();
+            maxYField.layout(l -> l.flex(1).height(18));
+            maxYField.setId("filterMaxY");
+            maxYField.setText("255");
+            maxYRow.addChild(maxYField);
+            displayFilterContentContainer.addChild(maxYRow);
+
+            var applyBtn = new Button();
+            applyBtn.setText(Component.translatable("ebe.display.filter.apply"));
+            applyBtn.layout(l -> l.widthPercent(100).height(22));
+            applyBtn.style(s -> s.background(Sprites.RECT_RD));
+            applyBtn.setOnClick(e -> {
+                applyDisplayFilter();
+                updateCurrentModeLabel();
+            });
+            displayFilterContentContainer.addChild(applyBtn);
+        } else if (displayFilterMode == 3) {
+            var minXRow = new UIElement();
+            minXRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var minXLabel = new Label();
+            minXLabel.setText(Component.translatable("ebe.display.filter.min_x"));
+            minXLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            minXLabel.layout(l -> l.width(40));
+            minXRow.addChild(minXLabel);
+            var minXField = new TextField();
+            minXField.layout(l -> l.flex(1).height(18));
+            minXField.setId("filterMinX");
+            minXField.setText("0");
+            minXRow.addChild(minXField);
+            displayFilterContentContainer.addChild(minXRow);
+
+            var maxXRow = new UIElement();
+            maxXRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var maxXLabel = new Label();
+            maxXLabel.setText(Component.translatable("ebe.display.filter.max_x"));
+            maxXLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            maxXLabel.layout(l -> l.width(40));
+            maxXRow.addChild(maxXLabel);
+            var maxXField = new TextField();
+            maxXField.layout(l -> l.flex(1).height(18));
+            maxXField.setId("filterMaxX");
+            maxXField.setText("0");
+            maxXRow.addChild(maxXField);
+            displayFilterContentContainer.addChild(maxXRow);
+
+            var minZRow = new UIElement();
+            minZRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var minZLabel = new Label();
+            minZLabel.setText(Component.translatable("ebe.display.filter.min_z"));
+            minZLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            minZLabel.layout(l -> l.width(40));
+            minZRow.addChild(minZLabel);
+            var minZField = new TextField();
+            minZField.layout(l -> l.flex(1).height(18));
+            minZField.setId("filterMinZ");
+            minZField.setText("0");
+            minZRow.addChild(minZField);
+            displayFilterContentContainer.addChild(minZRow);
+
+            var maxZRow = new UIElement();
+            maxZRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4).alignItems(AlignItems.CENTER));
+            var maxZLabel = new Label();
+            maxZLabel.setText(Component.translatable("ebe.display.filter.max_z"));
+            maxZLabel.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+            maxZLabel.layout(l -> l.width(40));
+            maxZRow.addChild(maxZLabel);
+            var maxZField = new TextField();
+            maxZField.layout(l -> l.flex(1).height(18));
+            maxZField.setId("filterMaxZ");
+            maxZField.setText("0");
+            maxZRow.addChild(maxZField);
+            displayFilterContentContainer.addChild(maxZRow);
+
+            var applyBtn = new Button();
+            applyBtn.setText(Component.translatable("ebe.display.filter.apply"));
+            applyBtn.layout(l -> l.widthPercent(100).height(22));
+            applyBtn.style(s -> s.background(Sprites.RECT_RD));
+            applyBtn.setOnClick(e -> {
+                applyDisplayFilter();
+                updateCurrentModeLabel();
+            });
+            displayFilterContentContainer.addChild(applyBtn);
+        } else if (displayFilterMode == 4) {
+            var applyBtn = new Button();
+            applyBtn.setText(Component.translatable("ebe.display.filter.apply"));
+            applyBtn.layout(l -> l.widthPercent(100).height(22));
+            applyBtn.style(s -> s.background(Sprites.RECT_RD));
+            applyBtn.setOnClick(e -> {
+                applyDisplayFilter();
+                updateCurrentModeLabel();
+            });
+            displayFilterContentContainer.addChild(applyBtn);
+        }
+    }
+
+    private static void applyDisplayFilter() {
+        var filter = state.getDisplayFilter();
+        filter.setMode(switch (displayFilterMode) {
+            case 0 -> DisplayFilter.FilterMode.ALL;
+            case 1 -> DisplayFilter.FilterMode.BY_BLOCK_TYPE;
+            case 2 -> DisplayFilter.FilterMode.BY_Y_LAYER;
+            case 3 -> DisplayFilter.FilterMode.BY_ROW_COLUMN;
+            case 4 -> DisplayFilter.FilterMode.BY_SELECTION;
+            default -> DisplayFilter.FilterMode.ALL;
+        });
+        if (displayFilterMode == 2) {
+            int minY = getIntField(rightPanel, "filterMinY", 0);
+            int maxY = getIntField(rightPanel, "filterMaxY", 255);
+            filter.setYRange(minY, maxY);
+        } else if (displayFilterMode == 3) {
+            int minX = getIntField(rightPanel, "filterMinX", 0);
+            int maxX = getIntField(rightPanel, "filterMaxX", 0);
+            int minZ = getIntField(rightPanel, "filterMinZ", 0);
+            int maxZ = getIntField(rightPanel, "filterMaxZ", 0);
+            filter.setXZRange(minX, maxX, minZ, maxZ);
+        } else if (displayFilterMode == 4) {
+            filter.setSelectedPositions(selection.getAllPacked());
+        }
+        ViewportFactory.refreshFromModel(session.getModel());
     }
 
     public static void refreshHistoryList() {
@@ -1080,6 +1534,12 @@ public class EditorUI {
         }
 
         var nbt = session.getModel().getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ());
+        if (nbt == null && bs.hasBlockEntity()) {
+            nbt = createDefaultBlockEntityNbt(bs, state.getCursorX(), state.getCursorY(), state.getCursorZ());
+            if (nbt != null) {
+                session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), nbt);
+            }
+        }
         if (nbt != null) {
             var nbtLabel = new Label();
             nbtLabel.setText(Component.literal("NBT:"));
@@ -1174,11 +1634,43 @@ public class EditorUI {
                 valLbl.layout(l -> l.flex(1));
                 row.addChild(valLbl);
 
-                var editBtn = new Button();
-                editBtn.setText(Component.literal("✎"));
+                var editBtn = new UIElement();
                 editBtn.layout(l -> l.width(14).height(14));
-                editBtn.setOnClick(e -> {
-                    editNbtValue(tag, key, value);
+                var editIcon = new UIElement();
+                editIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+                editIcon.style(s -> s.backgroundTexture(EditorIcons.PENCIL));
+                editBtn.addChild(editIcon);
+                registerTooltip(editBtn, Component.translatable("ebe.nbt.edit"));
+                editBtn.addEventListener(UIEvents.MOUSE_DOWN, e2 -> {
+                    if (e2.button != 0) return;
+                    var valLbl2 = new TextField();
+                    valLbl2.setText(nbtValueToString(value).replace("\"", ""));
+                    valLbl2.layout(l -> l.flex(1).height(14));
+                    valLbl2.addEventListener(UIEvents.KEY_DOWN, e3 -> {
+                        if (e3.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER) {
+                            var text = valLbl2.getText();
+                            net.minecraft.nbt.Tag newTag = parseNbtValue(text, value);
+                            if (newTag != null) {
+                                tag.put(key, newTag);
+                                session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), tag);
+                            }
+                            refreshPropertiesPanel();
+                        } else if (e3.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+                            refreshPropertiesPanel();
+                        }
+                    });
+                    var parentRow = editBtn.getParent();
+                    if (parentRow != null) {
+                        var children = new ArrayList<>(parentRow.getChildren());
+                        for (int ci = 0; ci < children.size(); ci++) {
+                            if (children.get(ci) == valLbl) {
+                                parentRow.removeChild(valLbl);
+                                parentRow.addChildAt(valLbl2, ci);
+                                valLbl2.focus();
+                                break;
+                            }
+                        }
+                    }
                 });
                 row.addChild(editBtn);
 
@@ -1270,7 +1762,13 @@ public class EditorUI {
     }
 
     private static void addNbtField(net.minecraft.nbt.CompoundTag parent) {
-        parent.putString("new_field", "");
+        String baseName = "new_field";
+        String name = baseName;
+        int suffix = 1;
+        while (parent.contains(name)) {
+            name = baseName + "_" + suffix++;
+        }
+        parent.putString(name, "");
         session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), parent);
         refreshPropertiesPanel();
     }
@@ -1305,6 +1803,25 @@ public class EditorUI {
         }
         if (next == null) next = (Comparable) values.iterator().next();
         return bs.setValue(property, next);
+    }
+
+    private static net.minecraft.nbt.CompoundTag createDefaultBlockEntityNbt(BlockState bs, int x, int y, int z) {
+        var block = bs.getBlock();
+        if (!(block instanceof net.minecraft.world.level.block.EntityBlock eb)) return null;
+        var be = eb.newBlockEntity(new net.minecraft.core.BlockPos(x, y, z), bs);
+        if (be == null) return null;
+        var level = Minecraft.getInstance().level;
+        if (level == null) return null;
+        try {
+            return be.saveWithId(level.registryAccess());
+        } catch (Exception e) {
+            var tag = new net.minecraft.nbt.CompoundTag();
+            tag.putString("id", net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType()).toString());
+            tag.putInt("x", x);
+            tag.putInt("y", y);
+            tag.putInt("z", z);
+            return tag;
+        }
     }
 
     private static void addPropField(UIElement parent, String label, String value, int color) {
@@ -1393,15 +1910,43 @@ public class EditorUI {
         return btn;
     }
 
+    private static UIElement buildDivider(boolean isLeft) {
+        var divider = new UIElement();
+        divider.layout(l -> l.width(4).heightPercent(100));
+        divider.style(s -> s.background(Sprites.RECT_DARK));
+        divider.setId(isLeft ? "leftDivider" : "rightDivider");
+
+        divider.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                activeDivider = isLeft ? 1 : 2;
+                dividerDragStartX = (int) e.x;
+                e.stopPropagation();
+            }
+        });
+
+        divider.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+            divider.style(s -> s.background(Sprites.RECT_RD_DARK));
+        });
+        divider.addEventListener(UIEvents.MOUSE_LEAVE, e -> {
+            if (activeDivider == 0 || (isLeft && activeDivider != 1) || (!isLeft && activeDivider != 2)) {
+                divider.style(s -> s.background(Sprites.RECT_DARK));
+            }
+        });
+
+        return divider;
+    }
+
     private static void toggleLeftPanel() {
         leftPanelVisible = !leftPanelVisible;
         leftPanel.setDisplay(leftPanelVisible);
+        leftDivider.setDisplay(leftPanelVisible);
         leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
     }
 
     private static void toggleRightPanel() {
         rightPanelVisible = !rightPanelVisible;
         rightPanel.setDisplay(rightPanelVisible);
+        rightDivider.setDisplay(rightPanelVisible);
         rightCollapseBtn.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
     }
 
@@ -1456,6 +2001,567 @@ public class EditorUI {
         panel.setId("replacePanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
                 .left(40).top(40)
+                .minWidth(240).maxWidth(320)
+                .flexDirection(FlexDirection.COLUMN).gapAll(4)
+                .paddingAll(6));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
+
+        var titleRow = new UIElement();
+        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var title = new Label();
+        title.setText(Component.translatable("ebe.editor.replace.title"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
+        title.layout(l -> l.flex(1));
+        titleRow.addChild(title);
+        var closeBtn = new UIElement();
+        closeBtn.layout(l -> l.width(16).height(16));
+        var closeIcon = new UIElement();
+        closeIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        closeIcon.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+        closeBtn.addChild(closeIcon);
+        closeBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                replacePanelVisible = false;
+                panel.setDisplay(false);
+            }
+        });
+        titleRow.addChild(closeBtn);
+        panel.addChild(titleRow);
+
+        var tabView = new TabView();
+        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).flex(1));
+        tabView.setId("replaceTabView");
+        {
+            var h = tabView.tabHeaderContainer;
+            var c = tabView.tabContentContainer;
+            tabView.removeChild(h);
+            tabView.removeChild(c);
+            tabView.addChild(h);
+            tabView.addChild(c);
+        }
+
+        var singleTab = new Tab();
+        singleTab.setText(Component.translatable("ebe.editor.replace.single"));
+        tabView.addTab(singleTab, buildReplaceSingleTab());
+
+        var batchTab = new Tab();
+        batchTab.setText(Component.translatable("ebe.editor.replace.batch"));
+        tabView.addTab(batchTab, buildReplaceBatchTab());
+
+        panel.addChild(tabView);
+        return panel;
+    }
+
+    private static UIElement buildReplaceSingleTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.replace.single.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var targetSection = new UIElement();
+        targetSection.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        var targetTitle = new Label();
+        targetTitle.setText(Component.translatable("ebe.replace.target_block"));
+        targetTitle.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        targetSection.addChild(targetTitle);
+        var targetRow = new UIElement();
+        targetRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var targetIcon = new UIElement();
+        targetIcon.layout(l -> l.width(24).height(24));
+        targetIcon.setId("replaceSingleTargetIcon");
+        targetIcon.style(s -> s.background(Sprites.RECT_DARK));
+        targetRow.addChild(targetIcon);
+        var targetName = new Label();
+        targetName.setId("replaceSingleTargetName");
+        targetName.setText(Component.literal("-"));
+        targetName.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        targetName.layout(l -> l.flex(1));
+        targetRow.addChild(targetName);
+        var pickBtn = new UIElement();
+        pickBtn.layout(l -> l.width(20).height(20));
+        var pickIcon = new UIElement();
+        pickIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        pickIcon.style(s -> s.backgroundTexture(EditorIcons.SEARCH));
+        pickBtn.addChild(pickIcon);
+        registerTooltip(pickBtn, Component.translatable("ebe.replace.browse_block"));
+        pickBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                BlockPaletteUI.openWithCallback(rootElement, bs -> {
+                    replaceTargetState = bs;
+                    updateReplaceSingleDisplay();
+                });
+            }
+        });
+        targetRow.addChild(pickBtn);
+        var grabBtn = new UIElement();
+        grabBtn.layout(l -> l.width(20).height(20));
+        var grabIcon = new UIElement();
+        grabIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        grabIcon.style(s -> s.backgroundTexture(EditorIcons.PENCIL));
+        grabBtn.addChild(grabIcon);
+        registerTooltip(grabBtn, Component.translatable("ebe.replace.use_grabbed"));
+        grabBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                var active = state.getActiveBlockState();
+                if (active != null) {
+                    replaceTargetState = active;
+                    updateReplaceSingleDisplay();
+                }
+            }
+        });
+        targetRow.addChild(grabBtn);
+        targetSection.addChild(targetRow);
+        content.addChild(targetSection);
+
+        return content;
+    }
+
+    private static UIElement buildReplaceBatchTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var modeTabView = new TabView();
+        modeTabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).flex(1));
+        modeTabView.setId("replaceModeTabView");
+        modeTabView.tabScroller(s -> s.scrollerStyle(style -> style.horizontalScrollDisplay(ScrollDisplay.ALWAYS)));
+        {
+            var h = modeTabView.tabHeaderContainer;
+            var c = modeTabView.tabContentContainer;
+            modeTabView.removeChild(h);
+            modeTabView.removeChild(c);
+            modeTabView.addChild(h);
+            modeTabView.addChild(c);
+        }
+
+        var sameTypeTab = new Tab();
+        sameTypeTab.setText(Component.translatable("ebe.replace.mode.same_type"));
+        modeTabView.addTab(sameTypeTab, buildSameTypeContent());
+
+        var byCondTab = new Tab();
+        byCondTab.setText(Component.translatable("ebe.replace.mode.by_condition"));
+        modeTabView.addTab(byCondTab, buildByConditionContent());
+
+        var customTab = new Tab();
+        customTab.setText(Component.translatable("ebe.replace.mode.custom"));
+        modeTabView.addTab(customTab, buildCustomReplaceContent());
+
+        content.addChild(modeTabView);
+        return content;
+    }
+
+    private static UIElement buildSameTypeContent() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.replace.same_type.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var sourceSection = buildSourceBlockSection();
+        content.addChild(sourceSection);
+
+        var targetSection = buildTargetBlockSection("replaceBatchTargetIcon", "replaceBatchTargetName");
+        content.addChild(targetSection);
+
+        var execBtn = new Button();
+        execBtn.setText(Component.translatable("ebe.editor.replace.execute"));
+        execBtn.layout(l -> l.widthPercent(100).height(22));
+        execBtn.setOnClick(e -> executeSameTypeReplace());
+        content.addChild(execBtn);
+
+        return content;
+    }
+
+    private static UIElement buildByConditionContent() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.replace.condition.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var sourceSection = buildSourceBlockSection();
+        content.addChild(sourceSection);
+
+        var targetSection = buildTargetBlockSection("replaceCondTargetIcon", "replaceCondTargetName");
+        content.addChild(targetSection);
+
+        var condTypeRow = new UIElement();
+        condTypeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+        String[] condTypes = {"property", "color", "material", "tag", "nbt", "custom"};
+        for (String type : condTypes) {
+            var btn = new Button();
+            btn.setText(Component.translatable("ebe.replace.condition.type." + type));
+            btn.setId("condTypeBtn_" + type);
+            btn.layout(l -> l.flex(1).height(18));
+            btn.setOnClick(e -> {
+                conditionType = type;
+                updateConditionTypeHighlight();
+                updateConditionContent();
+            });
+            condTypeRow.addChild(btn);
+        }
+        content.addChild(condTypeRow);
+
+        conditionContentContainer = new UIElement();
+        conditionContentContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
+        conditionContentContainer.setId("conditionContentContainer");
+        content.addChild(conditionContentContainer);
+
+        var execBtn = new Button();
+        execBtn.setText(Component.translatable("ebe.editor.replace.execute"));
+        execBtn.layout(l -> l.widthPercent(100).height(22));
+        execBtn.setOnClick(e -> executeByConditionReplace());
+        content.addChild(execBtn);
+
+        updateConditionContent();
+        updateConditionTypeHighlight();
+        return content;
+    }
+
+    private static void updateConditionTypeHighlight() {
+        String[] condTypes = {"property", "color", "material", "tag", "nbt", "custom"};
+        for (String type : condTypes) {
+            var btn = UIUtils.findById(replacePanel, "condTypeBtn_" + type);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(type.equals(conditionType) ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void updateConditionContent() {
+        if (conditionContentContainer == null) return;
+        conditionContentContainer.clearAllChildren();
+
+        switch (conditionType) {
+            case "property" -> {
+                var condLabel = new Label();
+                condLabel.setText(Component.translatable("ebe.replace.condition.property"));
+                condLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(condLabel);
+
+                var propRow = new UIElement();
+                propRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4));
+                var propNameField = new TextField();
+                propNameField.setId("replaceCondPropName");
+                propNameField.setText("waterlogged");
+                propNameField.layout(l -> l.flex(1).height(18));
+                propNameField.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.replace.condition.prop_name")));
+                propRow.addChild(propNameField);
+                conditionContentContainer.addChild(propRow);
+
+                var valRow = new UIElement();
+                valRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .alignItems(AlignItems.CENTER).gapAll(4));
+                var valLabel = new Label();
+                valLabel.setText(Component.literal("→"));
+                valLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+                valLabel.layout(l -> l.width(12));
+                valRow.addChild(valLabel);
+                var propValField = new TextField();
+                propValField.setId("replaceCondPropValue");
+                propValField.setText("true");
+                propValField.layout(l -> l.flex(1).height(18));
+                propValField.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.replace.condition.prop_value")));
+                valRow.addChild(propValField);
+                conditionContentContainer.addChild(valRow);
+            }
+            case "color" -> {
+                var label = new Label();
+                label.setText(Component.translatable("ebe.replace.condition.color"));
+                label.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(label);
+
+                var field = new TextField();
+                field.setId("replaceCondColorId");
+                field.setText("0");
+                field.layout(l -> l.widthPercent(100).height(18));
+                conditionContentContainer.addChild(field);
+            }
+            case "material" -> {
+                var label = new Label();
+                label.setText(Component.translatable("ebe.replace.condition.material_type"));
+                label.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(label);
+
+                var row = new UIElement();
+                row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                        .flexWrap(dev.vfyjxf.taffy.style.FlexWrap.WRAP).gapAll(2));
+                String[] materials = {"wood", "stone", "metal", "glass", "wool", "concrete", "terracotta"};
+                for (String mat : materials) {
+                    var btn = new Button();
+                    btn.setText(Component.translatable("ebe.replace.condition.material." + mat));
+                    btn.setId("condMaterialBtn_" + mat);
+                    btn.layout(l -> l.height(18).paddingHorizontal(4));
+                    btn.setOnClick(e -> {
+                        conditionMaterialType = mat;
+                        updateMaterialTypeHighlight();
+                    });
+                    row.addChild(btn);
+                }
+                conditionContentContainer.addChild(row);
+                updateMaterialTypeHighlight();
+            }
+            case "tag" -> {
+                var label = new Label();
+                label.setText(Component.translatable("ebe.replace.condition.tag_name"));
+                label.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(label);
+
+                var field = new TextField();
+                field.setId("replaceCondTagName");
+                field.setText("minecraft:planks");
+                field.layout(l -> l.widthPercent(100).height(18));
+                conditionContentContainer.addChild(field);
+            }
+            case "nbt" -> {
+                var fieldLabel = new Label();
+                fieldLabel.setText(Component.translatable("ebe.replace.condition.nbt_field"));
+                fieldLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(fieldLabel);
+
+                var nbtFieldInput = new TextField();
+                nbtFieldInput.setId("replaceCondNbtField");
+                nbtFieldInput.setText("");
+                nbtFieldInput.layout(l -> l.widthPercent(100).height(18));
+                conditionContentContainer.addChild(nbtFieldInput);
+
+                var valLabel = new Label();
+                valLabel.setText(Component.translatable("ebe.replace.condition.nbt_value"));
+                valLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(valLabel);
+
+                var nbtValInput = new TextField();
+                nbtValInput.setId("replaceCondNbtValue");
+                nbtValInput.setText("");
+                nbtValInput.layout(l -> l.widthPercent(100).height(18));
+                conditionContentContainer.addChild(nbtValInput);
+            }
+            case "custom" -> {
+                var label = new Label();
+                label.setText(Component.translatable("ebe.replace.condition.custom_rule"));
+                label.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+                conditionContentContainer.addChild(label);
+
+                var field = new TextField();
+                field.setId("replaceCondCustomRule");
+                field.setText("");
+                field.layout(l -> l.widthPercent(100).height(18));
+                conditionContentContainer.addChild(field);
+            }
+        }
+    }
+
+    private static void updateMaterialTypeHighlight() {
+        String[] materials = {"wood", "stone", "metal", "glass", "wool", "concrete", "terracotta"};
+        for (String mat : materials) {
+            var btn = UIUtils.findById(replacePanel, "condMaterialBtn_" + mat);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(mat.equals(conditionMaterialType) ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static UIElement buildCustomReplaceContent() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.replace.custom.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var targetSection = buildTargetBlockSection("replaceCustomTargetIcon", "replaceCustomTargetName");
+        content.addChild(targetSection);
+
+        var execBtn = new Button();
+        execBtn.setText(Component.translatable("ebe.editor.replace.execute"));
+        execBtn.layout(l -> l.widthPercent(100).height(22));
+        execBtn.setOnClick(e -> executeCustomReplace());
+        content.addChild(execBtn);
+
+        return content;
+    }
+
+    private static UIElement buildSourceBlockSection() {
+        var section = new UIElement();
+        section.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        var title = new Label();
+        title.setText(Component.translatable("ebe.replace.source_block"));
+        title.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        section.addChild(title);
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var icon = new UIElement();
+        icon.layout(l -> l.width(24).height(24));
+        icon.setId("replaceBatchSourceIcon");
+        icon.style(s -> s.background(Sprites.RECT_DARK));
+        row.addChild(icon);
+        var name = new Label();
+        name.setId("replaceBatchSourceName");
+        name.setText(Component.literal("-"));
+        name.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        name.layout(l -> l.flex(1));
+        row.addChild(name);
+        var pickBtn = new UIElement();
+        pickBtn.layout(l -> l.width(20).height(20));
+        var pickIcon = new UIElement();
+        pickIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        pickIcon.style(s -> s.backgroundTexture(EditorIcons.SEARCH));
+        pickBtn.addChild(pickIcon);
+        registerTooltip(pickBtn, Component.translatable("ebe.replace.pick_from_viewport"));
+        pickBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) replacePickingSource = true;
+        });
+        row.addChild(pickBtn);
+        var useSelBtn = new UIElement();
+        useSelBtn.layout(l -> l.width(20).height(20));
+        var useSelIcon = new UIElement();
+        useSelIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        useSelIcon.style(s -> s.backgroundTexture(EditorIcons.SELECT));
+        useSelBtn.addChild(useSelIcon);
+        registerTooltip(useSelBtn, Component.translatable("ebe.replace.use_selected"));
+        useSelBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                var sel = getSelection();
+                if (sel.size() == 1) {
+                    var packed = sel.getAllPacked().iterator().next();
+                    int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+                    int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+                    int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+                    var bsObj = session.getModel().getBlockAt(bx, by, bz);
+                    var bsState = ViewportFactory.resolveBlockStatePublic(bsObj);
+                    replaceSourceBlock = bsState.getBlock();
+                    updateReplaceBatchSourceDisplay();
+                }
+            }
+        });
+        row.addChild(useSelBtn);
+        section.addChild(row);
+        return section;
+    }
+
+    private static UIElement buildTargetBlockSection(String iconId, String nameId) {
+        var section = new UIElement();
+        section.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        var title = new Label();
+        title.setText(Component.translatable("ebe.replace.target_block"));
+        title.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        section.addChild(title);
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var icon = new UIElement();
+        icon.layout(l -> l.width(24).height(24));
+        icon.setId(iconId);
+        icon.style(s -> s.background(Sprites.RECT_DARK));
+        row.addChild(icon);
+        var name = new Label();
+        name.setId(nameId);
+        name.setText(Component.literal("-"));
+        name.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+        name.layout(l -> l.flex(1));
+        row.addChild(name);
+        var browseBtn = new UIElement();
+        browseBtn.layout(l -> l.width(20).height(20));
+        var browseIcon = new UIElement();
+        browseIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        browseIcon.style(s -> s.backgroundTexture(EditorIcons.SEARCH));
+        browseBtn.addChild(browseIcon);
+        registerTooltip(browseBtn, Component.translatable("ebe.replace.browse_block"));
+        browseBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                BlockPaletteUI.openWithCallback(rootElement, bs -> {
+                    replaceTargetState = bs;
+                    updateTargetBlockDisplay(iconId, nameId);
+                });
+            }
+        });
+        row.addChild(browseBtn);
+        var grabBtn = new UIElement();
+        grabBtn.layout(l -> l.width(20).height(20));
+        var grabIcon = new UIElement();
+        grabIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        grabIcon.style(s -> s.backgroundTexture(EditorIcons.PENCIL));
+        grabBtn.addChild(grabIcon);
+        registerTooltip(grabBtn, Component.translatable("ebe.replace.use_grabbed"));
+        grabBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                var active = state.getActiveBlockState();
+                if (active != null) {
+                    replaceTargetState = active;
+                    updateTargetBlockDisplay(iconId, nameId);
+                }
+            }
+        });
+        row.addChild(grabBtn);
+        section.addChild(row);
+        return section;
+    }
+
+    private static void updateTargetBlockDisplay(String iconId, String nameId) {
+        var nameEl = UIUtils.findById(replacePanel, nameId);
+        if (nameEl instanceof Label l) {
+            l.setText(replaceTargetState != null ? replaceTargetState.getBlock().getName() : Component.literal("-"));
+        }
+        var iconEl = UIUtils.findById(replacePanel, iconId);
+        if (iconEl != null && replaceTargetState != null) {
+            iconEl.style(s -> s.backgroundTexture(new ItemStackTexture(replaceTargetState.getBlock().asItem())));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Comparable<T>> BlockState applyPropertyFromString(BlockState state, net.minecraft.world.level.block.state.properties.Property<T> prop, String value) {
+        for (var v : prop.getPossibleValues()) {
+            if (v.toString().equals(value)) {
+                return state.setValue(prop, v);
+            }
+        }
+        return state;
+    }
+
+    private static int replaceBatchSubMode = 0;
+    private static net.minecraft.world.level.block.Block replaceSourceBlock = null;
+    private static BlockState replaceTargetState = null;
+    private static boolean replacePickingSource = false;
+
+    private static final List<RandomFillEntry> randomFillEntries = new ArrayList<>();
+    private static UIElement randomFillListContainer;
+    private static String conditionType = "property";
+    private static UIElement conditionContentContainer;
+    private static String conditionMaterialType = "wood";
+
+    private static class RandomFillEntry {
+        BlockState blockState;
+        int weight;
+        RandomFillEntry(BlockState blockState, int weight) {
+            this.blockState = blockState;
+            this.weight = weight;
+        }
+    }
+
+    private static UIElement buildFillPanel() {
+        var panel = new UIElement();
+        panel.setId("fillPanel");
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(40).top(40)
                 .minWidth(220).maxWidth(300)
                 .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingAll(6));
@@ -1464,243 +2570,410 @@ public class EditorUI {
         var titleRow = new UIElement();
         titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
                 .alignItems(AlignItems.CENTER).gapAll(4));
-
-        var title = new Label();
-        title.setText(Component.translatable("ebe.editor.replace.title"));
-        title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
-        title.layout(l -> l.flex(1));
-        titleRow.addChild(title);
-
-        var closeBtn = new Button();
-        closeBtn.layout(l -> l.width(16).height(16));
-        closeBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
-        closeBtn.setOnClick(e -> {
-            replacePanelVisible = false;
-            panel.setDisplay(false);
-        });
-        titleRow.addChild(closeBtn);
-        panel.addChild(titleRow);
-
-        var modeRow = new UIElement();
-        modeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
-
-        var singleBtn = new Button();
-        singleBtn.setText(Component.translatable("ebe.editor.replace.single"));
-        singleBtn.layout(l -> l.flex(1).height(18));
-        singleBtn.setId("replaceModeSingle");
-        singleBtn.setOnClick(e -> {
-            replaceBatchMode = false;
-            updateReplaceModeHighlight();
-        });
-        modeRow.addChild(singleBtn);
-
-        var batchBtn = new Button();
-        batchBtn.setText(Component.translatable("ebe.editor.replace.batch"));
-        batchBtn.layout(l -> l.flex(1).height(18));
-        batchBtn.setId("replaceModeBatch");
-        batchBtn.setOnClick(e -> {
-            replaceBatchMode = true;
-            updateReplaceModeHighlight();
-        });
-        modeRow.addChild(batchBtn);
-        panel.addChild(modeRow);
-
-        var sourceLabel = new Label();
-        sourceLabel.setText(Component.translatable("ebe.editor.replace.source"));
-        sourceLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        panel.addChild(sourceLabel);
-
-        var sourceRow = new UIElement();
-        sourceRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-        var sourceBlockLabel = new Label();
-        sourceBlockLabel.setId("replaceSourceBlock");
-        sourceBlockLabel.setText(Component.literal("-"));
-        sourceBlockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
-        sourceBlockLabel.layout(l -> l.flex(1));
-        sourceRow.addChild(sourceBlockLabel);
-
-        var pickSourceBtn = new Button();
-        pickSourceBtn.setText(Component.translatable("ebe.editor.replace.pick_source"));
-        pickSourceBtn.layout(l -> l.height(16));
-        pickSourceBtn.setOnClick(e -> {
-            var inspected = state.getInspectedBlockState();
-            if (inspected != null) {
-                replaceSourceBlock = inspected.getBlock();
-                updateReplaceSourceDisplay();
-            }
-        });
-        sourceRow.addChild(pickSourceBtn);
-        panel.addChild(sourceRow);
-
-        var useSelectedBtn = new Button();
-        useSelectedBtn.setText(Component.translatable("ebe.editor.replace.use_selected"));
-        useSelectedBtn.layout(l -> l.widthPercent(100).height(18));
-        useSelectedBtn.setOnClick(e -> {
-            replaceUseSelection = !replaceUseSelection;
-            updateReplaceSourceDisplay();
-        });
-        useSelectedBtn.setId("replaceUseSelected");
-        panel.addChild(useSelectedBtn);
-
-        var targetLabel = new Label();
-        targetLabel.setText(Component.translatable("ebe.editor.replace.target"));
-        targetLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        panel.addChild(targetLabel);
-
-        var targetRow = new UIElement();
-        targetRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-        var targetBlockLabel = new Label();
-        targetBlockLabel.setId("replaceTargetBlock");
-        targetBlockLabel.setText(Component.literal("-"));
-        targetBlockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
-        targetBlockLabel.layout(l -> l.flex(1));
-        targetRow.addChild(targetBlockLabel);
-
-        var pickTargetBtn = new Button();
-        pickTargetBtn.setText(Component.translatable("ebe.editor.replace.pick_active"));
-        pickTargetBtn.layout(l -> l.height(16));
-        pickTargetBtn.setOnClick(e -> {
-            var active = state.getActiveBlockState();
-            if (active != null) {
-                replaceTargetState = active;
-                updateReplaceTargetDisplay();
-            }
-        });
-        targetRow.addChild(pickTargetBtn);
-        panel.addChild(targetRow);
-
-        var execBtn = new Button();
-        execBtn.setText(Component.translatable("ebe.editor.replace.execute"));
-        execBtn.layout(l -> l.widthPercent(100).height(22));
-        execBtn.setOnClick(e -> executeReplace());
-        panel.addChild(execBtn);
-
-        return panel;
-    }
-
-    private static boolean replaceBatchMode = false;
-    private static net.minecraft.world.level.block.Block replaceSourceBlock = null;
-    private static BlockState replaceTargetState = null;
-    private static boolean replaceUseSelection = false;
-
-    private static UIElement buildFillPanel() {
-        var panel = new UIElement();
-        panel.setId("fillPanel");
-        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(40).top(40)
-                .minWidth(200).maxWidth(280)
-                .flexDirection(FlexDirection.COLUMN).gapAll(4)
-                .paddingAll(6));
-        panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
-
-        var titleRow = new UIElement();
-        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-
         var title = new Label();
         title.setText(Component.translatable("ebe.editor.fill.title"));
         title.textStyle(ts -> ts.textColor(0xFFFFD700).textShadow(false).fontSize(10));
         title.layout(l -> l.flex(1));
         titleRow.addChild(title);
-
-        var closeBtn = new Button();
+        var closeBtn = new UIElement();
         closeBtn.layout(l -> l.width(16).height(16));
-        closeBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
-        closeBtn.setOnClick(e -> {
-            fillPanelVisible = false;
-            panel.setDisplay(false);
+        var closeIcon = new UIElement();
+        closeIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        closeIcon.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+        closeBtn.addChild(closeIcon);
+        closeBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                fillPanelVisible = false;
+                panel.setDisplay(false);
+            }
         });
         titleRow.addChild(closeBtn);
         panel.addChild(titleRow);
 
-        var targetLabel = new Label();
-        targetLabel.setText(Component.translatable("ebe.editor.fill.block"));
-        targetLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        panel.addChild(targetLabel);
+        var tabView = new TabView();
+        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).flex(1));
+        tabView.setId("fillTabView");
+        {
+            var h = tabView.tabHeaderContainer;
+            var c = tabView.tabContentContainer;
+            tabView.removeChild(h);
+            tabView.removeChild(c);
+            tabView.addChild(h);
+            tabView.addChild(c);
+        }
 
+        var fillTab = new Tab();
+        fillTab.setText(Component.translatable("ebe.fill.tab.fill"));
+        tabView.addTab(fillTab, buildFillFillTab());
+
+        var translateTab = new Tab();
+        translateTab.setText(Component.translatable("ebe.fill.tab.translate"));
+        tabView.addTab(translateTab, buildFillTranslateTab());
+
+        var rotateTab = new Tab();
+        rotateTab.setText(Component.translatable("ebe.fill.tab.rotate"));
+        tabView.addTab(rotateTab, buildFillRotateTab());
+
+        var randomFillTab = new Tab();
+        randomFillTab.setText(Component.translatable("ebe.fill.tab.random"));
+        tabView.addTab(randomFillTab, buildRandomFillTab());
+
+        var mirrorTab = new Tab();
+        mirrorTab.setText(Component.translatable("ebe.editor.mirror"));
+        tabView.addTab(mirrorTab, buildFillMirrorTab());
+
+        panel.addChild(tabView);
+        return panel;
+    }
+
+    private static UIElement buildFillFillTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.fill.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var blockSection = new UIElement();
+        blockSection.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        var blockTitle = new Label();
+        blockTitle.setText(Component.translatable("ebe.fill.target_block"));
+        blockTitle.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        blockSection.addChild(blockTitle);
         var blockRow = new UIElement();
         blockRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
                 .alignItems(AlignItems.CENTER).gapAll(4));
+        var blockIcon = new UIElement();
+        blockIcon.layout(l -> l.width(24).height(24));
+        blockIcon.setId("fillBlockIcon");
+        blockIcon.style(s -> s.background(Sprites.RECT_DARK));
+        blockRow.addChild(blockIcon);
         var blockLabel = new Label();
         blockLabel.setId("fillBlockLabel");
         blockLabel.setText(Component.literal("-"));
         blockLabel.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
         blockLabel.layout(l -> l.flex(1));
         blockRow.addChild(blockLabel);
-
-        var pickBtn = new Button();
-        pickBtn.setText(Component.translatable("ebe.editor.replace.pick_active"));
-        pickBtn.layout(l -> l.height(16));
-        pickBtn.setOnClick(e -> {
-            var active = state.getActiveBlockState();
-            if (active != null) {
-                fillBlockState = active;
-                updateFillBlockDisplay();
+        var browseBtn = new UIElement();
+        browseBtn.layout(l -> l.width(20).height(20));
+        var browseIcon = new UIElement();
+        browseIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        browseIcon.style(s -> s.backgroundTexture(EditorIcons.SEARCH));
+        browseBtn.addChild(browseIcon);
+        registerTooltip(browseBtn, Component.translatable("ebe.replace.browse_block"));
+        browseBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                BlockPaletteUI.openWithCallback(rootElement, bs -> {
+                    fillBlockState = bs;
+                    updateFillBlockDisplay();
+                });
             }
         });
-        blockRow.addChild(pickBtn);
-        panel.addChild(blockRow);
-
-        var dxRow = new UIElement();
-        dxRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-        var dxLabel = new Label();
-        dxLabel.setText(Component.literal("dX:"));
-        dxLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        dxLabel.layout(l -> l.width(20));
-        dxRow.addChild(dxLabel);
-        var dxField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
-        dxField.setText("0");
-        dxField.setId("fillDxField");
-        dxField.layout(l -> l.flex(1).height(18));
-        dxRow.addChild(dxField);
-        panel.addChild(dxRow);
-
-        var dyRow = new UIElement();
-        dyRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-        var dyLabel = new Label();
-        dyLabel.setText(Component.literal("dY:"));
-        dyLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        dyLabel.layout(l -> l.width(20));
-        dyRow.addChild(dyLabel);
-        var dyField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
-        dyField.setText("0");
-        dyField.setId("fillDyField");
-        dyField.layout(l -> l.flex(1).height(18));
-        dyRow.addChild(dyField);
-        panel.addChild(dyRow);
-
-        var dzRow = new UIElement();
-        dzRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
-                .alignItems(AlignItems.CENTER).gapAll(4));
-        var dzLabel = new Label();
-        dzLabel.setText(Component.literal("dZ:"));
-        dzLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
-        dzLabel.layout(l -> l.width(20));
-        dzRow.addChild(dzLabel);
-        var dzField = new com.lowdragmc.lowdraglib2.gui.ui.elements.TextField();
-        dzField.setText("0");
-        dzField.setId("fillDzField");
-        dzField.layout(l -> l.flex(1).height(18));
-        dzRow.addChild(dzField);
-        panel.addChild(dzRow);
+        blockRow.addChild(browseBtn);
+        var grabBtn = new UIElement();
+        grabBtn.layout(l -> l.width(20).height(20));
+        var grabIcon = new UIElement();
+        grabIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        grabIcon.style(s -> s.backgroundTexture(EditorIcons.PENCIL));
+        grabBtn.addChild(grabIcon);
+        registerTooltip(grabBtn, Component.translatable("ebe.replace.use_grabbed"));
+        grabBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                var active = state.getActiveBlockState();
+                if (active != null) {
+                    fillBlockState = active;
+                    updateFillBlockDisplay();
+                }
+            }
+        });
+        blockRow.addChild(grabBtn);
+        blockSection.addChild(blockRow);
+        content.addChild(blockSection);
 
         var fillBtn = new Button();
         fillBtn.setText(Component.translatable("ebe.editor.fill.execute_fill"));
         fillBtn.layout(l -> l.widthPercent(100).height(22));
         fillBtn.setOnClick(e -> executeFill());
-        panel.addChild(fillBtn);
+        content.addChild(fillBtn);
+
+        return content;
+    }
+
+    private static UIElement buildFillTranslateTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.translate.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var dxRow = new UIElement();
+        dxRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dxLabel = new Label();
+        dxLabel.setText(Component.literal("X:"));
+        dxLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dxLabel.layout(l -> l.width(16));
+        dxRow.addChild(dxLabel);
+        var dxField = new TextField();
+        dxField.setText("0");
+        dxField.setId("fillDxField");
+        dxField.layout(l -> l.flex(1).height(18));
+        dxRow.addChild(dxField);
+        content.addChild(dxRow);
+
+        var dyRow = new UIElement();
+        dyRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dyLabel = new Label();
+        dyLabel.setText(Component.literal("Y:"));
+        dyLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dyLabel.layout(l -> l.width(16));
+        dyRow.addChild(dyLabel);
+        var dyField = new TextField();
+        dyField.setText("0");
+        dyField.setId("fillDyField");
+        dyField.layout(l -> l.flex(1).height(18));
+        dyRow.addChild(dyField);
+        content.addChild(dyRow);
+
+        var dzRow = new UIElement();
+        dzRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var dzLabel = new Label();
+        dzLabel.setText(Component.literal("Z:"));
+        dzLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
+        dzLabel.layout(l -> l.width(16));
+        dzRow.addChild(dzLabel);
+        var dzField = new TextField();
+        dzField.setText("0");
+        dzField.setId("fillDzField");
+        dzField.layout(l -> l.flex(1).height(18));
+        dzRow.addChild(dzField);
+        content.addChild(dzRow);
 
         var translateBtn = new Button();
         translateBtn.setText(Component.translatable("ebe.editor.fill.execute_translate"));
         translateBtn.layout(l -> l.widthPercent(100).height(22));
         translateBtn.setOnClick(e -> executeTranslate());
-        panel.addChild(translateBtn);
+        content.addChild(translateBtn);
 
-        return panel;
+        return content;
+    }
+
+    private static UIElement buildFillRotateTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.rotate.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var axisLabel = new Label();
+        axisLabel.setText(Component.translatable("ebe.rotate.axis"));
+        axisLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        content.addChild(axisLabel);
+
+        var axisRow = new UIElement();
+        axisRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+        String[] axes = {"X", "Y", "Z"};
+        String[] axisIds = {"rotateAxisX", "rotateAxisY", "rotateAxisZ"};
+        for (int i = 0; i < axes.length; i++) {
+            final int ai = i;
+            var btn = new Button();
+            btn.setText(Component.literal(axes[i]));
+            btn.setId(axisIds[i]);
+            btn.layout(l -> l.flex(1).height(18));
+            btn.setOnClick(e -> {
+                rotateAxis = ai;
+                updateRotateAxisHighlight();
+            });
+            axisRow.addChild(btn);
+        }
+        content.addChild(axisRow);
+
+        var angleLabel = new Label();
+        angleLabel.setText(Component.translatable("ebe.rotate.angle"));
+        angleLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        content.addChild(angleLabel);
+
+        var angleRow = new UIElement();
+        angleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+        int[] angles = {90, 180, 270};
+        for (int angle : angles) {
+            var btn = new Button();
+            btn.setText(Component.literal(angle + "°"));
+            btn.layout(l -> l.flex(1).height(18));
+            final int a = angle;
+            btn.setOnClick(e -> rotateAngle = a);
+            angleRow.addChild(btn);
+        }
+        content.addChild(angleRow);
+
+        var rotateBtn = new Button();
+        rotateBtn.setText(Component.translatable("ebe.editor.fill.execute_rotate"));
+        rotateBtn.layout(l -> l.widthPercent(100).height(22));
+        rotateBtn.setOnClick(e -> executeRotate());
+        content.addChild(rotateBtn);
+
+        return content;
+    }
+
+    private static int rotateAxis = 1;
+    private static int rotateAngle = 90;
+
+    private static void updateRotateAxisHighlight() {
+        String[] axisIds = {"rotateAxisX", "rotateAxisY", "rotateAxisZ"};
+        for (int i = 0; i < axisIds.length; i++) {
+            final int idx = i;
+            var btn = UIUtils.findById(fillPanel, axisIds[i]);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(idx == rotateAxis ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void executeRotate() {
+        if (session == null) return;
+        var selection = getSelection();
+        if (selection.isEmpty()) return;
+        var model = session.getModel();
+        var history = getHistory();
+        var snapshots = new ArrayList<Object[]>();
+
+        double radians = Math.toRadians(rotateAngle);
+        double cos = Math.cos(radians);
+        double sin = Math.sin(radians);
+
+        var positions = selection.getPositions();
+        int cx = 0, cy = 0, cz = 0;
+        for (var p : positions) { cx += (int) p[0]; cy += (int) p[1]; cz += (int) p[2]; }
+        cx /= positions.size(); cy /= positions.size(); cz /= positions.size();
+
+        var newPositions = new LinkedHashMap<long[], Object>();
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            var oldState = model.getBlockAt(ox, oy, oz);
+            var bs = ViewportFactory.resolveBlockStatePublic(oldState);
+
+            int dx = ox - cx, dy = oy - cy, dz = oz - cz;
+            int nx, ny, nz;
+            if (rotateAxis == 0) {
+                nx = ox; ny = (int) Math.round(dy * cos - dz * sin) + cy; nz = (int) Math.round(dy * sin + dz * cos) + cz;
+            } else if (rotateAxis == 1) {
+                nx = (int) Math.round(dx * cos + dz * sin) + cx; ny = oy; nz = (int) Math.round(-dx * sin + dz * cos) + cz;
+            } else {
+                nx = (int) Math.round(dx * cos - dy * sin) + cx; ny = (int) Math.round(dx * sin + dy * cos) + cy; nz = oz;
+            }
+
+            var rotation = switch (rotateAxis) {
+                case 0 -> switch (rotateAngle) {
+                    case 90 -> net.minecraft.world.level.block.Rotation.COUNTERCLOCKWISE_90;
+                    case 180 -> net.minecraft.world.level.block.Rotation.CLOCKWISE_180;
+                    case 270 -> net.minecraft.world.level.block.Rotation.CLOCKWISE_90;
+                    default -> net.minecraft.world.level.block.Rotation.NONE;
+                };
+                default -> switch (rotateAngle) {
+                    case 90 -> net.minecraft.world.level.block.Rotation.CLOCKWISE_90;
+                    case 180 -> net.minecraft.world.level.block.Rotation.CLOCKWISE_180;
+                    case 270 -> net.minecraft.world.level.block.Rotation.COUNTERCLOCKWISE_90;
+                    default -> net.minecraft.world.level.block.Rotation.NONE;
+                };
+            };
+            var rotatedBs = bs.rotate(rotation);
+            newPositions.put(new long[]{nx, ny, nz}, rotatedBs);
+        }
+
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            model.setBlockAt(ox, oy, oz, "minecraft:air");
+        }
+        for (var entry : newPositions.entrySet()) {
+            var pos = entry.getKey();
+            model.setBlockAt((int) pos[0], (int) pos[1], (int) pos[2], entry.getValue());
+        }
+
+        selection.clear();
+        for (var pos : newPositions.keySet()) {
+            selection.add((int) pos[0], (int) pos[1], (int) pos[2]);
+        }
+
+        ViewportFactory.refreshFromModel(model);
+    }
+
+    private static UIElement buildFillMirrorTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.mirror.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        var axisLabel = new Label();
+        axisLabel.setText(Component.translatable("ebe.mirror.axis"));
+        axisLabel.textStyle(ts -> ts.textColor(0xFFCCCC00).textShadow(false).fontSize(9));
+        content.addChild(axisLabel);
+
+        var axisRow = new UIElement();
+        axisRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+        String[] axes = {"X", "Y", "Z"};
+        String[] axisIds = {"mirrorAxisX", "mirrorAxisY", "mirrorAxisZ"};
+        for (int i = 0; i < axes.length; i++) {
+            final int ai = i;
+            var btn = new Button();
+            btn.setText(Component.literal(axes[i]));
+            btn.setId(axisIds[i]);
+            btn.layout(l -> l.flex(1).height(18));
+            btn.setOnClick(e -> {
+                mirrorAxis = ai;
+                updateMirrorAxisHighlight();
+            });
+            axisRow.addChild(btn);
+        }
+        content.addChild(axisRow);
+
+        var mirrorBtn = new Button();
+        mirrorBtn.setText(Component.translatable("ebe.editor.fill.execute_mirror"));
+        mirrorBtn.layout(l -> l.widthPercent(100).height(22));
+        mirrorBtn.setOnClick(e -> executeMirror());
+        content.addChild(mirrorBtn);
+
+        return content;
+    }
+
+    private static int mirrorAxis = 1;
+
+    private static void updateMirrorAxisHighlight() {
+        String[] axisIds = {"mirrorAxisX", "mirrorAxisY", "mirrorAxisZ"};
+        for (int i = 0; i < axisIds.length; i++) {
+            final int idx = i;
+            var btn = UIUtils.findById(fillPanel, axisIds[i]);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(idx == mirrorAxis ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
+            }
+        }
+    }
+
+    private static void executeMirror() {
+        if (session == null) return;
+        var selection = getSelection();
+        if (selection.isEmpty()) return;
+        clipboard.mirror(session.getModel(), selection, mirrorAxis, history);
+        ViewportFactory.refreshFromModel(session.getModel());
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     private static BlockState fillBlockState = null;
@@ -1708,8 +2981,129 @@ public class EditorUI {
     private static void updateFillBlockDisplay() {
         var label = UIUtils.findById(fillPanel, "fillBlockLabel");
         if (label instanceof Label l && fillBlockState != null) {
-            l.setText(Component.literal(fillBlockState.getBlock().getDescriptionId()));
+            l.setText(fillBlockState.getBlock().getName());
         }
+        var icon = UIUtils.findById(fillPanel, "fillBlockIcon");
+        if (icon != null && fillBlockState != null) {
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(fillBlockState.getBlock().asItem())));
+        }
+    }
+
+    private static UIElement buildRandomFillTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6).paddingAll(4));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.fill.random.hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        hint.layout(l -> l.widthPercent(100));
+        content.addChild(hint);
+
+        randomFillListContainer = new UIElement();
+        randomFillListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
+        randomFillListContainer.setId("randomFillList");
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).maxHeight(120));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(randomFillListContainer);
+        content.addChild(scroller);
+
+        var addBtn = new Button();
+        addBtn.setText(Component.translatable("ebe.fill.random.add_block"));
+        addBtn.layout(l -> l.widthPercent(100).height(22));
+        addBtn.setOnClick(ev -> {
+            BlockPaletteUI.openWithCallback(rootElement, bs -> {
+                for (var entry : randomFillEntries) {
+                    if (entry.blockState == bs) { entry.weight++; refreshRandomFillList(); return; }
+                }
+                randomFillEntries.add(new RandomFillEntry(bs, 1));
+                refreshRandomFillList();
+            });
+        });
+        content.addChild(addBtn);
+
+        var execBtn = new Button();
+        execBtn.setText(Component.translatable("ebe.fill.random.execute"));
+        execBtn.layout(l -> l.widthPercent(100).height(22));
+        execBtn.setOnClick(e -> executeRandomFill());
+        content.addChild(execBtn);
+
+        refreshRandomFillList();
+        return content;
+    }
+
+    private static void refreshRandomFillList() {
+        if (randomFillListContainer == null) return;
+        randomFillListContainer.clearAllChildren();
+
+        if (randomFillEntries.isEmpty()) {
+            var empty = new Label();
+            empty.setText(Component.translatable("ebe.fill.random.no_entries"));
+            empty.textStyle(ts -> ts.textColor(0xFF707070).textShadow(false).fontSize(9));
+            randomFillListContainer.addChild(empty);
+            return;
+        }
+
+        for (int i = 0; i < randomFillEntries.size(); i++) {
+            final int idx = i;
+            var entry = randomFillEntries.get(i);
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                    .alignItems(AlignItems.CENTER).gapAll(4));
+
+            var icon = new UIElement();
+            icon.layout(l -> l.width(18).height(18));
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(entry.blockState.getBlock().asItem())));
+            row.addChild(icon);
+
+            var name = new Label();
+            name.setText(entry.blockState.getBlock().getName());
+            name.textStyle(ts -> ts.textColor(0xFFFFFFFF).textShadow(false).fontSize(9));
+            name.layout(l -> l.flex(1));
+            row.addChild(name);
+
+            var weightLabel = new Label();
+            weightLabel.setText(Component.translatable("ebe.fill.random.weight"));
+            weightLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(8));
+            row.addChild(weightLabel);
+
+            var weightField = new TextField();
+            weightField.setText(String.valueOf(entry.weight));
+            weightField.layout(l -> l.width(36).height(16));
+            weightField.setTextResponder(text -> {
+                try {
+                    randomFillEntries.get(idx).weight = Integer.parseInt(text);
+                } catch (NumberFormatException ignored) {}
+            });
+            row.addChild(weightField);
+
+            var delBtn = new Button();
+            delBtn.setText(Component.literal("✕"));
+            delBtn.layout(l -> l.width(16).height(16));
+            delBtn.setOnClick(e -> {
+                randomFillEntries.remove(idx);
+                refreshRandomFillList();
+            });
+            row.addChild(delBtn);
+
+            randomFillListContainer.addChild(row);
+        }
+    }
+
+    private static void executeRandomFill() {
+        if (session == null || randomFillEntries.isEmpty()) return;
+        var selection = getSelection();
+        if (selection.isEmpty()) return;
+        var ratios = new LinkedHashMap<Object, Double>();
+        for (var entry : randomFillEntries) {
+            ratios.put(entry.blockState, (double) entry.weight);
+        }
+        clipboard.fillRandom(session.getModel(), selection, ratios, history);
+        ViewportFactory.refreshFromModel(session.getModel());
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     private static void executeFill() {
@@ -1744,85 +3138,286 @@ public class EditorUI {
         return defaultVal;
     }
 
-    private static void updateReplaceModeHighlight() {
-    }
-
-    private static void updateReplaceSourceDisplay() {
-        var label = UIUtils.findById(replacePanel, "replaceSourceBlock");
-        if (label instanceof Label l) {
-            if (replaceUseSelection) {
-                l.setText(Component.translatable("ebe.editor.replace.using_selection"));
-            } else if (replaceSourceBlock != null) {
-                l.setText(Component.literal(replaceSourceBlock.getDescriptionId()));
-            } else {
-                l.setText(Component.literal("-"));
+    private static void updateBatchModeHighlight() {
+        String[] modeIds = {"replaceModeSameType", "replaceModeByCondition", "replaceModeCustom"};
+        for (int i = 0; i < modeIds.length; i++) {
+            final int idx = i;
+            var btn = UIUtils.findById(replacePanel, modeIds[i]);
+            if (btn instanceof Button b) {
+                b.style(s -> s.background(idx == replaceBatchSubMode ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
             }
         }
     }
 
-    private static void updateReplaceTargetDisplay() {
-        var label = UIUtils.findById(replacePanel, "replaceTargetBlock");
-        if (label instanceof Label l) {
+    private static void updateBatchContentVisibility() {
+    }
+
+    private static void updateReplaceSingleDisplay() {
+        var name = UIUtils.findById(replacePanel, "replaceSingleTargetName");
+        if (name instanceof Label l) {
             if (replaceTargetState != null) {
-                l.setText(Component.literal(replaceTargetState.getBlock().getDescriptionId()));
+                l.setText(replaceTargetState.getBlock().getName());
             } else {
                 l.setText(Component.literal("-"));
             }
         }
+        var icon = UIUtils.findById(replacePanel, "replaceSingleTargetIcon");
+        if (icon != null && replaceTargetState != null) {
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(replaceTargetState.getBlock().asItem())));
+        }
     }
 
-    private static void executeReplace() {
-        if (session == null || replaceTargetState == null) return;
-        var model = session.getModel();
-        var selection = getSelection();
-        var history = getHistory();
+    private static void updateReplaceBatchSourceDisplay() {
+        var name = UIUtils.findById(replacePanel, "replaceBatchSourceName");
+        if (name instanceof Label l) {
+            if (replaceSourceBlock != null) {
+                l.setText(replaceSourceBlock.getName());
+            } else {
+                l.setText(Component.literal("-"));
+            }
+        }
+        var icon = UIUtils.findById(replacePanel, "replaceBatchSourceIcon");
+        if (icon != null && replaceSourceBlock != null) {
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(replaceSourceBlock.asItem())));
+        }
+    }
 
-        if (replaceUseSelection && selection.size() > 0) {
-            var snapshots = new ArrayList<Object[]>();
-            for (var packed : selection.getAllPacked()) {
-                int x = (int) (packed & 0xFFFFFF);
-                int y = (int) ((packed >> 24) & 0xFFFFFF);
-                int z = (int) ((packed >> 48) & 0xFFFFFF);
-                var old = model.getBlockAt(x, y, z);
-                model.setBlockAt(x, y, z, replaceTargetState);
-                snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+    private static void updateReplaceBatchTargetDisplay() {
+        var name = UIUtils.findById(replacePanel, "replaceBatchTargetName");
+        if (name instanceof Label l) {
+            if (replaceTargetState != null) {
+                l.setText(replaceTargetState.getBlock().getName());
+            } else {
+                l.setText(Component.literal("-"));
             }
-            if (!snapshots.isEmpty()) {
-                history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                        history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                        snapshots.toArray(new Object[0][]),
-                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                        replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
-            }
-        } else if (replaceBatchMode && replaceSourceBlock != null) {
-            var snapshots = new ArrayList<Object[]>();
-            for (var region : model.getRegions()) {
-                for (int y = 0; y < region.getSizeY(); y++) {
-                    for (int z = 0; z < region.getSizeZ(); z++) {
-                        for (int x = 0; x < region.getSizeX(); x++) {
-                            var obj = region.getBlocks().get(x, y, z);
-                            var bs = ViewportFactory.resolveBlockStatePublic(obj);
-                            if (!bs.isAir() && bs.getBlock() == replaceSourceBlock) {
-                                int wx = x + region.getOffsetX();
-                                int wy = y + region.getOffsetY();
-                                int wz = z + region.getOffsetZ();
-                                var old = model.getBlockAt(wx, wy, wz);
-                                model.setBlockAt(wx, wy, wz, replaceTargetState);
-                                snapshots.add(new Object[]{wx, wy, wz, old, replaceTargetState});
-                            }
+        }
+        var icon = UIUtils.findById(replacePanel, "replaceBatchTargetIcon");
+        if (icon != null && replaceTargetState != null) {
+            icon.style(s -> s.backgroundTexture(new ItemStackTexture(replaceTargetState.getBlock().asItem())));
+        }
+    }
+
+    private static void executeSameTypeReplace() {
+        if (session == null || replaceSourceBlock == null || replaceTargetState == null) return;
+        var model = session.getModel();
+        var history = getHistory();
+        var snapshots = new ArrayList<Object[]>();
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        var bs = ViewportFactory.resolveBlockStatePublic(obj);
+                        if (!bs.isAir() && bs.getBlock() == replaceSourceBlock) {
+                            int wx = x + region.getOffsetX();
+                            int wy = y + region.getOffsetY();
+                            int wz = z + region.getOffsetZ();
+                            var old = model.getBlockAt(wx, wy, wz);
+                            model.setBlockAt(wx, wy, wz, replaceTargetState);
+                            snapshots.add(new Object[]{wx, wy, wz, old, replaceTargetState});
                         }
                     }
                 }
             }
-            if (!snapshots.isEmpty()) {
-                history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                        history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                        snapshots.toArray(new Object[0][]),
-                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                        replaceSourceBlock.getDescriptionId(), snapshots.size()));
-            }
+        }
+        if (!snapshots.isEmpty()) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots.toArray(new Object[0][]),
+                    (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                    replaceSourceBlock.getDescriptionId(), snapshots.size()));
+        }
+        ViewportFactory.refreshFromModel(model);
+    }
+
+    private static void executeByConditionReplace() {
+        if (session == null || replaceTargetState == null) return;
+        if (conditionType.equals("property") && replaceSourceBlock == null) return;
+        var model = session.getModel();
+        var history = getHistory();
+
+        String propName = "", propVal = "";
+        if (conditionType.equals("property")) {
+            var propNameEl = UIUtils.findById(replacePanel, "replaceCondPropName");
+            var propValEl = UIUtils.findById(replacePanel, "replaceCondPropValue");
+            propName = propNameEl instanceof TextField tf ? tf.getText() : "";
+            propVal = propValEl instanceof TextField tf ? tf.getText() : "";
         }
 
+        var snapshots = new ArrayList<Object[]>();
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        var bs = ViewportFactory.resolveBlockStatePublic(obj);
+                        if (bs.isAir()) continue;
+
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+
+                        boolean matches = switch (conditionType) {
+                            case "property" -> matchesPropertyCondition(bs);
+                            case "color" -> matchesColorCondition(bs);
+                            case "material" -> matchesMaterialCondition(bs);
+                            case "tag" -> matchesTagCondition(bs);
+                            case "nbt" -> matchesNbtCondition(wx, wy, wz);
+                            case "custom" -> matchesCustomCondition(bs);
+                            default -> false;
+                        };
+
+                        if (!matches) continue;
+
+                        var old = model.getBlockAt(wx, wy, wz);
+                        var newState = replaceTargetState;
+                        if (conditionType.equals("property") && !propName.isEmpty()) {
+                            for (var p : replaceTargetState.getProperties()) {
+                                if (p.getName().equals(propName)) {
+                                    try {
+                                        newState = applyPropertyFromString(newState, p, propVal);
+                                    } catch (Exception ignored) {}
+                                }
+                            }
+                        }
+                        model.setBlockAt(wx, wy, wz, newState);
+                        snapshots.add(new Object[]{wx, wy, wz, old, newState});
+                    }
+                }
+            }
+        }
+        if (!snapshots.isEmpty()) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots.toArray(new Object[0][]),
+                    (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                    replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
+        }
+        ViewportFactory.refreshFromModel(model);
+    }
+
+    private static boolean matchesPropertyCondition(BlockState bs) {
+        if (replaceSourceBlock != null && bs.getBlock() != replaceSourceBlock) return false;
+        var propNameEl = UIUtils.findById(replacePanel, "replaceCondPropName");
+        var propValEl = UIUtils.findById(replacePanel, "replaceCondPropValue");
+        String propName = propNameEl instanceof TextField tf ? tf.getText() : "";
+        String propVal = propValEl instanceof TextField tf ? tf.getText() : "";
+        if (propName.isEmpty()) return false;
+        net.minecraft.world.level.block.state.properties.Property<?> matchProp = null;
+        for (var p : bs.getProperties()) {
+            if (p.getName().equals(propName)) { matchProp = p; break; }
+        }
+        if (matchProp == null) return false;
+        var currentVal = bs.getValue(matchProp);
+        return currentVal.toString().equals(propVal);
+    }
+
+    private static boolean matchesColorCondition(BlockState bs) {
+        var colorIdEl = UIUtils.findById(replacePanel, "replaceCondColorId");
+        String colorIdStr = colorIdEl instanceof TextField tf ? tf.getText() : "";
+        if (colorIdStr.isEmpty()) return false;
+        try {
+            int targetColorId = Integer.parseInt(colorIdStr);
+            var level = Minecraft.getInstance().level;
+            if (level == null) return false;
+            MapColor mapColor = bs.getMapColor(level, BlockPos.ZERO);
+            return mapColor.id == targetColorId;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static boolean matchesMaterialCondition(BlockState bs) {
+        var block = bs.getBlock();
+        var blockId = BuiltInRegistries.BLOCK.getKey(block).toString();
+        return switch (conditionMaterialType) {
+            case "wood" -> bs.is(BlockTags.PLANKS) || bs.is(BlockTags.LOGS);
+            case "stone" -> bs.is(BlockTags.STONE_BRICKS) || blockId.contains("stone") || blockId.contains("cobble");
+            case "metal" -> bs.is(BlockTags.BEACON_BASE_BLOCKS);
+            case "glass" -> bs.is(BlockTags.IMPERMEABLE) || blockId.contains("glass");
+            case "wool" -> bs.is(BlockTags.WOOL);
+            case "concrete" -> blockId.contains("concrete") && !blockId.contains("concrete_powder");
+            case "terracotta" -> blockId.contains("terracotta");
+            default -> false;
+        };
+    }
+
+    private static boolean matchesTagCondition(BlockState bs) {
+        var tagNameEl = UIUtils.findById(replacePanel, "replaceCondTagName");
+        String tagName = tagNameEl instanceof TextField tf ? tf.getText() : "";
+        if (tagName.isEmpty()) return false;
+        try {
+            var tagKey = TagKey.create(net.minecraft.core.registries.Registries.BLOCK, ResourceLocation.parse(tagName));
+            return bs.is(tagKey);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean matchesNbtCondition(int wx, int wy, int wz) {
+        var nbtFieldEl = UIUtils.findById(replacePanel, "replaceCondNbtField");
+        var nbtValEl = UIUtils.findById(replacePanel, "replaceCondNbtValue");
+        String nbtField = nbtFieldEl instanceof TextField tf ? tf.getText() : "";
+        String nbtVal = nbtValEl instanceof TextField tf ? tf.getText() : "";
+        if (nbtField.isEmpty()) return false;
+        var nbt = session.getModel().getBlockEntityNbt(wx, wy, wz);
+        if (nbt == null) return false;
+        if (!nbt.contains(nbtField)) return false;
+        if (nbtVal.isEmpty()) return true;
+        var tag = nbt.get(nbtField);
+        String tagStr = nbtValueToString(tag).replace("\"", "");
+        return tagStr.equals(nbtVal) || tagStr.replaceAll("[LfFdDsBb]$", "").equals(nbtVal);
+    }
+
+    private static boolean matchesCustomCondition(BlockState bs) {
+        var ruleEl = UIUtils.findById(replacePanel, "replaceCondCustomRule");
+        String rule = ruleEl instanceof TextField tf ? tf.getText() : "";
+        if (rule.isEmpty()) return false;
+        var conditions = rule.split(",");
+        for (String cond : conditions) {
+            var parts = cond.trim().split("=");
+            if (parts.length != 2) return false;
+            String propName = parts[0].trim();
+            String propVal = parts[1].trim();
+            boolean found = false;
+            for (var p : bs.getProperties()) {
+                if (p.getName().equals(propName) && bs.getValue(p).toString().equals(propVal)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private static void executeCustomReplace() {
+        if (session == null || replaceTargetState == null) return;
+        var model = session.getModel();
+        var selection = getSelection();
+        var history = getHistory();
+        if (selection.isEmpty()) return;
+        var snapshots = new ArrayList<Object[]>();
+        for (var packed : selection.getAllPacked()) {
+            int x = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+            int y = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+            int z = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+            var old = model.getBlockAt(x, y, z);
+            model.setBlockAt(x, y, z, replaceTargetState);
+            snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+        }
+        if (!snapshots.isEmpty()) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots.toArray(new Object[0][]),
+                    (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                    replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
+        }
+        ViewportFactory.refreshFromModel(model);
+    }
+
+    private static void refreshAfterEdit() {
+        var model = session.getModel();
         ViewportFactory.refreshFromModel(model);
         refreshMaterialList();
         refreshHistoryList();
@@ -1839,6 +3434,7 @@ public class EditorUI {
                     Component.translatable("ebe.hints.select.click").getString() + "\n" +
                     "■ Ctrl+" + Component.translatable("ebe.hints.select.multi").getString() + "\n" +
                     "■ Shift+" + Component.translatable("ebe.hints.select.box").getString() + "\n" +
+                    "■ Ctrl+Shift+" + Component.translatable("ebe.hints.select.same_type").getString() + "\n" +
                     "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z/Y\n" +
                     "■ " + Component.translatable("ebe.hints.common.clipboard").getString() + ": Ctrl+C/V/X";
             case PLACE -> "■ " +
@@ -1949,6 +3545,7 @@ public class EditorUI {
     // ========== Key Input Handler (called from EditorScreen) ==========
 
     public static boolean handleKeyPress(int keyCode, int scanCode, int modifiers) {
+        if (isTextFieldFocused()) return false;
         boolean ctrl = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0;
 
         if (ctrl) {

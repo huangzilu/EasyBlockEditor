@@ -9,6 +9,7 @@ import com.lowdragmc.lowdraglib2.configurator.ui.StringConfigurator;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
@@ -21,7 +22,7 @@ public class SettingsUI {
 
     public static void showSettings(UIElement parent) {
         var dialog = new Dialog();
-        dialog.setTitle("Settings");
+        dialog.setTitle(Component.translatable("ebe.editor.settings").getString());
         dialog.overlay.layout(l -> l.width(380).heightPercent(80));
 
         var tabView = new TabView();
@@ -46,7 +47,7 @@ public class SettingsUI {
         dialog.addContent(tabView);
 
         dialog.addButton(new Button()
-                .setText(Component.literal("OK"))
+                .setText(Component.translatable("ebe.editor.settings.ok"))
                 .setOnClick(e -> dialog.close()));
 
         dialog.show(parent);
@@ -55,18 +56,19 @@ public class SettingsUI {
     private static UIElement createGeneralTab() {
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
 
-        var group = new ConfiguratorGroup("General", false);
+        var group = new ConfiguratorGroup(Component.translatable("ebe.settings.general").getString(), false);
 
         group.addConfigurator(new StringConfigurator(
-                "Schematic Directory",
+                Component.translatable("ebe.settings.schematic_dir").getString(),
                 EBEClientConfig.schematicDir::get,
                 v -> EBEClientConfig.schematicDir.set(v),
                 "config/ebe/client/schematics", false
         ));
 
         group.addConfigurator(new SelectorConfigurator<>(
-                "Theme",
+                Component.translatable("ebe.settings.theme").getString(),
                 () -> EBEClientConfig.theme.get(),
                 v -> EBEClientConfig.theme.set(v),
                 "dark", false,
@@ -81,22 +83,30 @@ public class SettingsUI {
     private static UIElement createEditorTab() {
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
 
-        var group = new ConfiguratorGroup("Editor", false);
+        var group = new ConfiguratorGroup(Component.translatable("ebe.settings.editor").getString(), false);
 
         group.addConfigurator(new NumberConfigurator(
-                "FOV",
+                Component.translatable("ebe.settings.fov").getString(),
                 EBEClientConfig.editorFov::get,
                 v -> EBEClientConfig.editorFov.set(v.doubleValue()),
                 60.0, false
         ).setRange(30.0, 120.0).setWheel(5.0));
 
         group.addConfigurator(new NumberConfigurator(
-                "Flight Speed",
+                Component.translatable("ebe.settings.flight_speed").getString(),
                 EBEClientConfig.flightSpeed::get,
                 v -> EBEClientConfig.flightSpeed.set(v.doubleValue()),
-                10.0, false
-        ).setRange(1.0, 50.0).setWheel(1.0));
+                0.5, false
+        ).setRange(0.05, 50.0).setWheel(0.1));
+
+        group.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.history_max").getString(),
+                EBEClientConfig.historyMaxEntries::get,
+                v -> EBEClientConfig.historyMaxEntries.set(v.intValue()),
+                100, false
+        ).setRange(0, 10000).setWheel(10));
 
         scroller.addScrollViewChild(group);
         return scroller;
@@ -105,18 +115,19 @@ public class SettingsUI {
     private static UIElement createProjectionTab() {
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
 
-        var group = new ConfiguratorGroup("Projection", false);
+        var group = new ConfiguratorGroup(Component.translatable("ebe.settings.projection").getString(), false);
 
         group.addConfigurator(new NumberConfigurator(
-                "Opacity",
+                Component.translatable("ebe.settings.opacity").getString(),
                 EBEClientConfig.projectionOpacity::get,
                 v -> EBEClientConfig.projectionOpacity.set(v.doubleValue()),
                 0.5, false
         ).setRange(0.0, 1.0).setWheel(0.05));
 
         group.addConfigurator(new NumberConfigurator(
-                "Render Distance",
+                Component.translatable("ebe.settings.render_distance").getString(),
                 EBEClientConfig.projectionRenderDistance::get,
                 v -> EBEClientConfig.projectionRenderDistance.set(v.intValue()),
                 64, false
@@ -129,11 +140,12 @@ public class SettingsUI {
     private static UIElement createPrinterTab() {
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
 
-        var group = new ConfiguratorGroup("Printer", false);
+        var group = new ConfiguratorGroup(Component.translatable("ebe.settings.printer").getString(), false);
 
         group.addConfigurator(new NumberConfigurator(
-                "Auto Range",
+                Component.translatable("ebe.settings.auto_range").getString(),
                 EBEClientConfig.printerRange::get,
                 v -> EBEClientConfig.printerRange.set(v.intValue()),
                 3, false

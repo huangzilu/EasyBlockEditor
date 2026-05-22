@@ -308,19 +308,27 @@ public class ClipboardManager {
         int repX = 0, repY = 0, repZ = 0;
         Object repBlock = null;
 
+        var oldStates = new LinkedHashMap<String, Object>();
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            oldStates.put(ox + "," + oy + "," + oz, model.getBlockAt(ox, oy, oz));
+        }
+
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int nx = ox + dx, ny = oy + dy, nz = oz + dz;
+            model.setBlockAt(ox, oy, oz, "minecraft:air");
+        }
 
-            if (!model.canEditAt(nx, ny, nz)) continue;
-
-            var oldState = model.getBlockAt(ox, oy, oz);
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            int nx = ox + dx, ny = oy + dy, nz = oz + dz;
+            var oldState = oldStates.get(ox + "," + oy + "," + oz);
             var oldAtNew = model.getBlockAt(nx, ny, nz);
 
             snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
             snapshots.add(new Object[]{nx, ny, nz, oldAtNew, oldState});
 
-            model.setBlockAt(ox, oy, oz, "minecraft:air");
             model.setBlockAt(nx, ny, nz, oldState);
             if (repBlock == null) { repX = nx; repY = ny; repZ = nz; repBlock = oldState; }
         }

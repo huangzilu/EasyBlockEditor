@@ -3,6 +3,8 @@ package com.l1ght.ebe.data.io;
 import com.google.gson.*;
 import com.l1ght.ebe.data.*;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 
@@ -97,6 +99,25 @@ public class EBEFormatIO {
             }
             rj.add("block_data", blockData);
 
+            var beArray = new JsonArray();
+            for (var entry : region.getBlockEntities().entrySet()) {
+                long key = entry.getKey();
+                int lx = (int) (key & 0xFFF);
+                int ly = (int) ((key >> 12) & 0xFFF);
+                int lz = (int) ((key >> 24) & 0xFFF);
+                int wx = lx + region.getOffsetX();
+                int wy = ly + region.getOffsetY();
+                int wz = lz + region.getOffsetZ();
+                var beObj = new JsonObject();
+                beObj.add("pos", new JsonArray());
+                beObj.getAsJsonArray("pos").add(wx);
+                beObj.getAsJsonArray("pos").add(wy);
+                beObj.getAsJsonArray("pos").add(wz);
+                beObj.addProperty("nbt", entry.getValue().toString());
+                beArray.add(beObj);
+            }
+            rj.add("block_entities", beArray);
+
             regionsArray.add(rj);
         }
         root.add("regions", regionsArray);
@@ -171,6 +192,22 @@ public class EBEFormatIO {
                             }
                         }
                         idx++;
+                    }
+                }
+            }
+
+            if (rj.has("block_entities")) {
+                for (var beElem : rj.getAsJsonArray("block_entities")) {
+                    var beObj = beElem.getAsJsonObject();
+                    var posArr = beObj.getAsJsonArray("pos");
+                    int wx = posArr.get(0).getAsInt();
+                    int wy = posArr.get(1).getAsInt();
+                    int wz = posArr.get(2).getAsInt();
+                    String nbtStr = beObj.get("nbt").getAsString();
+                    try {
+                        CompoundTag tag = TagParser.parseTag(nbtStr);
+                        region.setWorldBlockEntity(wx, wy, wz, tag);
+                    } catch (Exception ignored) {
                     }
                 }
             }

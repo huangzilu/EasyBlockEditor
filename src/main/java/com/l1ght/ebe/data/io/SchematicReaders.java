@@ -170,6 +170,15 @@ public class SchematicReaders {
                     }
                 }
             }
+
+            var tileEntitiesTag = regionTag.getList("TileEntities", 10);
+            for (int i = 0; i < tileEntitiesTag.size(); i++) {
+                var teTag = tileEntitiesTag.getCompound(i);
+                var posArr = teTag.getIntArray("Pos");
+                if (posArr.length == 3) {
+                    region.setWorldBlockEntity(posArr[0] + minX, posArr[1] + minY, posArr[2] + minZ, teTag);
+                }
+            }
         }
 
         return model;
@@ -216,6 +225,9 @@ public class SchematicReaders {
             BlockState bs = paletteIdx < palette.length ? palette[paletteIdx] : Blocks.AIR.defaultBlockState();
             if (!bs.isAir()) {
                 region.setWorldBlock(pos[0], pos[1], pos[2], bs);
+            }
+            if (block.contains("nbt", 10)) {
+                region.setWorldBlockEntity(pos[0], pos[1], pos[2], block.getCompound("nbt"));
             }
         }
 
