@@ -159,7 +159,7 @@ public class ViewportFactory {
                 int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
                 int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
                 int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
-                RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.2f, 0.5f, 1.0f, 1.005f);
+                RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.15f, 0.35f, 0.85f, 1.005f);
             }
         });
 
@@ -527,7 +527,7 @@ public class ViewportFactory {
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
 
-        if (currentScene != null) currentScene.needCompileCache();
+        if (currentScene != null) incrementalUpdateCore(pos, true);
 
         if (history != null) {
             history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
@@ -547,6 +547,69 @@ public class ViewportFactory {
         } else {
             refreshRenderedCore();
         }
+    }
+
+    public static void applyBlockDeltas(Object[][] snapshots) {
+        if (currentWorld == null || currentScene == null) return;
+        var core = getSceneCore();
+
+        for (var snapshot : snapshots) {
+            int x = (int) snapshot[0];
+            int y = (int) snapshot[1];
+            int z = (int) snapshot[2];
+            var newState = snapshot[4];
+            var pos = new BlockPos(x, y, z);
+
+            currentWorld.removeBlock(pos);
+
+            if (newState instanceof BlockState bs && !bs.isAir()) {
+                currentWorld.addBlock(pos, new BlockInfo(bs));
+                if (core != null) core.add(pos.immutable());
+            } else if (newState instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
+                var resolved = resolveBlockState(newState);
+                if (resolved != null && !resolved.isAir()) {
+                    currentWorld.addBlock(pos, new BlockInfo(resolved));
+                    if (core != null) core.add(pos.immutable());
+                }
+            } else {
+                if (core != null) core.remove(pos);
+            }
+        }
+
+        currentScene.needCompileCache();
+    }
+
+    public static void applyBlockDeltasFromModel(Object[][] snapshots) {
+        if (currentWorld == null || currentScene == null) return;
+
+        for (var snapshot : snapshots) {
+            int x = (int) snapshot[0];
+            int y = (int) snapshot[1];
+            int z = (int) snapshot[2];
+            var pos = new BlockPos(x, y, z);
+            var newState = snapshot[4];
+
+            currentWorld.removeBlock(pos);
+
+            BlockState resolvedBs = null;
+            if (newState instanceof BlockState bs) {
+                resolvedBs = bs;
+            } else {
+                resolvedBs = resolveBlockState(newState);
+            }
+
+            if (resolvedBs != null && !resolvedBs.isAir()) {
+                currentWorld.addBlock(pos, new BlockInfo(resolvedBs));
+            }
+        }
+
+        var core = getSceneCore();
+        if (core != null) {
+            core.clear();
+            currentWorld.getFilledBlocks().forEach(packed -> core.add(BlockPos.of(packed)));
+        }
+
+        currentScene.needCompileCache();
     }
 
     private static void syncBlockToModel(BuildingModel model, BlockPos pos, BlockState blockState) {
@@ -635,22 +698,10 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        currentScene.setRenderedCore(positions, selectionRenderHook, autoCamera);
+        currentScene.setRenderedCore(positions, null, autoCamera);
     }
 
-    private static final com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook selectionRenderHook =
-            new com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook() {
-                @Override
-                public void applyVertexConsumerWrapper(net.minecraft.world.level.Level world, BlockPos pos,
-                                                        BlockState state,
-                                                        com.lowdragmc.lowdraglib2.client.scene.WorldSceneRenderer.VertexConsumerWrapper wrapperBuffer,
-                                                        net.minecraft.client.renderer.RenderType layer, float partialTicks) {
-                    var selection = EditorUI.getSelection();
-                    if (selection.contains(pos.getX(), pos.getY(), pos.getZ())) {
-                        wrapperBuffer.setColorMultiplier(0.5f, 0.7f, 1.0f, 0.85f);
-                    }
-                }
-            };
+
 
     private static void addDemoBlocks(TrackedDummyWorld world) {
         for (int x = 0; x < 7; x++) {

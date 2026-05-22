@@ -308,13 +308,23 @@ public class EditorUI {
         root.child("ebe.editor.paste", () -> {
             clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
                     state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
-            ViewportFactory.refreshFromModel(session.getModel());
+            var lastEntry = history.getLastEntry();
+            if (lastEntry != null) {
+                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+            } else {
+                ViewportFactory.refreshFromModel(session.getModel());
+            }
             refreshMaterialList();
             refreshHistoryList();
         });
         root.child("ebe.editor.cut", () -> {
             clipboard.cut(session.getModel(), selection, history);
-            ViewportFactory.refreshFromModel(session.getModel());
+            var lastEntry = history.getLastEntry();
+            if (lastEntry != null) {
+                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+            } else {
+                ViewportFactory.refreshFromModel(session.getModel());
+            }
             refreshMaterialList();
             refreshHistoryList();
             updateSelectionCount();
@@ -575,11 +585,15 @@ public class EditorUI {
     private static void undo() {
         var entry = history.undo();
         if (entry == null) return;
-        for (var s : entry.getSnapshots()) {
+        var snapshots = entry.getSnapshots();
+        var reversed = new Object[snapshots.length][];
+        for (int i = 0; i < snapshots.length; i++) {
+            var s = snapshots[i];
+            reversed[i] = new Object[]{s[0], s[1], s[2], s[4], s[3]};
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
             session.getModel().setBlockAt(x, y, z, s[3]);
         }
-        ViewportFactory.refreshFromModel(session.getModel());
+        ViewportFactory.applyBlockDeltasFromModel(reversed);
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -591,7 +605,7 @@ public class EditorUI {
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
             session.getModel().setBlockAt(x, y, z, s[4]);
         }
-        ViewportFactory.refreshFromModel(session.getModel());
+        ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -601,13 +615,15 @@ public class EditorUI {
         if (count <= 0) return;
         var undone = history.popUndoEntries(count);
         var model = session.getModel();
+        var allReversed = new ArrayList<Object[]>();
         for (var entry : undone) {
             for (var s : entry.getSnapshots()) {
                 int x = (int) s[0], y = (int) s[1], z = (int) s[2];
                 model.setBlockAt(x, y, z, s[3]);
+                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
             }
         }
-        ViewportFactory.refreshFromModel(model);
+        ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -2201,7 +2217,7 @@ public class EditorUI {
                         (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
                         replaceTargetState, snapshots.size()));
             }
-            ViewportFactory.refreshFromModel(model);
+            ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(Object[][]::new));
             refreshMaterialList();
             refreshHistoryList();
         });
@@ -3086,7 +3102,7 @@ public class EditorUI {
                     repX, repY, repZ, repBlock, snapshots.size()));
         }
 
-        ViewportFactory.refreshFromModel(model);
+        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(Object[][]::new));
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -3167,7 +3183,12 @@ public class EditorUI {
         int cy = getIntField(fillPanel, "mirrorCenterY", 0);
         int cz = getIntField(fillPanel, "mirrorCenterZ", 0);
         clipboard.mirror(session.getModel(), selection, mirrorAxis, cx, cy, cz, history);
-        ViewportFactory.refreshFromModel(session.getModel());
+        var lastEntry = history.getLastEntry();
+        if (lastEntry != null) {
+            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+        } else {
+            ViewportFactory.refreshFromModel(session.getModel());
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -3297,7 +3318,12 @@ public class EditorUI {
             ratios.put(entry.blockState, (double) entry.weight);
         }
         clipboard.fillRandom(session.getModel(), selection, ratios, history);
-        ViewportFactory.refreshFromModel(session.getModel());
+        var lastEntry = history.getLastEntry();
+        if (lastEntry != null) {
+            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+        } else {
+            ViewportFactory.refreshFromModel(session.getModel());
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -3307,7 +3333,12 @@ public class EditorUI {
         var selection = getSelection();
         if (selection.isEmpty()) return;
         clipboard.fill(session.getModel(), selection, fillBlockState, history);
-        ViewportFactory.refreshFromModel(session.getModel());
+        var lastEntry = history.getLastEntry();
+        if (lastEntry != null) {
+            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+        } else {
+            ViewportFactory.refreshFromModel(session.getModel());
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -3321,7 +3352,12 @@ public class EditorUI {
         int dz = getIntField(fillPanel, "fillDzField", 0);
         if (dx == 0 && dy == 0 && dz == 0) return;
         clipboard.translateSelection(session.getModel(), selection, dx, dy, dz, history);
-        ViewportFactory.refreshFromModel(session.getModel());
+        var lastEntry = history.getLastEntry();
+        if (lastEntry != null) {
+            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+        } else {
+            ViewportFactory.refreshFromModel(session.getModel());
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -3423,7 +3459,7 @@ public class EditorUI {
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
                     replaceSourceBlock.getDescriptionId(), snapshots.size()));
         }
-        ViewportFactory.refreshFromModel(model);
+        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
     }
 
     private static void executeByConditionReplace() {
@@ -3489,7 +3525,7 @@ public class EditorUI {
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
                     replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
         }
-        ViewportFactory.refreshFromModel(model);
+        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
     }
 
     private static boolean matchesPropertyCondition(BlockState bs) {
@@ -3609,7 +3645,7 @@ public class EditorUI {
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
                     replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
         }
-        ViewportFactory.refreshFromModel(model);
+        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
     }
 
     private static void refreshAfterEdit() {
@@ -3753,14 +3789,24 @@ public class EditorUI {
             if (keyCode == GLFW.GLFW_KEY_V) {
                 clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
                         state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
-                ViewportFactory.refreshFromModel(session.getModel());
+                var lastEntry = history.getLastEntry();
+                if (lastEntry != null) {
+                    ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+                } else {
+                    ViewportFactory.refreshFromModel(session.getModel());
+                }
                 refreshMaterialList();
                 refreshHistoryList();
                 return true;
             }
             if (keyCode == GLFW.GLFW_KEY_X) {
                 clipboard.cut(session.getModel(), selection, history);
-                ViewportFactory.refreshFromModel(session.getModel());
+                var lastEntry = history.getLastEntry();
+                if (lastEntry != null) {
+                    ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+                } else {
+                    ViewportFactory.refreshFromModel(session.getModel());
+                }
                 refreshMaterialList();
                 refreshHistoryList();
                 updateSelectionCount();

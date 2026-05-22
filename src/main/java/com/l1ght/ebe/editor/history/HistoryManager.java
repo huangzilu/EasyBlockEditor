@@ -33,6 +33,11 @@ public class HistoryManager {
         if (undoStack.size() > maxSize) undoStack.removeFirst();
     }
 
+    public HistoryEntry getLastEntry() {
+        if (undoStack.isEmpty()) return null;
+        return undoStack.getLast();
+    }
+
     public HistoryEntry undo() {
         if (undoStack.isEmpty()) return null;
         var entry = undoStack.removeLast();
