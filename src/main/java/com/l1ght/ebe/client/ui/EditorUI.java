@@ -3629,8 +3629,10 @@ public class EditorUI {
             case SELECT -> "■ " +
                     Component.translatable("ebe.hints.select.click").getString() + "\n" +
                     "■ Ctrl+" + Component.translatable("ebe.hints.select.multi").getString() + "\n" +
-                    "■ Shift+" + Component.translatable("ebe.hints.select.box").getString() + "\n" +
+                    "■ Shift+LMB: " + Component.translatable("ebe.hints.select.box_surface").getString() + "\n" +
+                    "■ Shift+RMB: " + Component.translatable("ebe.hints.select.box_penetrate").getString() + "\n" +
                     "■ Ctrl+Shift+" + Component.translatable("ebe.hints.select.same_type").getString() + "\n" +
+                    "■ RMB: " + Component.translatable("ebe.hints.select.deselect").getString() + "\n" +
                     "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z/Y\n" +
                     "■ " + Component.translatable("ebe.hints.common.clipboard").getString() + ": Ctrl+C/V/X";
             case PLACE -> "■ " +

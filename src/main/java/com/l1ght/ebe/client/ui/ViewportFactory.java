@@ -23,12 +23,12 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.ClipContext;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import net.minecraft.client.Minecraft;
-import org.joml.Matrix4f;
 import org.joml.Vector3f;
-import org.joml.Vector4f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +62,7 @@ public class ViewportFactory {
     private static boolean sceneReflectionInit = false;
 
     private static boolean dragSelecting = false;
+    private static boolean penetrateSelect = false;
     private static int dragStartX, dragStartY;
     private static int dragCurrentX, dragCurrentY;
     private static UIElement selectionRectOverlay;
@@ -769,10 +770,45 @@ public class ViewportFactory {
 
     private static void setupDragSelection(Scene scene) {
         scene.addEventListener(UIEvents.MOUSE_DOWN, e -> {
-            if (e.button != 0) return;
             long window = Minecraft.getInstance().getWindow().getWindow();
             boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
             boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+
+            if (e.button == 1 && shift) {
+                dragSelecting = true;
+                penetrateSelect = true;
+                dragStartX = (int) e.x;
+                dragStartY = (int) e.y;
+                dragCurrentX = dragStartX;
+                dragCurrentY = dragStartY;
+                updateSelectionRect();
+                selectionRectOverlay.setDisplay(true);
+                return;
+            }
+
+            if (e.button == 1 && !shift) {
+                var tool = EditorUI.getState().getActiveTool();
+                if (tool == EditorTool.SELECT) {
+                    if (!sceneReflectionInit) initSceneReflection();
+                    try {
+                        var renderer = sceneRendererField.get(currentScene);
+                        if (renderer == null) return;
+                        Object traceResult = rendererTraceField != null ? rendererTraceField.get(renderer) : null;
+                        if (traceResult instanceof BlockHitResult bhr && bhr.getType() != HitResult.Type.MISS) {
+                            var pos = bhr.getBlockPos();
+                            var selection = EditorUI.getSelection();
+                            selection.remove(pos.getX(), pos.getY(), pos.getZ());
+                            EditorUI.getState().setSelectedCount(selection.size());
+                            EditorUI.updateStatusBar();
+                        }
+                    } catch (Exception ex) {
+                        // ignore
+                    }
+                }
+                return;
+            }
+
+            if (e.button != 0) return;
 
             if (ctrl && !shift) {
                 dragSelecting = false;
@@ -781,7 +817,7 @@ public class ViewportFactory {
             if (!shift) return;
 
             dragSelecting = true;
-
+            penetrateSelect = false;
             dragStartX = (int) e.x;
             dragStartY = (int) e.y;
             dragCurrentX = dragStartX;
@@ -811,7 +847,7 @@ public class ViewportFactory {
                 return;
             }
 
-            selectBlocksInScreenRect(minX, minY, maxX, maxY);
+            selectBlocksInScreenRect(minX, minY, maxX, maxY, penetrateSelect);
         });
     }
 
@@ -826,144 +862,168 @@ public class ViewportFactory {
         selectionRectOverlay.layout(l -> l.left(x).top(y).width(w).height(h));
     }
 
-    private static void selectBlocksInScreenRect(int minX, int minY, int maxX, int maxY) {
+    private static void selectBlocksInScreenRect(int minX, int minY, int maxX, int maxY, boolean penetrate) {
         if (currentWorld == null || currentScene == null) return;
 
-        float fov = (float) Math.toRadians(EBEClientConfig.editorFov.get());
-        var window = Minecraft.getInstance().getWindow();
-        float aspect = (float) window.getGuiScaledWidth() / (float) window.getGuiScaledHeight();
-        float near = 0.1f, far = 1000f;
+        var selection = EditorUI.getSelection();
+        selection.clear();
+        var selectedPositions = new HashSet<Long>();
 
+        int step = 4;
+        for (int sy = minY; sy <= maxY; sy += step) {
+            for (int sx = minX; sx <= maxX; sx += step) {
+                if (penetrate) {
+                    var positions = rayTraceAllBlocks(sx, sy);
+                    for (var pos : positions) {
+                        selectedPositions.add(com.l1ght.ebe.editor.selection.SelectionManager.packPos(pos.getX(), pos.getY(), pos.getZ()));
+                    }
+                } else {
+                    var hitResult = rayTraceBlock(sx, sy);
+                    if (hitResult != null && hitResult.getType() != HitResult.Type.MISS) {
+                        var pos = hitResult.getBlockPos();
+                        selectedPositions.add(com.l1ght.ebe.editor.selection.SelectionManager.packPos(pos.getX(), pos.getY(), pos.getZ()));
+                    }
+                }
+            }
+        }
+
+        for (long packed : selectedPositions) {
+            int x = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+            int y = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+            int z = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+            selection.add(x, y, z);
+        }
+
+        EditorUI.getState().setSelectedCount(selection.size());
+        EditorUI.updateStatusBar();
+    }
+
+    private static BlockHitResult rayTraceBlock(int screenX, int screenY) {
+        if (currentScene == null || currentWorld == null) return null;
+        int sceneX = (int) currentScene.getPositionX();
+        int sceneY = (int) currentScene.getPositionY();
+        int sceneW = (int) currentScene.getSizeWidth();
+        int sceneH = (int) currentScene.getSizeHeight();
+        int localX = screenX - sceneX;
+        int localY = screenY - sceneY;
+        if (localX < 0 || localX >= sceneW || localY < 0 || localY >= sceneH) return null;
+
+        float fovRad = (float) Math.toRadians(60f);
+        float aspect = sceneW / (float) sceneH;
         float yawRad = (float) Math.toRadians(currentScene.getRotationYaw());
         float pitchRad = (float) Math.toRadians(currentScene.getRotationPitch());
         float zoom = currentScene.getZoom();
         var center = currentScene.getCenter();
 
         float cp = (float) Math.cos(pitchRad);
-        float forwardX = (float) (cp * Math.cos(yawRad));
-        float forwardY = (float) Math.sin(pitchRad);
-        float forwardZ = (float) (cp * Math.sin(yawRad));
-        var camPos = new Vector3f(
-                center.x - forwardX * zoom,
-                center.y - forwardY * zoom,
-                center.z - forwardZ * zoom);
+        float fx = cp * (float) Math.cos(yawRad);
+        float fy = (float) Math.sin(pitchRad);
+        float fz = cp * (float) Math.sin(yawRad);
 
-        var viewMatrix = new Matrix4f().lookAt(camPos, center, new Vector3f(0, 1, 0));
-        var projMatrix = new Matrix4f().perspective(fov, aspect, near, far);
-        var viewProj = new Matrix4f(projMatrix).mul(viewMatrix);
+        var camPos = new Vec3(
+                center.x + fx * zoom,
+                center.y + fy * zoom,
+                center.z + fz * zoom);
 
-        int screenW = window.getGuiScaledWidth();
-        int screenH = window.getGuiScaledHeight();
+        float ndcX = (2.0f * localX / sceneW) - 1.0f;
+        float ndcY = 1.0f - (2.0f * localY / sceneH);
+        float tanHalfFov = (float) Math.tan(fovRad / 2);
 
-        int sceneOffX = (int) currentScene.getPositionX();
-        int sceneOffY = (int) currentScene.getPositionY();
-        float sceneW = currentScene.getSizeWidth();
-        float sceneH = currentScene.getSizeHeight();
+        float rightX = (float) Math.sin(yawRad);
+        float rightZ = -(float) Math.cos(yawRad);
+        float upX = -(float) Math.sin(pitchRad) * (float) Math.cos(yawRad);
+        float upY = (float) Math.cos(pitchRad);
+        float upZ = -(float) Math.sin(pitchRad) * (float) Math.sin(yawRad);
 
-        int localMinX = minX - sceneOffX;
-        int localMinY = minY - sceneOffY;
-        int localMaxX = maxX - sceneOffX;
-        int localMaxY = maxY - sceneOffY;
+        var rayDir = new Vec3(
+                -fx + rightX * ndcX * tanHalfFov * aspect + upX * ndcY * tanHalfFov,
+                -fy + upY * ndcY * tanHalfFov,
+                -fz + rightZ * ndcX * tanHalfFov * aspect + upZ * ndcY * tanHalfFov
+        ).normalize();
 
-        var selection = EditorUI.getSelection();
-        selection.clear();
+        var endPos = camPos.add(rayDir.scale(1000));
+
+        try {
+            return currentWorld.clip(new ClipContext(
+                    camPos, endPos,
+                    ClipContext.Block.OUTLINE,
+                    ClipContext.Fluid.NONE,
+                    Minecraft.getInstance().player));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<BlockPos> rayTraceAllBlocks(int screenX, int screenY) {
+        var result = new ArrayList<BlockPos>();
+        if (currentScene == null) return result;
+        int sceneX = (int) currentScene.getPositionX();
+        int sceneY = (int) currentScene.getPositionY();
+        int sceneW = (int) currentScene.getSizeWidth();
+        int sceneH = (int) currentScene.getSizeHeight();
+        int localX = screenX - sceneX;
+        int localY = screenY - sceneY;
+        if (localX < 0 || localX >= sceneW || localY < 0 || localY >= sceneH) return result;
+
+        float fovRad = (float) Math.toRadians(60f);
+        float aspect = sceneW / (float) sceneH;
+        float yawRad = (float) Math.toRadians(currentScene.getRotationYaw());
+        float pitchRad = (float) Math.toRadians(currentScene.getRotationPitch());
+        float zoom = currentScene.getZoom();
+        var center = currentScene.getCenter();
+
+        float cp = (float) Math.cos(pitchRad);
+        float fx = cp * (float) Math.cos(yawRad);
+        float fy = (float) Math.sin(pitchRad);
+        float fz = cp * (float) Math.sin(yawRad);
+
+        var camPos = new Vec3(
+                center.x + fx * zoom,
+                center.y + fy * zoom,
+                center.z + fz * zoom);
+
+        float ndcX = (2.0f * localX / sceneW) - 1.0f;
+        float ndcY = 1.0f - (2.0f * localY / sceneH);
+        float tanHalfFov = (float) Math.tan(fovRad / 2);
+
+        float rightX = (float) Math.sin(yawRad);
+        float rightZ = -(float) Math.cos(yawRad);
+        float upX = -(float) Math.sin(pitchRad) * (float) Math.cos(yawRad);
+        float upY = (float) Math.cos(pitchRad);
+        float upZ = -(float) Math.sin(pitchRad) * (float) Math.sin(yawRad);
+
+        var rayDir = new Vec3(
+                -fx + rightX * ndcX * tanHalfFov * aspect + upX * ndcY * tanHalfFov,
+                -fy + upY * ndcY * tanHalfFov,
+                -fz + rightZ * ndcX * tanHalfFov * aspect + upZ * ndcY * tanHalfFov
+        ).normalize();
+
         var model = EditorUI.getSession().getModel();
+        double t = 0;
+        double maxDist = 1000;
+        double stepSize = 0.5;
+        var visited = new HashSet<Long>();
 
-        for (var region : model.getRegions()) {
-            for (int y = 0; y < region.getSizeY(); y++) {
-                for (int z = 0; z < region.getSizeZ(); z++) {
-                    for (int x = 0; x < region.getSizeX(); x++) {
-                        var obj = region.getBlocks().get(x, y, z);
-                        if (obj == null) continue;
-                        boolean isAir = (obj instanceof BlockState bs && bs.isAir())
-                                || (obj instanceof String s && (s.isEmpty() || s.equals("minecraft:air")));
-                        if (isAir) continue;
-
-                        int wx = x + region.getOffsetX();
-                        int wy = y + region.getOffsetY();
-                        int wz = z + region.getOffsetZ();
-
-                        if (blockFaceIntersectsScreenRect(wx, wy, wz, viewProj, screenW, screenH,
-                                localMinX, localMinY, localMaxX, localMaxY, sceneW, sceneH)) {
-                            selection.add(wx, wy, wz);
-                        }
+        while (t < maxDist) {
+            var point = camPos.add(rayDir.scale(t));
+            int bx = (int) Math.floor(point.x);
+            int by = (int) Math.floor(point.y);
+            int bz = (int) Math.floor(point.z);
+            long packed = com.l1ght.ebe.editor.selection.SelectionManager.packPos(bx, by, bz);
+            if (!visited.contains(packed)) {
+                visited.add(packed);
+                var block = model.getBlockAt(bx, by, bz);
+                if (block != null) {
+                    boolean isAir = (block instanceof BlockState bs && bs.isAir())
+                            || (block instanceof String s && (s.isEmpty() || s.equals("minecraft:air")));
+                    if (!isAir) {
+                        result.add(new BlockPos(bx, by, bz));
                     }
                 }
             }
+            t += stepSize;
         }
 
-        var state = EditorUI.getState();
-        state.setSelectedCount(selection.size());
-        EditorUI.updateStatusBar();
-    }
-
-    private static boolean blockFaceIntersectsScreenRect(int wx, int wy, int wz, Matrix4f viewProj,
-                                                          int screenW, int screenH,
-                                                          int minX, int minY, int maxX, int maxY,
-                                                          float sceneW, float sceneH) {
-        float cx = wx + 0.5f, cy = wy + 0.5f, cz = wz + 0.5f;
-        float[][] faceCenters = {
-                {cx - 0.5f, cy, cz}, {cx + 0.5f, cy, cz},
-                {cx, cy - 0.5f, cz}, {cx, cy + 0.5f, cz},
-                {cx, cy, cz - 0.5f}, {cx, cy, cz + 0.5f}
-        };
-        for (var fc : faceCenters) {
-            var pt = new Vector4f(fc[0], fc[1], fc[2], 1f);
-            var clip = new Vector4f();
-            pt.mul(viewProj, clip);
-            if (clip.w <= 0) continue;
-            float ndcX = clip.x / clip.w;
-            float ndcY = clip.y / clip.w;
-            float sx = (ndcX + 1f) * 0.5f * sceneW;
-            float sy = (1f - ndcY) * 0.5f * sceneH;
-            if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static int[] findBestBlockAtScreen(int sx, int sy, Matrix4f viewProj,
-                                                BuildingModel model, int screenW, int screenH) {
-        int[] best = null;
-        float bestDepth = Float.MAX_VALUE;
-
-        for (var region : model.getRegions()) {
-            for (int y = 0; y < region.getSizeY(); y++) {
-                for (int z = 0; z < region.getSizeZ(); z++) {
-                    for (int x = 0; x < region.getSizeX(); x++) {
-                        var obj = region.getBlocks().get(x, y, z);
-                        if (obj == null) continue;
-                        boolean isAir = (obj instanceof BlockState bs && bs.isAir())
-                                || (obj instanceof String s && (s.isEmpty() || s.equals("minecraft:air")));
-                        if (isAir) continue;
-
-                        int wx = x + region.getOffsetX();
-                        int wy = y + region.getOffsetY();
-                        int wz = z + region.getOffsetZ();
-
-                        var worldPos = new Vector4f(wx + 0.5f, wy + 0.5f, wz + 0.5f, 1f);
-                        var clipPos = new Vector4f();
-                        worldPos.mul(viewProj, clipPos);
-
-                        if (clipPos.w <= 0) continue;
-                        float ndcX = clipPos.x / clipPos.w;
-                        float ndcY = clipPos.y / clipPos.w;
-
-                        int psx = (int) ((ndcX + 1f) * 0.5f * screenW);
-                        int psy = (int) ((1f - ndcY) * 0.5f * screenH);
-
-                        if (psx == sx && psy == sy) {
-                            float depth = clipPos.z / clipPos.w;
-                            if (depth < bestDepth) {
-                                bestDepth = depth;
-                                best = new int[]{wx, wy, wz};
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return best;
+        return result;
     }
 }
