@@ -63,14 +63,14 @@ public class SettingsUI {
         group.addConfigurator(new StringConfigurator(
                 Component.translatable("ebe.settings.schematic_dir").getString(),
                 EBEClientConfig.schematicDir::get,
-                v -> EBEClientConfig.schematicDir.set(v),
+                v -> { EBEClientConfig.schematicDir.set(v); EBEClientConfig.SPEC.save(); },
                 "config/ebe/client/schematics", false
         ));
 
         group.addConfigurator(new SelectorConfigurator<>(
                 Component.translatable("ebe.settings.theme").getString(),
                 () -> EBEClientConfig.theme.get(),
-                v -> EBEClientConfig.theme.set(v),
+                v -> { EBEClientConfig.theme.set(v); EBEClientConfig.SPEC.save(); },
                 "dark", false,
                 List.of("dark", "mc", "modern"),
                 Object::toString
@@ -90,21 +90,21 @@ public class SettingsUI {
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.fov").getString(),
                 EBEClientConfig.editorFov::get,
-                v -> EBEClientConfig.editorFov.set(v.doubleValue()),
+                v -> { EBEClientConfig.editorFov.set(v.doubleValue()); EBEClientConfig.SPEC.save(); },
                 60.0, false
         ).setRange(30.0, 120.0).setWheel(5.0));
 
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.flight_speed").getString(),
                 EBEClientConfig.flightSpeed::get,
-                v -> EBEClientConfig.flightSpeed.set(v.doubleValue()),
+                v -> { EBEClientConfig.flightSpeed.set(v.doubleValue()); EBEClientConfig.SPEC.save(); },
                 0.5, false
         ).setRange(0.05, 50.0).setWheel(0.1));
 
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.history_max").getString(),
                 EBEClientConfig.historyMaxEntries::get,
-                v -> EBEClientConfig.historyMaxEntries.set(v.intValue()),
+                v -> { EBEClientConfig.historyMaxEntries.set(v.intValue()); EBEClientConfig.SPEC.save(); },
                 100, false
         ).setRange(0, 10000).setWheel(10));
 
@@ -122,14 +122,14 @@ public class SettingsUI {
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.opacity").getString(),
                 EBEClientConfig.projectionOpacity::get,
-                v -> EBEClientConfig.projectionOpacity.set(v.doubleValue()),
+                v -> { EBEClientConfig.projectionOpacity.set(v.doubleValue()); EBEClientConfig.SPEC.save(); },
                 0.5, false
         ).setRange(0.0, 1.0).setWheel(0.05));
 
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.render_distance").getString(),
                 EBEClientConfig.projectionRenderDistance::get,
-                v -> EBEClientConfig.projectionRenderDistance.set(v.intValue()),
+                v -> { EBEClientConfig.projectionRenderDistance.set(v.intValue()); EBEClientConfig.SPEC.save(); },
                 64, false
         ).setRange(16, 256).setWheel(16));
 
@@ -147,7 +147,7 @@ public class SettingsUI {
         group.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.auto_range").getString(),
                 EBEClientConfig.printerRange::get,
-                v -> EBEClientConfig.printerRange.set(v.intValue()),
+                v -> { EBEClientConfig.printerRange.set(v.intValue()); EBEClientConfig.SPEC.save(); },
                 3, false
         ).setRange(1, 16).setWheel(1));
 

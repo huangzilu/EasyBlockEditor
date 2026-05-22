@@ -260,6 +260,7 @@
   "ebe.rotate.hint": "先选中方块，选择旋转轴和角度后执行旋转",
   "ebe.rotate.axis": "旋转轴",
   "ebe.rotate.angle": "旋转角度",
+  "ebe.rotate.center": "中心点:",
   "ebe.editor.fill.execute_rotate": "执行旋转",
   "ebe.fill.tab.random": "随机",
   "ebe.fill.random.hint": "添加多种方块并设置权重进行随机填充",
@@ -289,5 +290,6 @@
   "ebe.fill.tab.mirror": "镜像",
   "ebe.mirror.hint": "沿指定轴镜像翻转选中方块",
   "ebe.mirror.axis": "轴:",
+  "ebe.mirror.center": "中心点:",
   "ebe.editor.fill.execute_mirror": "执行镜像"
 }

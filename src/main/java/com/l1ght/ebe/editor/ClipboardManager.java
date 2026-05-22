@@ -246,17 +246,8 @@ public class ClipboardManager {
     }
 
     public void mirror(BuildingModel model, SelectionManager selection, int axis,
-                       HistoryManager history) {
+                       int centerX, int centerY, int centerZ, HistoryManager history) {
         if (selection.isEmpty()) return;
-
-        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
-
-        for (var p : selection.getPositions()) {
-            minX = Math.min(minX, (int) p[0]); maxX = Math.max(maxX, (int) p[0]);
-            minY = Math.min(minY, (int) p[1]); maxY = Math.max(maxY, (int) p[1]);
-            minZ = Math.min(minZ, (int) p[2]); maxZ = Math.max(maxZ, (int) p[2]);
-        }
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
@@ -265,9 +256,9 @@ public class ClipboardManager {
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            int nx = switch (axis) { case 0 -> maxX - (ox - minX); default -> ox; };
-            int ny = switch (axis) { case 1 -> maxY - (oy - minY); default -> oy; };
-            int nz = switch (axis) { case 2 -> maxZ - (oz - minZ); default -> oz; };
+            int nx = switch (axis) { case 0 -> 2 * centerX - ox; default -> ox; };
+            int ny = switch (axis) { case 1 -> 2 * centerY - oy; default -> oy; };
+            int nz = switch (axis) { case 2 -> 2 * centerZ - oz; default -> oz; };
 
             if (nx == ox && ny == oy && nz == oz) continue;
 
@@ -285,9 +276,9 @@ public class ClipboardManager {
         selection.clear();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            int nx = switch (axis) { case 0 -> maxX - (ox - minX); default -> ox; };
-            int ny = switch (axis) { case 1 -> maxY - (oy - minY); default -> oy; };
-            int nz = switch (axis) { case 2 -> maxZ - (oz - minZ); default -> oz; };
+            int nx = switch (axis) { case 0 -> 2 * centerX - ox; default -> ox; };
+            int ny = switch (axis) { case 1 -> 2 * centerY - oy; default -> oy; };
+            int nz = switch (axis) { case 2 -> 2 * centerZ - oz; default -> oz; };
             selection.add(nx, ny, nz);
         }
 
@@ -308,29 +299,37 @@ public class ClipboardManager {
         int repX = 0, repY = 0, repZ = 0;
         Object repBlock = null;
 
-        var oldStates = new LinkedHashMap<String, Object>();
+        var oldStates = new LinkedHashMap<Long, Object>();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            oldStates.put(ox + "," + oy + "," + oz, model.getBlockAt(ox, oy, oz));
+            oldStates.put(SelectionManager.packPos(ox, oy, oz), model.getBlockAt(ox, oy, oz));
+        }
+
+        var existingAtTarget = new LinkedHashMap<Long, Object>();
+        for (var p : positions) {
+            int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
+            long packed = SelectionManager.packPos(nx, ny, nz);
+            if (!oldStates.containsKey(packed)) {
+                existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
+            }
         }
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int nx = ox + dx, ny = oy + dy, nz = oz + dz;
-            model.setBlockAt(ox, oy, oz, "minecraft:air");
-        }
-
-        for (var p : positions) {
-            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            int nx = ox + dx, ny = oy + dy, nz = oz + dz;
-            var oldState = oldStates.get(ox + "," + oy + "," + oz);
-            var oldAtNew = model.getBlockAt(nx, ny, nz);
-
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            var existing = existingAtTarget.get(SelectionManager.packPos(nx, ny, nz));
             snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
-            snapshots.add(new Object[]{nx, ny, nz, oldAtNew, oldState});
+            snapshots.add(new Object[]{nx, ny, nz, existing != null ? existing : "minecraft:air", oldState});
+        }
 
+        for (var p : positions) {
+            model.setBlockAt((int) p[0], (int) p[1], (int) p[2], "minecraft:air");
+        }
+        for (var p : positions) {
+            int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
+            var oldState = oldStates.get(SelectionManager.packPos((int) p[0], (int) p[1], (int) p[2]));
             model.setBlockAt(nx, ny, nz, oldState);
-            if (repBlock == null) { repX = nx; repY = ny; repZ = nz; repBlock = oldState; }
         }
 
         selection.clear();
@@ -339,6 +338,7 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
+            if (repBlock == null) { repX = (int) positions.iterator().next()[0] + dx; repY = (int) positions.iterator().next()[1] + dy; repZ = (int) positions.iterator().next()[2] + dz; repBlock = oldStates.values().iterator().next(); }
             history.push(new HistoryEntry(
                     history.nextId(), HistoryActionType.TRANSLATE,
                     snapshots.toArray(Object[][]::new),

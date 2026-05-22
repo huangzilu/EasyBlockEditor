@@ -260,6 +260,7 @@
   "ebe.rotate.hint": "Select blocks first, choose rotation axis and angle, then execute",
   "ebe.rotate.axis": "Rotation Axis",
   "ebe.rotate.angle": "Rotation Angle",
+  "ebe.rotate.center": "Center Point:",
   "ebe.editor.fill.execute_rotate": "Execute Rotate",
   "ebe.fill.tab.random": "Random",
   "ebe.fill.random.hint": "Add multiple blocks with custom weights for random fill",
@@ -289,5 +290,6 @@
   "ebe.fill.tab.mirror": "Mirror",
   "ebe.mirror.hint": "Mirror selected blocks along the chosen axis",
   "ebe.mirror.axis": "Axis:",
+  "ebe.mirror.center": "Center Point:",
   "ebe.editor.fill.execute_mirror": "Execute Mirror"
 }

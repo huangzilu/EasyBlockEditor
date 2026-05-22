@@ -95,6 +95,9 @@ public class EditorUI {
     private static UIElement fillPanel;
     private static boolean fillPanelVisible = false;
 
+    private static UIElement draggingPanel = null;
+    private static float panelDragOffsetX = 0, panelDragOffsetY = 0;
+
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
     private static boolean toolbarVisible = true;
@@ -140,6 +143,15 @@ public class EditorUI {
                 leftDivider.style(s -> s.background(Sprites.RECT_DARK));
                 rightDivider.style(s -> s.background(Sprites.RECT_DARK));
                 activeDivider = 0;
+            }
+            if (e.button == 0 && draggingPanel != null) draggingPanel = null;
+        }, true);
+
+        rootElement.addEventListener(UIEvents.MOUSE_MOVE, e -> {
+            if (draggingPanel != null) {
+                float newX = e.x - panelDragOffsetX;
+                float newY = e.y - panelDragOffsetY;
+                draggingPanel.layout(l -> l.left(newX).top(newY));
             }
         }, true);
 
@@ -1762,18 +1774,42 @@ public class EditorUI {
     }
 
     private static void addNbtField(net.minecraft.nbt.CompoundTag parent) {
-        String baseName = "new_field";
-        String name = baseName;
-        int suffix = 1;
-        while (parent.contains(name)) {
-            name = baseName + "_" + suffix++;
-        }
-        parent.putString(name, "");
-        session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), parent);
-        refreshPropertiesPanel();
+        var nameField = new TextField();
+        nameField.setText("new_field");
+        nameField.setId("nbtNewFieldName");
+        nameField.layout(l -> l.widthPercent(100).height(18));
+
+        var dialog = new UIElement();
+        dialog.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingAll(4));
+        dialog.style(s -> s.background(Sprites.BORDER));
+
+        var label = new Label();
+        label.setText(Component.translatable("ebe.nbt.add"));
+        label.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false));
+        dialog.addChild(label);
+        dialog.addChild(nameField);
+
+        var confirmBtn = new Button();
+        confirmBtn.setText(Component.literal("OK"));
+        confirmBtn.layout(l -> l.widthPercent(100).height(18));
+        confirmBtn.setOnClick(ev -> {
+            String name = nameField.getText();
+            if (!name.isEmpty() && !parent.contains(name)) {
+                parent.putString(name, "");
+                session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), parent);
+                refreshPropertiesPanel();
+            }
+        });
+        dialog.addChild(confirmBtn);
+
+        propertiesContainer.addChild(dialog);
     }
 
     private static UIElement buildCoordField(String label, int value) {
+        return buildCoordField(label, value, null);
+    }
+
+    private static UIElement buildCoordField(String label, int value, String id) {
         var col = new UIElement();
         col.layout(l -> l.flexDirection(FlexDirection.COLUMN).gapAll(1).flex(1));
 
@@ -1784,6 +1820,7 @@ public class EditorUI {
 
         var tf = new TextField();
         tf.setText(String.valueOf(value));
+        if (id != null) tf.setId(id);
         tf.layout(l -> l.widthPercent(100).height(14));
         col.addChild(tf);
 
@@ -2005,9 +2042,11 @@ public class EditorUI {
                 .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingAll(6));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
+        panel.setAllowHitTest(false);
 
         var titleRow = new UIElement();
-        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+        titleRow.setId("replaceTitleBar");
+        titleRow.layout(l -> l.widthPercent(100).height(18).flexDirection(FlexDirection.ROW)
                 .alignItems(AlignItems.CENTER).gapAll(4));
         var title = new Label();
         title.setText(Component.translatable("ebe.editor.replace.title"));
@@ -2024,10 +2063,13 @@ public class EditorUI {
             if (e.button == 0) {
                 replacePanelVisible = false;
                 panel.setDisplay(false);
+                e.stopPropagation();
             }
         });
         titleRow.addChild(closeBtn);
         panel.addChild(titleRow);
+
+        setupPanelDrag(panel, "replaceTitleBar");
 
         var tabView = new TabView();
         tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).flex(1));
@@ -2095,7 +2137,10 @@ public class EditorUI {
             if (e.button == 0) {
                 BlockPaletteUI.openWithCallback(rootElement, bs -> {
                     replaceTargetState = bs;
+                    state.setActiveBlockState(bs);
+                    selectTool(EditorTool.REPLACE);
                     updateReplaceSingleDisplay();
+                    updateActiveBlockIndicator();
                 });
             }
         });
@@ -2112,6 +2157,7 @@ public class EditorUI {
                 var active = state.getActiveBlockState();
                 if (active != null) {
                     replaceTargetState = active;
+                    selectTool(EditorTool.REPLACE);
                     updateReplaceSingleDisplay();
                 }
             }
@@ -2119,6 +2165,35 @@ public class EditorUI {
         targetRow.addChild(grabBtn);
         targetSection.addChild(targetRow);
         content.addChild(targetSection);
+
+        var executeBtn = new Button();
+        executeBtn.setText(Component.translatable("ebe.editor.replace.execute"));
+        executeBtn.layout(l -> l.widthPercent(100).height(22));
+        executeBtn.setOnClick(e -> {
+            if (replaceTargetState == null) return;
+            var selection = getSelection();
+            if (selection.isEmpty()) return;
+            var model = session.getModel();
+            var hist = getHistory();
+            var snapshots = new ArrayList<Object[]>();
+            for (var p : selection.getPositions()) {
+                int x = (int) p[0], y = (int) p[1], z = (int) p[2];
+                var old = model.getBlockAt(x, y, z);
+                model.setBlockAt(x, y, z, replaceTargetState);
+                snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+            }
+            if (!snapshots.isEmpty()) {
+                hist.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                        hist.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                        snapshots.toArray(Object[][]::new),
+                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                        replaceTargetState, snapshots.size()));
+            }
+            ViewportFactory.refreshFromModel(model);
+            refreshMaterialList();
+            refreshHistoryList();
+        });
+        content.addChild(executeBtn);
 
         return content;
     }
@@ -2566,9 +2641,11 @@ public class EditorUI {
                 .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingAll(6));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
+        panel.setAllowHitTest(false);
 
         var titleRow = new UIElement();
-        titleRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+        titleRow.setId("fillTitleBar");
+        titleRow.layout(l -> l.widthPercent(100).height(18).flexDirection(FlexDirection.ROW)
                 .alignItems(AlignItems.CENTER).gapAll(4));
         var title = new Label();
         title.setText(Component.translatable("ebe.editor.fill.title"));
@@ -2585,10 +2662,13 @@ public class EditorUI {
             if (e.button == 0) {
                 fillPanelVisible = false;
                 panel.setDisplay(false);
+                e.stopPropagation();
             }
         });
         titleRow.addChild(closeBtn);
         panel.addChild(titleRow);
+
+        setupPanelDrag(panel, "fillTitleBar");
 
         var tabView = new TabView();
         tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100).flex(1));
@@ -2819,6 +2899,18 @@ public class EditorUI {
         }
         content.addChild(angleRow);
 
+        var centerLabel = new Label();
+        centerLabel.setText(Component.translatable("ebe.rotate.center"));
+        centerLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        content.addChild(centerLabel);
+
+        var centerRow = new UIElement();
+        centerRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+        centerRow.addChild(buildCoordField("X", 0, "rotateCenterX"));
+        centerRow.addChild(buildCoordField("Y", 0, "rotateCenterY"));
+        centerRow.addChild(buildCoordField("Z", 0, "rotateCenterZ"));
+        content.addChild(centerRow);
+
         var rotateBtn = new Button();
         rotateBtn.setText(Component.translatable("ebe.editor.fill.execute_rotate"));
         rotateBtn.layout(l -> l.widthPercent(100).height(22));
@@ -2847,32 +2939,78 @@ public class EditorUI {
         var selection = getSelection();
         if (selection.isEmpty()) return;
         var model = session.getModel();
-        var history = getHistory();
-        var snapshots = new ArrayList<Object[]>();
+        var hist = getHistory();
 
-        double radians = Math.toRadians(rotateAngle);
-        double cos = Math.cos(radians);
-        double sin = Math.sin(radians);
+        int cx = getIntField(fillPanel, "rotateCenterX", 0);
+        int cy = getIntField(fillPanel, "rotateCenterY", 0);
+        int cz = getIntField(fillPanel, "rotateCenterZ", 0);
 
         var positions = selection.getPositions();
-        int cx = 0, cy = 0, cz = 0;
-        for (var p : positions) { cx += (int) p[0]; cy += (int) p[1]; cz += (int) p[2]; }
-        cx /= positions.size(); cy /= positions.size(); cz /= positions.size();
+        if (cx == 0 && cy == 0 && cz == 0) {
+            cx = 0; cy = 0; cz = 0;
+            for (var p : positions) { cx += (int) p[0]; cy += (int) p[1]; cz += (int) p[2]; }
+            cx /= positions.size(); cy /= positions.size(); cz /= positions.size();
+        }
 
-        var newPositions = new LinkedHashMap<long[], Object>();
+        var oldStates = new LinkedHashMap<Long, Object>();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            var oldState = model.getBlockAt(ox, oy, oz);
+            oldStates.put(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz), model.getBlockAt(ox, oy, oz));
+        }
+
+        var newPositions = new LinkedHashMap<Long, Object>();
+        var posMapping = new ArrayList<long[]>();
+
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            var oldState = oldStates.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz));
             var bs = ViewportFactory.resolveBlockStatePublic(oldState);
 
             int dx = ox - cx, dy = oy - cy, dz = oz - cz;
             int nx, ny, nz;
+
             if (rotateAxis == 0) {
-                nx = ox; ny = (int) Math.round(dy * cos - dz * sin) + cy; nz = (int) Math.round(dy * sin + dz * cos) + cz;
+                nx = ox;
+                ny = switch (rotateAngle) {
+                    case 90 -> cy - dz;
+                    case 180 -> 2 * cy - oy;
+                    case 270 -> cy + dz;
+                    default -> oy;
+                };
+                nz = switch (rotateAngle) {
+                    case 90 -> cz + dy;
+                    case 180 -> 2 * cz - oz;
+                    case 270 -> cz - dy;
+                    default -> oz;
+                };
             } else if (rotateAxis == 1) {
-                nx = (int) Math.round(dx * cos + dz * sin) + cx; ny = oy; nz = (int) Math.round(-dx * sin + dz * cos) + cz;
+                nx = switch (rotateAngle) {
+                    case 90 -> cx + dz;
+                    case 180 -> 2 * cx - ox;
+                    case 270 -> cx - dz;
+                    default -> ox;
+                };
+                ny = oy;
+                nz = switch (rotateAngle) {
+                    case 90 -> cz - dx;
+                    case 180 -> 2 * cz - oz;
+                    case 270 -> cz + dx;
+                    default -> oz;
+                };
             } else {
-                nx = (int) Math.round(dx * cos - dy * sin) + cx; ny = (int) Math.round(dx * sin + dy * cos) + cy; nz = oz;
+                nx = switch (rotateAngle) {
+                    case 90 -> cx - dy;
+                    case 180 -> 2 * cx - ox;
+                    case 270 -> cx + dy;
+                    default -> ox;
+                };
+                ny = switch (rotateAngle) {
+                    case 90 -> cy + dx;
+                    case 180 -> 2 * cy - oy;
+                    case 270 -> cy - dx;
+                    default -> oy;
+                };
+                nz = oz;
             }
 
             var rotation = switch (rotateAxis) {
@@ -2890,24 +3028,55 @@ public class EditorUI {
                 };
             };
             var rotatedBs = bs.rotate(rotation);
-            newPositions.put(new long[]{nx, ny, nz}, rotatedBs);
+            newPositions.put(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz), rotatedBs);
+            posMapping.add(new long[]{ox, oy, oz, nx, ny, nz});
+        }
+
+        var existingAtTarget = new LinkedHashMap<Long, Object>();
+        for (var mapping : posMapping) {
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long packed = com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz);
+            if (!oldStates.containsKey(packed)) {
+                existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
+            }
+        }
+
+        var snapshots = new ArrayList<Object[]>();
+        int repX = 0, repY = 0, repZ = 0;
+        Object repBlock = null;
+        for (var mapping : posMapping) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            var oldState = oldStates.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz));
+            var existing = existingAtTarget.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz));
+            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+            snapshots.add(new Object[]{nx, ny, nz, existing != null ? existing : "minecraft:air", newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz))});
+            if (repBlock == null) { repX = nx; repY = ny; repZ = nz; repBlock = oldState; }
         }
 
         for (var p : positions) {
-            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            model.setBlockAt(ox, oy, oz, "minecraft:air");
+            model.setBlockAt((int) p[0], (int) p[1], (int) p[2], "minecraft:air");
         }
-        for (var entry : newPositions.entrySet()) {
-            var pos = entry.getKey();
-            model.setBlockAt((int) pos[0], (int) pos[1], (int) pos[2], entry.getValue());
+        for (var mapping : posMapping) {
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            model.setBlockAt(nx, ny, nz, newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz)));
         }
 
         selection.clear();
-        for (var pos : newPositions.keySet()) {
-            selection.add((int) pos[0], (int) pos[1], (int) pos[2]);
+        for (var mapping : posMapping) {
+            selection.add((int) mapping[3], (int) mapping[4], (int) mapping[5]);
+        }
+
+        if (!snapshots.isEmpty()) {
+            hist.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    hist.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.ROTATE,
+                    snapshots.toArray(Object[][]::new),
+                    repX, repY, repZ, repBlock, snapshots.size()));
         }
 
         ViewportFactory.refreshFromModel(model);
+        refreshMaterialList();
+        refreshHistoryList();
     }
 
     private static UIElement buildFillMirrorTab() {
@@ -2944,6 +3113,18 @@ public class EditorUI {
         }
         content.addChild(axisRow);
 
+        var centerLabel = new Label();
+        centerLabel.setText(Component.translatable("ebe.mirror.center"));
+        centerLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        content.addChild(centerLabel);
+
+        var centerRow = new UIElement();
+        centerRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+        centerRow.addChild(buildCoordField("X", 0, "mirrorCenterX"));
+        centerRow.addChild(buildCoordField("Y", 0, "mirrorCenterY"));
+        centerRow.addChild(buildCoordField("Z", 0, "mirrorCenterZ"));
+        content.addChild(centerRow);
+
         var mirrorBtn = new Button();
         mirrorBtn.setText(Component.translatable("ebe.editor.fill.execute_mirror"));
         mirrorBtn.layout(l -> l.widthPercent(100).height(22));
@@ -2970,7 +3151,10 @@ public class EditorUI {
         if (session == null) return;
         var selection = getSelection();
         if (selection.isEmpty()) return;
-        clipboard.mirror(session.getModel(), selection, mirrorAxis, history);
+        int cx = getIntField(fillPanel, "mirrorCenterX", 0);
+        int cy = getIntField(fillPanel, "mirrorCenterY", 0);
+        int cz = getIntField(fillPanel, "mirrorCenterZ", 0);
+        clipboard.mirror(session.getModel(), selection, mirrorAxis, cx, cy, cz, history);
         ViewportFactory.refreshFromModel(session.getModel());
         refreshMaterialList();
         refreshHistoryList();
@@ -3581,6 +3765,18 @@ public class EditorUI {
         if (EBEKeyMappings.TOOL_MEASURE.matches(keyCode, scanCode)) { selectTool(EditorTool.MEASURE); return true; }
         if (EBEKeyMappings.TOOL_FILL.matches(keyCode, scanCode)) { selectTool(EditorTool.FILL); return true; }
         return false;
+    }
+
+    private static void setupPanelDrag(UIElement panel, String titleBarId) {
+        var titleBar = findById(panel, titleBarId);
+        if (titleBar == null) return;
+        titleBar.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                draggingPanel = panel;
+                panelDragOffsetX = e.x - panel.getPositionX();
+                panelDragOffsetY = e.y - panel.getPositionY();
+            }
+        });
     }
 
     static UIElement findById(UIElement root, String id) {
