@@ -45,6 +45,22 @@ public class ViewportFactory {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/Viewport");
     private static final int FBO_THRESHOLD = 5000;
+    private static final int DELTA_OVERLAY_THRESHOLD = 256;
+    private static final int DEFERRED_COMPILE_FRAMES = 60;
+    private static final int SMALL_SCENE_THRESHOLD = 10000;
+
+    private static final List<PendingBlockDelta> pendingDeltas = new ArrayList<>();
+    private static int framesSinceLastEdit = 0;
+    private static boolean deferredCompileScheduled = false;
+
+    private static class PendingBlockDelta {
+        final BlockPos pos;
+        final BlockState state;
+        PendingBlockDelta(BlockPos pos, BlockState state) {
+            this.pos = pos;
+            this.state = state;
+        }
+    }
 
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
@@ -153,13 +169,27 @@ public class ViewportFactory {
         currentScene.setRenderSelect(false);
         currentScene.setAfterWorldRender(scene -> {
             var sel = EditorUI.getSelection();
-            if (sel.isEmpty()) return;
-            var poseStack = new PoseStack();
-            for (var packed : sel.getAllPacked()) {
-                int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
-                int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
-                int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
-                RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.15f, 0.35f, 0.85f, 1.005f);
+            if (!sel.isEmpty()) {
+                var poseStack = new PoseStack();
+                for (var packed : sel.getAllPacked()) {
+                    int bx = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+                    int by = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+                    int bz = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+                    RenderUtils.renderBlockOverLay(poseStack, new BlockPos(bx, by, bz), 0.15f, 0.35f, 0.85f, 1.005f);
+                }
+            }
+
+            if (!pendingDeltas.isEmpty()) {
+                renderPendingDeltasOverlay();
+            }
+
+            if (deferredCompileScheduled) {
+                framesSinceLastEdit++;
+                if (framesSinceLastEdit >= DEFERRED_COMPILE_FRAMES) {
+                    deferredCompileScheduled = false;
+                    pendingDeltas.clear();
+                    currentScene.needCompileCache();
+                }
             }
         });
 
@@ -543,15 +573,40 @@ public class ViewportFactory {
         if (core != null) {
             if (add) core.add(pos.immutable());
             else core.remove(pos);
-            if (currentScene != null) currentScene.needCompileCache();
+            scheduleDeferredCompile();
         } else {
             refreshRenderedCore();
+        }
+    }
+
+    private static void scheduleDeferredCompile() {
+        if (currentScene == null) return;
+        int blockCount = getSceneCore() != null ? getSceneCore().size() : 0;
+        if (blockCount < SMALL_SCENE_THRESHOLD) {
+            pendingDeltas.clear();
+            currentScene.needCompileCache();
+        } else {
+            framesSinceLastEdit = 0;
+            deferredCompileScheduled = true;
+        }
+    }
+
+    private static void renderPendingDeltasOverlay() {
+        if (pendingDeltas.isEmpty()) return;
+        var poseStack = new PoseStack();
+        for (var delta : pendingDeltas) {
+            if (delta.state.isAir()) {
+                RenderUtils.renderBlockOverLay(poseStack, delta.pos, 0.8f, 0.2f, 0.2f, 1.005f);
+            } else {
+                RenderUtils.renderBlockOverLay(poseStack, delta.pos, 0.2f, 0.8f, 0.2f, 1.005f);
+            }
         }
     }
 
     public static void applyBlockDeltas(Object[][] snapshots) {
         if (currentWorld == null || currentScene == null) return;
         var core = getSceneCore();
+        boolean smallEdit = snapshots.length < DELTA_OVERLAY_THRESHOLD;
 
         for (var snapshot : snapshots) {
             int x = (int) snapshot[0];
@@ -562,25 +617,39 @@ public class ViewportFactory {
 
             currentWorld.removeBlock(pos);
 
+            BlockState resolvedBs = null;
             if (newState instanceof BlockState bs && !bs.isAir()) {
-                currentWorld.addBlock(pos, new BlockInfo(bs));
-                if (core != null) core.add(pos.immutable());
+                resolvedBs = bs;
             } else if (newState instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
-                var resolved = resolveBlockState(newState);
-                if (resolved != null && !resolved.isAir()) {
-                    currentWorld.addBlock(pos, new BlockInfo(resolved));
-                    if (core != null) core.add(pos.immutable());
+                resolvedBs = resolveBlockState(newState);
+            }
+
+            if (resolvedBs != null && !resolvedBs.isAir()) {
+                currentWorld.addBlock(pos, new BlockInfo(resolvedBs));
+                if (core != null) core.add(pos.immutable());
+                if (smallEdit) {
+                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), resolvedBs));
                 }
             } else {
                 if (core != null) core.remove(pos);
+                if (smallEdit) {
+                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), Blocks.AIR.defaultBlockState()));
+                }
             }
         }
 
-        currentScene.needCompileCache();
+        if (smallEdit) {
+            scheduleDeferredCompile();
+        } else {
+            currentScene.needCompileCache();
+            pendingDeltas.clear();
+        }
     }
 
     public static void applyBlockDeltasFromModel(Object[][] snapshots) {
         if (currentWorld == null || currentScene == null) return;
+        var core = getSceneCore();
+        boolean smallEdit = snapshots.length < DELTA_OVERLAY_THRESHOLD;
 
         for (var snapshot : snapshots) {
             int x = (int) snapshot[0];
@@ -600,16 +669,28 @@ public class ViewportFactory {
 
             if (resolvedBs != null && !resolvedBs.isAir()) {
                 currentWorld.addBlock(pos, new BlockInfo(resolvedBs));
+                if (core != null) core.add(pos.immutable());
+                if (smallEdit) {
+                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), resolvedBs));
+                }
+            } else {
+                if (core != null) core.remove(pos);
+                if (smallEdit) {
+                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), Blocks.AIR.defaultBlockState()));
+                }
             }
         }
 
-        var core = getSceneCore();
-        if (core != null) {
-            core.clear();
-            currentWorld.getFilledBlocks().forEach(packed -> core.add(BlockPos.of(packed)));
+        if (smallEdit) {
+            scheduleDeferredCompile();
+        } else {
+            if (core != null) {
+                core.clear();
+                currentWorld.getFilledBlocks().forEach(packed -> core.add(BlockPos.of(packed)));
+            }
+            currentScene.needCompileCache();
+            pendingDeltas.clear();
         }
-
-        currentScene.needCompileCache();
     }
 
     private static void syncBlockToModel(BuildingModel model, BlockPos pos, BlockState blockState) {
