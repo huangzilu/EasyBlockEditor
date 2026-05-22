@@ -11,6 +11,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
@@ -755,14 +756,25 @@ public class EditorUI {
 
     private static TabView createTopTabView() {
         var tabView = new TabView();
-        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).flex(1).widthPercent(100));
+        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).flex(1).widthPercent(100).minHeight(0));
         var header = tabView.tabHeaderContainer;
         var tvContent = tabView.tabContentContainer;
         tabView.removeChild(header);
         tabView.removeChild(tvContent);
         tabView.addChild(header);
         tabView.addChild(tvContent);
+        tvContent.layout(l -> l.flex(1).widthPercent(100).minHeight(0).paddingAll(5));
         return tabView;
+    }
+
+    private static UIElement wrapInScroller(UIElement content) {
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).flex(1).minHeight(0));
+        scroller.viewPort(vp -> vp.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)));
+        scroller.viewContainer(vc -> vc.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN)));
+        scroller.scrollerStyle(s -> s.mode(ScrollerMode.VERTICAL).verticalScrollDisplay(ScrollDisplay.AUTO));
+        scroller.addScrollViewChild(content);
+        return scroller;
     }
 
     private static UIElement buildLeftPanel() {
@@ -774,11 +786,11 @@ public class EditorUI {
         var tabView = createTopTabView();
         var filesTab = new Tab();
         filesTab.setText(Component.translatable("ebe.editor.panel.files"));
-        tabView.addTab(filesTab, createFilesContent());
+        tabView.addTab(filesTab, wrapInScroller(createFilesContent()));
 
         var layersTab = new Tab();
         layersTab.setText(Component.translatable("ebe.editor.panel.layers"));
-        tabView.addTab(layersTab, createLayersContent());
+        tabView.addTab(layersTab, wrapInScroller(createLayersContent()));
 
         panel.addChild(tabView);
         return panel;
@@ -793,19 +805,19 @@ public class EditorUI {
         var tabView = createTopTabView();
         var propsTab = new Tab();
         propsTab.setText(Component.translatable("ebe.editor.panel.properties"));
-        tabView.addTab(propsTab, createPropertiesContent());
+        tabView.addTab(propsTab, wrapInScroller(createPropertiesContent()));
 
         var matsTab = new Tab();
         matsTab.setText(Component.translatable("ebe.editor.panel.materials"));
-        tabView.addTab(matsTab, createMaterialsContent());
+        tabView.addTab(matsTab, wrapInScroller(createMaterialsContent()));
 
         var histTab = new Tab();
         histTab.setText(Component.translatable("ebe.editor.panel.history"));
-        tabView.addTab(histTab, createHistoryContent());
+        tabView.addTab(histTab, wrapInScroller(createHistoryContent()));
 
         var displayTab = new Tab();
         displayTab.setText(Component.translatable("ebe.editor.panel.display"));
-        tabView.addTab(displayTab, buildDisplayFilterTab());
+        tabView.addTab(displayTab, wrapInScroller(buildDisplayFilterTab()));
 
         panel.addChild(tabView);
         return panel;
