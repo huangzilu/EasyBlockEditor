@@ -3,10 +3,14 @@ package com.l1ght.ebe.projection.compute
 import com.l1ght.ebe.async.EbeScopes
 import com.l1ght.ebe.data.BuildingModel
 import net.minecraft.core.BlockPos
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.block.Mirror
 import net.minecraft.world.level.block.Rotation
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.Property
 import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.concurrent.CompletableFuture
@@ -82,7 +86,7 @@ object ProjectionComputePlanner {
                 for (z in 0 until sz) {
                     for (x in 0 until sx) {
                         val source = container.get(x, y, z)
-                        val rawState = source as? BlockState ?: continue
+                        val rawState = resolveBlockState(source)
                         if (rawState.isAir) continue
 
                         val localPos = BlockPos(ox + x, oy + y, oz + z)
@@ -189,6 +193,50 @@ object ProjectionComputePlanner {
         if (mirror != Mirror.NONE) transformed = transformed.mirror(mirror)
         if (rotation != Rotation.NONE) transformed = transformed.rotate(rotation)
         return transformed
+    }
+
+    private fun resolveBlockState(source: Any?): BlockState {
+        if (source is BlockState) return source
+        val raw = source as? String ?: return Blocks.AIR.defaultBlockState()
+        if (raw.isBlank() || raw == "minecraft:air" || raw == "air") {
+            return Blocks.AIR.defaultBlockState()
+        }
+        return try {
+            var id = raw
+            var props: String? = null
+            val bracket = raw.indexOf('[')
+            if (bracket >= 0) {
+                id = raw.substring(0, bracket)
+                val end = raw.indexOf(']', bracket)
+                if (end > bracket + 1) props = raw.substring(bracket + 1, end)
+            }
+            if (id.startsWith("Block{") && id.endsWith("}")) {
+                id = id.substring(6, id.length - 1)
+            }
+            val block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(id)).orElse(Blocks.STONE)
+            var state = block.defaultBlockState()
+            if (props != null) {
+                for (pair in props.split(",")) {
+                    val parts = pair.split("=")
+                    if (parts.size == 2) {
+                        state = applyProperty(state, parts[0], parts[1])
+                    }
+                }
+            }
+            state
+        } catch (_: Exception) {
+            Blocks.STONE.defaultBlockState()
+        }
+    }
+
+    private fun applyProperty(state: BlockState, name: String, value: String): BlockState {
+        val property = state.properties.firstOrNull { it.name == name } ?: return state
+        return applyPropertyUnchecked(state, property, value)
+    }
+
+    private fun <T : Comparable<T>> applyPropertyUnchecked(state: BlockState, property: Property<T>, value: String): BlockState {
+        val parsed = property.getValue(value).orElse(null) ?: return state
+        return state.setValue(property, parsed)
     }
 
     private fun cameraFit(minX: Int, minY: Int, minZ: Int, maxX: Int, maxY: Int, maxZ: Int): CameraFit {

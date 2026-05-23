@@ -1,26 +1,25 @@
 package com.l1ght.ebe.async
 
-import kotlinx.coroutines.Job
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Future
 
 object CancellableTaskRegistry {
-    private val jobs = ConcurrentHashMap<UUID, Job>()
+    private val jobs = ConcurrentHashMap<UUID, Future<*>>()
 
     @JvmStatic
-    fun register(id: UUID, job: Job) {
-        jobs.put(id, job)?.cancel()
-        job.invokeOnCompletion { jobs.remove(id, job) }
+    fun register(id: UUID, job: Future<*>) {
+        jobs.put(id, job)?.cancel(true)
     }
 
     @JvmStatic
     fun cancel(id: UUID): Boolean {
-        return jobs.remove(id)?.also { it.cancel() } != null
+        return jobs.remove(id)?.also { it.cancel(true) } != null
     }
 
     @JvmStatic
     fun cancelAll() {
-        jobs.values.forEach { it.cancel() }
+        jobs.values.forEach { it.cancel(true) }
         jobs.clear()
     }
 }

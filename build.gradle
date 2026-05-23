@@ -117,6 +117,7 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 // "optional", meaning it will not be pulled by dependents of this mod.
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+    embeddedKotlinRuntime
 }
 
 dependencies {
@@ -125,6 +126,10 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
     jarJar 'org.jetbrains.kotlin:kotlin-stdlib:2.1.21'
     jarJar 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
+    embeddedKotlinRuntime 'org.jetbrains.kotlin:kotlin-stdlib:2.1.21'
+    embeddedKotlinRuntime 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
+    localRuntime 'org.jetbrains.kotlin:kotlin-stdlib:2.1.21'
+    localRuntime 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
     compileOnly files("libs/taffy-1.1.4.jar")
     compileOnly files("libs/yoga-1.0.0.jar")
     localRuntime files("libs/taffy-1.1.4.jar")
@@ -180,6 +185,14 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+tasks.named('jar', Jar).configure {
+    from({
+        configurations.embeddedKotlinRuntime.collect { zipTree(it) }
+    })
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
 }
 
 kotlin {

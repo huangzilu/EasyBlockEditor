@@ -92,16 +92,22 @@ public class EditorSession {
 
     public static LoadedFile readFileWithComputed(Path file) throws Exception {
         LoadedFile loaded = readFile(file);
-        String cacheKey = fileComputeKey(file);
-        ComputedProjection computed = ProjectionComputePlanner.computeAsync(
-                cacheKey,
-                loaded.model(),
-                BlockPos.ZERO,
-                Rotation.NONE,
-                Mirror.NONE,
-                BlockPos.ZERO,
-                true
-        ).join();
+        ComputedProjection computed = null;
+        try {
+            String cacheKey = fileComputeKey(file);
+            computed = ProjectionComputePlanner.computeAsync(
+                    cacheKey,
+                    loaded.model(),
+                    BlockPos.ZERO,
+                    Rotation.NONE,
+                    Mirror.NONE,
+                    BlockPos.ZERO,
+                    true
+            ).join();
+        } catch (Throwable t) {
+            com.l1ght.ebe.EBEMod.LOGGER.warn("Failed to precompute projection for {}, falling back to legacy viewport load",
+                    file.getFileName(), t);
+        }
         return new LoadedFile(file, loaded.model(), computed);
     }
 
