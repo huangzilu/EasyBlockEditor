@@ -1,14 +1,11 @@
 package com.l1ght.ebe.command;
 
-import com.l1ght.ebe.client.ui.EditorScreen;
-import com.mojang.brigadier.CommandDispatcher;
-import net.minecraft.client.Minecraft;
-import net.minecraft.commands.CommandSourceStack;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.api.distmarker.Dist;
+import net.neoforged.fml.loading.FMLEnvironment;
 
 @EventBusSubscriber(value = Dist.CLIENT, bus = EventBusSubscriber.Bus.GAME)
 public class EBEClientCommands {
@@ -19,8 +16,9 @@ public class EBEClientCommands {
                 net.minecraft.commands.Commands.literal("ebe")
                         .then(net.minecraft.commands.Commands.literal("open")
                                 .executes(ctx -> {
-                                    Minecraft.getInstance().execute(() ->
-                                            Minecraft.getInstance().setScreen(new EditorScreen()));
+                                    if (FMLEnvironment.dist == Dist.CLIENT) {
+                                        com.l1ght.ebe.client.ClientOnlyHooks.openEditorScreen();
+                                    }
                                     return 1;
                                 }))
         );

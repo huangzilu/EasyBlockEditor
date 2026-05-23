@@ -5,6 +5,7 @@ import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.config.EBEServerConfig;
 import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.item.ArchitectToolboxItem;
+import com.l1ght.ebe.item.RemoteItem;
 import com.l1ght.ebe.network.EBENetwork;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -38,12 +39,18 @@ public class EBEMod {
     public static final DeferredItem<ArchitectToolboxItem> ARCHITECT_TOOLBOX =
             ITEMS.register("architect_toolbox", ArchitectToolboxItem::new);
 
+    public static final DeferredItem<RemoteItem> REMOTE =
+            ITEMS.register("remote", RemoteItem::new);
+
     public static final Supplier<CreativeModeTab> EBE_TAB = CREATIVE_MODE_TABS.register("ebe_tab", () ->
             CreativeModeTab.builder()
                     .title(Component.translatable("itemGroup.ebe"))
                     .withTabsBefore(CreativeModeTabs.TOOLS_AND_UTILITIES)
                     .icon(() -> new ItemStack(ARCHITECT_TOOLBOX.get()))
-                    .displayItems((params, output) -> output.accept(ARCHITECT_TOOLBOX.get()))
+                    .displayItems((params, output) -> {
+                        output.accept(ARCHITECT_TOOLBOX.get());
+                        output.accept(REMOTE.get());
+                    })
                     .build());
 
     public EBEMod(IEventBus modEventBus, ModContainer modContainer) {

@@ -18,23 +18,23 @@ public class EBEServerConfig {
         builder.comment("EasyBlockEditor Server Configuration").push("server");
 
         projectionTimeoutSeconds = builder
-                .comment("Projection timeout in seconds (0 = never timeout)", "投影超时秒数（0=永不超时）")
+                .comment("Projection timeout in seconds (0 = never timeout)")
                 .defineInRange("projection_timeout_seconds", 0, 0, 86400);
 
         maxWorkgroupsPerPlayer = builder
-                .comment("Max workgroups per player", "每玩家最大工作组数")
+                .comment("Max workgroups per player")
                 .defineInRange("max_workgroups_per_player", 5, 1, 50);
 
         placeChunksPerTick = builder
-                .comment("Chunks processed per tick during place-all", "一键放置每tick处理Chunk数")
+                .comment("Chunks processed per tick during place-all")
                 .defineInRange("place_chunks_per_tick", 4, 1, 32);
 
         printerBlocksPerTick = builder
-                .comment("Blocks placed per tick by auto printer", "自动打印机每tick放置方块数")
+                .comment("Blocks placed per tick by auto printer")
                 .defineInRange("printer_blocks_per_tick", 1, 1, 10);
 
         maxEditSize = builder
-                .comment("Max single edit region size (blocks per axis)", "单次编辑最大区域尺寸（每轴方块数）")
+                .comment("Max single edit region size (blocks per axis)")
                 .defineInRange("max_edit_size", 256, 16, 512);
 
         builder.pop();

@@ -1,6 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
-import com.l1ght.ebe.client.keybind.EBEKeyMappings;
+import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.compat.IrisCompat;
 import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
@@ -58,6 +58,7 @@ public class ViewportFactory {
     private static final int FBO_THRESHOLD = 5000;
     private static final int DELTA_OVERLAY_THRESHOLD = 256;
     private static final int DEFERRED_COMPILE_FRAMES = 60;
+    private static final int DELTA_OVERLAY_FRAMES = 20;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -65,6 +66,7 @@ public class ViewportFactory {
     private static final List<PendingBlockDelta> pendingDeltas = new ArrayList<>();
     private static int framesSinceLastEdit = 0;
     private static boolean deferredCompileScheduled = false;
+    private static int pendingDeltaOverlayFrames = 0;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -166,29 +168,36 @@ public class ViewportFactory {
     public static UIElement create3DViewport() {
         stopIrisViewportPass("viewport-create");
         resetShaderProbeLogState();
-        currentWorld = new TrackedDummyWorld();
 
         currentScene = new Scene();
         currentScene.layout(l -> l.flex(1));
         currentScene.setId("viewport");
 
-        createSceneRenderer();
-
         var session = EditorUI.getSession();
         boolean hasContent = hasLoadedModel || (session != null && !session.getModel().getRegions().isEmpty());
 
-        if (hasContent && session != null) {
+        boolean attachedCachedRenderer = tryAttachCachedSectionedRenderer();
+        if (attachedCachedRenderer) {
+            currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+            currentScene.setZoom(savedZoom);
+            currentScene.setCenter(savedCenter);
+        } else if (!hasContent || session == null) {
+            currentWorld = new TrackedDummyWorld();
+            createSceneRenderer();
+        }
+
+        if (hasContent && session != null && !attachedCachedRenderer) {
             loadFromModel(session.getModel(), false);
             currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
-        } else if (firstOpen) {
+        } else if (!hasContent && firstOpen) {
             addDemoBlocks(currentWorld);
             refreshRenderedCore();
             currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
-        } else {
+        } else if (!hasContent) {
             refreshRenderedCore(true);
         }
 
@@ -262,6 +271,11 @@ public class ViewportFactory {
 
         if (!pendingDeltas.isEmpty()) {
             renderPendingDeltasOverlay();
+            pendingDeltaOverlayFrames++;
+            if (pendingDeltaOverlayFrames >= DELTA_OVERLAY_FRAMES) {
+                pendingDeltas.clear();
+                pendingDeltaOverlayFrames = 0;
+            }
         }
 
         if (deferredCompileScheduled) {
@@ -339,6 +353,7 @@ public class ViewportFactory {
             return;
         }
 
+        releaseCachedSectionedRenderer("load-model");
         currentWorld = new TrackedDummyWorld();
 
         int totalBlocksAdded = 0;
@@ -384,11 +399,11 @@ public class ViewportFactory {
 
     public static void releaseViewportSession(String stage) {
         stopIrisViewportPass(stage);
-        // Scene owns its renderer lifetime and releases it from onRemoved().
-        // Releasing it here as well can double-destroy the FBO when the editor
-        // is reopened, which shows up as a white frame with a black stale area.
+        detachCachedSectionedRendererFromScene(stage);
+        // Keep the sectioned renderer and dummy world alive across editor UI
+        // close/open cycles. Scene is only the UI owner; the compiled section
+        // VBOs are the expensive model cache.
         currentScene = null;
-        currentWorld = null;
         selectionRectOverlay = null;
         shaderProbeSceneActive = false;
         irisFboWidth = -1;
@@ -426,27 +441,27 @@ public class ViewportFactory {
 
         boolean moved = false;
 
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_W) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_FORWARD.isKeyDown()) {
             center.add(-fx * speed, -fy * speed, -fz * speed);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_S) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_BACK.isKeyDown()) {
             center.add(fx * speed, fy * speed, fz * speed);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_A) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_LEFT.isKeyDown()) {
             center.add(-rx * speed, -ry * speed, -rz * speed);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_D) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_RIGHT.isKeyDown()) {
             center.add(rx * speed, ry * speed, rz * speed);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_UP.isKeyDown()) {
             center.add(0, speed, 0);
             moved = true;
         }
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_ALT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (EBEKeyBindings.FLY_DOWN.isKeyDown()) {
             center.add(0, -speed, 0);
             moved = true;
         }
@@ -734,15 +749,33 @@ public class ViewportFactory {
         if (core != null) {
             if (add) core.add(pos.immutable());
             else core.remove(pos);
-            scheduleDeferredCompile();
+            scheduleIncrementalCompile(pos, add);
         } else {
             refreshRenderedCore();
         }
     }
 
-    private static void scheduleDeferredCompile() {
+    private static void scheduleIncrementalCompile(BlockPos pos, boolean present) {
         if (currentScene == null) return;
-        currentScene.needCompileCache();
+        if (sectionedRenderer != null) {
+            sectionedRenderer.applyBlockChange(pos, present);
+        } else {
+            currentScene.needCompileCache();
+        }
+    }
+
+    private static void scheduleIncrementalCompile(Map<BlockPos, Boolean> changedBlocks) {
+        if (currentScene == null || changedBlocks.isEmpty()) return;
+        if (sectionedRenderer != null) {
+            sectionedRenderer.applyBlockChanges(changedBlocks);
+        } else {
+            currentScene.needCompileCache();
+        }
+    }
+
+    private static void addPendingDelta(BlockPos pos, BlockState state) {
+        pendingDeltas.add(new PendingBlockDelta(pos.immutable(), state));
+        pendingDeltaOverlayFrames = 0;
     }
 
     private static void renderPendingDeltasOverlay() {
@@ -761,6 +794,7 @@ public class ViewportFactory {
         if (currentWorld == null || currentScene == null) return;
         var core = getSceneCore();
         boolean smallEdit = snapshots.length < DELTA_OVERLAY_THRESHOLD;
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
 
         for (var snapshot : snapshots) {
             int x = (int) snapshot[0];
@@ -781,19 +815,21 @@ public class ViewportFactory {
             if (resolvedBs != null && !resolvedBs.isAir()) {
                 currentWorld.addBlock(pos, new BlockInfo(resolvedBs));
                 if (core != null) core.add(pos.immutable());
+                changedBlocks.put(pos.immutable(), true);
                 if (smallEdit) {
-                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), resolvedBs));
+                    addPendingDelta(pos, resolvedBs);
                 }
             } else {
                 if (core != null) core.remove(pos);
+                changedBlocks.put(pos.immutable(), false);
                 if (smallEdit) {
-                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), Blocks.AIR.defaultBlockState()));
+                    addPendingDelta(pos, Blocks.AIR.defaultBlockState());
                 }
             }
         }
 
-        if (smallEdit) {
-            scheduleDeferredCompile();
+        if (sectionedRenderer != null) {
+            scheduleIncrementalCompile(changedBlocks);
         } else {
             currentScene.needCompileCache();
             pendingDeltas.clear();
@@ -804,6 +840,7 @@ public class ViewportFactory {
         if (currentWorld == null || currentScene == null) return;
         var core = getSceneCore();
         boolean smallEdit = snapshots.length < DELTA_OVERLAY_THRESHOLD;
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
 
         for (var snapshot : snapshots) {
             int x = (int) snapshot[0];
@@ -824,19 +861,23 @@ public class ViewportFactory {
             if (resolvedBs != null && !resolvedBs.isAir()) {
                 currentWorld.addBlock(pos, new BlockInfo(resolvedBs));
                 if (core != null) core.add(pos.immutable());
+                changedBlocks.put(pos.immutable(), true);
                 if (smallEdit) {
-                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), resolvedBs));
+                    addPendingDelta(pos, resolvedBs);
                 }
             } else {
                 if (core != null) core.remove(pos);
+                changedBlocks.put(pos.immutable(), false);
                 if (smallEdit) {
-                    pendingDeltas.add(new PendingBlockDelta(pos.immutable(), Blocks.AIR.defaultBlockState()));
+                    addPendingDelta(pos, Blocks.AIR.defaultBlockState());
                 }
             }
         }
 
-        if (smallEdit) {
-            scheduleDeferredCompile();
+        if (sectionedRenderer != null) {
+            scheduleIncrementalCompile(changedBlocks);
+        } else if (smallEdit) {
+            currentScene.needCompileCache();
         } else {
             if (core != null) {
                 core.clear();
@@ -885,6 +926,7 @@ public class ViewportFactory {
         savedPitch = 25;
         savedZoom = 8;
         savedCenter = new Vector3f(3, 2, 3);
+        releaseCachedSectionedRenderer("clear-model");
         if (currentScene != null && currentWorld != null) {
             currentWorld = new TrackedDummyWorld();
             createSceneRenderer();
@@ -896,6 +938,7 @@ public class ViewportFactory {
         if (currentScene == null) return;
         shaderProbeSceneActive = false;
         saveCameraState();
+        releaseCachedSectionedRenderer("refresh-model");
         currentWorld = new TrackedDummyWorld();
         var displayFilter = EditorUI.getState().getDisplayFilter();
         int totalBlocks = 0;
@@ -1026,9 +1069,15 @@ public class ViewportFactory {
         boolean useIrisFbo = shouldUseIrisOffscreenRenderer();
         Size fboSize = useIrisFbo ? getIrisViewportFboSize() : null;
         boolean createIrisFbo = useIrisFbo && fboSize != null;
+        if (createIrisFbo) {
+            releaseCachedSectionedRenderer("switch-to-iris-fbo");
+        }
         currentScene.createScene(currentWorld, createIrisFbo, fboSize);
         if (createIrisFbo) {
+            sectionedRenderer = null;
             installCachedIrisRenderer(fboSize);
+        } else {
+            installSectionedRenderer();
         }
         if (createIrisFbo) {
             irisFboWidth = fboSize.width;
@@ -1040,6 +1089,124 @@ public class ViewportFactory {
         }
         resetPendingIrisFboResize();
         installViewportCallbacks();
+    }
+
+    private static boolean tryAttachCachedSectionedRenderer() {
+        if (currentScene == null || currentWorld == null || sectionedRenderer == null) {
+            return false;
+        }
+        if (!hasLoadedModel || shouldUseIrisOffscreenRenderer() || !sectionedRenderer.isRenderingWorld(currentWorld)) {
+            return false;
+        }
+        try {
+            initSceneReflection();
+            if (sceneRendererField == null) {
+                return false;
+            }
+
+            currentScene.createScene(currentWorld, false, null);
+            Object temporaryRenderer = sceneRendererField.get(currentScene);
+            Set<BlockPos> core = getSceneCore();
+            if (core == null) {
+                return false;
+            }
+            core.clear();
+            currentWorld.getFilledBlocks().forEach(packed -> core.add(BlockPos.of(packed)));
+
+            configureSectionedRenderer(sectionedRenderer);
+            sectionedRenderer.attachRenderedCore(core, createCombinedHook());
+            sceneRendererField.set(currentScene, sectionedRenderer);
+            if (temporaryRenderer instanceof WorldSceneRenderer worldSceneRenderer && temporaryRenderer != sectionedRenderer) {
+                worldSceneRenderer.releaseResource();
+            }
+            currentScene.useCacheBuffer(true);
+            installViewportCallbacks();
+            LOG.info("Reattached cached SectionedWorldSceneRenderer: {} blocks", core.size());
+            return true;
+        } catch (Exception e) {
+            LOG.warn("Failed to attach cached SectionedWorldSceneRenderer", e);
+            return false;
+        }
+    }
+
+    private static boolean isSectionedRendererAttachedToCurrentScene() {
+        if (currentScene == null || sectionedRenderer == null) {
+            return false;
+        }
+        try {
+            initSceneReflection();
+            return sceneRendererField != null && sceneRendererField.get(currentScene) == sectionedRenderer;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void configureSectionedRenderer(SectionedWorldSceneRenderer renderer) {
+        renderer.useCacheBuffer(true);
+        renderer.useOrtho(currentScene.isUseOrtho());
+        renderer.setOnLookingAt(ray -> {});
+        renderer.setAfterWorldRender(currentScene::renderBlockOverLay);
+        renderer.setCameraLookAt(
+                currentScene.getCenter(),
+                currentScene.camZoom(),
+                Math.toRadians(currentScene.getRotationYaw()),
+                Math.toRadians(currentScene.getRotationPitch())
+        );
+        if (currentWorld.getParticleManager() != null) {
+            renderer.setParticleManager(currentWorld.getParticleManager());
+        }
+    }
+
+    private static void detachCachedSectionedRendererFromScene(String stage) {
+        if (currentScene == null || sectionedRenderer == null) {
+            return;
+        }
+        try {
+            initSceneReflection();
+            if (sceneRendererField != null && sceneRendererField.get(currentScene) == sectionedRenderer) {
+                sceneRendererField.set(currentScene, null);
+                LOG.info("Detached cached SectionedWorldSceneRenderer at {}", stage);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to detach cached SectionedWorldSceneRenderer at {}", stage, e);
+        }
+    }
+
+    private static void releaseCachedSectionedRenderer(String stage) {
+        var renderer = sectionedRenderer;
+        if (renderer == null) {
+            return;
+        }
+        detachCachedSectionedRendererFromScene(stage);
+        sectionedRenderer = null;
+        renderer.releaseResource();
+        LOG.info("Released cached SectionedWorldSceneRenderer at {}", stage);
+    }
+
+    private static void installSectionedRenderer() {
+        if (currentScene == null || currentWorld == null) {
+            return;
+        }
+        try {
+            initSceneReflection();
+            if (sceneRendererField == null) {
+                return;
+            }
+
+            Object oldRenderer = sceneRendererField.get(currentScene);
+            var renderer = new SectionedWorldSceneRenderer(currentWorld);
+            configureSectionedRenderer(renderer);
+
+            sceneRendererField.set(currentScene, renderer);
+            sectionedRenderer = renderer;
+            if (oldRenderer instanceof WorldSceneRenderer worldSceneRenderer) {
+                worldSceneRenderer.releaseResource();
+            }
+            LOG.info("Injected SectionedWorldSceneRenderer");
+        } catch (Exception e) {
+            sectionedRenderer = null;
+            LOG.warn("Failed to install SectionedWorldSceneRenderer", e);
+        }
     }
 
     private static void installCachedIrisRenderer(Size fboSize) {

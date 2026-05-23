@@ -44,6 +44,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/SectionedRenderer");
     private static final int SECTION_SIZE = 16;
+    private static final int SECTION_COMPILE_BATCH_SIZE = 3;
+    private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
     private static final List<RenderType> LAYERS = RenderType.chunkBufferLayers();
 
     private static Field f_beforeWorldRender;
@@ -72,7 +74,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private final Map<SectionPos, SectionData> sections = new ConcurrentHashMap<>();
     private final Map<SectionPos, Set<BlockPos>> sectionBlocks = new ConcurrentHashMap<>();
     private final Set<SectionPos> dirtySections = new CopyOnWriteArraySet<>();
-    private volatile Set<BlockPos> tileEntities = Collections.emptySet();
+    private final Set<BlockPos> tileEntities = ConcurrentHashMap.newKeySet();
 
     private volatile Thread compileThread;
     private final AtomicBoolean compiling = new AtomicBoolean(false);
@@ -132,6 +134,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     public void markSectionDirty(BlockPos pos) {
         var sp = SectionPos.fromBlock(pos);
+        markSectionDirty(sp);
+    }
+
+    private void markSectionDirty(SectionPos sp) {
         dirtySections.add(sp);
         var data = sections.get(sp);
         if (data != null) {
@@ -139,7 +145,31 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
     }
 
-    public void updateSectionBlock(BlockPos pos, boolean added) {
+    public void applyBlockChange(BlockPos pos, boolean present) {
+        updateSectionBlock(pos, present);
+    }
+
+    public void applyBlockChanges(Map<BlockPos, Boolean> changedBlocks) {
+        if (changedBlocks == null || changedBlocks.isEmpty()) {
+            return;
+        }
+        for (var entry : changedBlocks.entrySet()) {
+            updateSectionBlock(entry.getKey(), entry.getValue());
+        }
+    }
+
+    public boolean isRenderingWorld(Level targetWorld) {
+        return this.world == targetWorld;
+    }
+
+    public void attachRenderedCore(Collection<BlockPos> blocks, ISceneBlockRenderHook renderHook) {
+        renderedBlocksMap.clear();
+        if (blocks != null) {
+            renderedBlocksMap.put(blocks, renderHook);
+        }
+    }
+
+    private void updateSectionBlock(BlockPos pos, boolean added) {
         var sp = SectionPos.fromBlock(pos);
         if (added) {
             sectionBlocks.computeIfAbsent(sp, k -> ConcurrentHashMap.newKeySet()).add(pos.immutable());
@@ -155,7 +185,27 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                 }
             }
         }
-        markSectionDirty(pos);
+        updateTileEntityAt(pos);
+        markAffectedSectionsDirty(sp);
+    }
+
+    private void markAffectedSectionsDirty(SectionPos center) {
+        markSectionDirty(center);
+        markSectionDirty(new SectionPos(center.x() + 1, center.y(), center.z()));
+        markSectionDirty(new SectionPos(center.x() - 1, center.y(), center.z()));
+        markSectionDirty(new SectionPos(center.x(), center.y() + 1, center.z()));
+        markSectionDirty(new SectionPos(center.x(), center.y() - 1, center.z()));
+        markSectionDirty(new SectionPos(center.x(), center.y(), center.z() + 1));
+        markSectionDirty(new SectionPos(center.x(), center.y(), center.z() - 1));
+    }
+
+    private void updateTileEntityAt(BlockPos pos) {
+        tileEntities.remove(pos);
+        var mc = Minecraft.getInstance();
+        BlockEntity tile = world.getBlockEntity(pos);
+        if (tile != null && mc.getBlockEntityRenderDispatcher().getRenderer(tile) != null) {
+            tileEntities.add(pos.immutable());
+        }
     }
 
     @Override
@@ -171,10 +221,59 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         sections.clear();
         sectionBlocks.clear();
         dirtySections.clear();
-        tileEntities = Collections.emptySet();
+        tileEntities.clear();
         needsFullRebuild = true;
         super.deleteCacheBuffer();
         return this;
+    }
+
+    @Override
+    public WorldSceneRenderer addRenderedBlocks(Collection<BlockPos> blocks, ISceneBlockRenderHook renderHook) {
+        super.addRenderedBlocks(blocks, renderHook);
+        if (blocks != null && !blocks.isEmpty()) {
+            for (var pos : blocks) {
+                var sp = SectionPos.fromBlock(pos);
+                sectionBlocks.computeIfAbsent(sp, k -> ConcurrentHashMap.newKeySet()).add(pos.immutable());
+                sections.computeIfAbsent(sp, k -> new SectionData());
+                markSectionDirty(sp);
+            }
+            rebuildAllTileEntities();
+        }
+        return this;
+    }
+
+    @Override
+    public WorldSceneRenderer removeRenderedBlocks(Collection<BlockPos> blocks) {
+        if (blocks != null && !blocks.isEmpty()) {
+            for (var pos : blocks) {
+                var sp = SectionPos.fromBlock(pos);
+                var sectionSet = sectionBlocks.get(sp);
+                if (sectionSet != null) {
+                    sectionSet.remove(pos);
+                    if (sectionSet.isEmpty()) {
+                        sectionBlocks.remove(sp);
+                        var data = sections.remove(sp);
+                        if (data != null) data.close();
+                    } else {
+                        markSectionDirty(sp);
+                    }
+                }
+                tileEntities.remove(pos);
+            }
+        }
+        return super.removeRenderedBlocks(blocks);
+    }
+
+    @Override
+    public WorldSceneRenderer removeAllRenderedBlocks() {
+        sectionBlocks.clear();
+        dirtySections.clear();
+        tileEntities.clear();
+        for (var data : sections.values()) {
+            data.close();
+        }
+        sections.clear();
+        return super.removeAllRenderedBlocks();
     }
 
     @Override
@@ -208,6 +307,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var data : sections.values()) {
             data.compiled = false;
         }
+        rebuildAllTileEntities();
         needsFullRebuild = false;
     }
 
@@ -218,35 +318,34 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
         if (dirtySections.isEmpty() || compiling.get()) return;
 
-        List<SectionPos> toCompile = new ArrayList<>(dirtySections);
-        dirtySections.clear();
-
-        compileThread = new Thread(() -> {
-            compiling.set(true);
-            try {
-                ModelBlockRenderer.enableCaching();
-                var mc = Minecraft.getInstance();
-                var brd = mc.getBlockRenderer();
-                var randomSource = RandomSource.createNewThreadLocalInstance();
-
-                for (var sp : toCompile) {
-                    if (Thread.interrupted()) break;
-                    compileSection(sp, brd, randomSource);
-                }
-
-                collectTileEntities();
-
-                ModelBlockRenderer.clearCache();
-            } catch (Exception e) {
-                if (!(e instanceof InterruptedException)) {
-                    LOG.warn("Section compilation error", e);
-                }
-            } finally {
-                compiling.set(false);
-                compileThread = null;
+        List<SectionPos> toCompile = new ArrayList<>(SECTION_COMPILE_BATCH_SIZE);
+        for (var sp : dirtySections) {
+            toCompile.add(sp);
+            if (toCompile.size() >= SECTION_COMPILE_BATCH_SIZE) {
+                break;
             }
-        }, "EBE-SectionCompiler");
-        compileThread.start();
+        }
+        dirtySections.removeAll(toCompile);
+
+        compiling.set(true);
+        try {
+            ModelBlockRenderer.enableCaching();
+            var mc = Minecraft.getInstance();
+            var brd = mc.getBlockRenderer();
+            var randomSource = RandomSource.createNewThreadLocalInstance();
+
+            for (var sp : toCompile) {
+                compileSection(sp, brd, randomSource);
+            }
+
+            rebuildTileEntitiesForSections(toCompile);
+            ModelBlockRenderer.clearCache();
+        } catch (Exception e) {
+            LOG.warn("Section compilation error", e);
+        } finally {
+            compiling.set(false);
+            compileThread = null;
+        }
     }
 
     private void compileSection(SectionPos sp, BlockRenderDispatcher brd, RandomSource randomSource) {
@@ -275,6 +374,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                         DefaultVertexFormat.BLOCK
                 );
                 PoseStack poseStack = new PoseStack();
+                var wrapper = new VertexConsumerWrapper(bufferBuilder);
 
                 for (var pos : blockList) {
                     if (Thread.interrupted()) return;
@@ -295,30 +395,28 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                         if (model.getRenderTypes(state, randomSource, modelData).contains(layer)) {
                             poseStack.pushPose();
                             poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
-                            brd.renderBatched(state, pos, world, poseStack, bufferBuilder, false, randomSource, modelData, layer);
+                            brd.renderBatched(state, pos, world, poseStack, wrapper, false, randomSource, modelData, layer);
                             poseStack.popPose();
                         }
                     }
 
                     if (!fluidState.isEmpty() && ItemBlockRenderTypes.getRenderLayer(fluidState) == layer) {
-                        var wrapper = new VertexConsumerWrapper(bufferBuilder);
                         wrapper.addOffset(pos.getX() - (pos.getX() & 15), pos.getY() - (pos.getY() & 15), pos.getZ() - (pos.getZ() & 15));
                         brd.renderLiquid(pos, world, wrapper, state, fluidState);
-                        wrapper.clearOffset();
                     }
+                    wrapper.clearOffset();
+                    wrapper.clearColor();
                 }
 
                 MeshData meshData = bufferBuilder.build();
                 if (meshData != null) {
                     data.hasData[i] = true;
                     var vertexBuffer = data.vertexBuffers[i];
-                    java.util.concurrent.CompletableFuture.runAsync(() -> {
-                        if (!vertexBuffer.isInvalid()) {
-                            vertexBuffer.bind();
-                            vertexBuffer.upload(meshData);
-                            VertexBuffer.unbind();
-                        }
-                    }, runnable -> RenderSystem.recordRenderCall(runnable::run));
+                    if (!vertexBuffer.isInvalid()) {
+                        vertexBuffer.bind();
+                        vertexBuffer.upload(meshData);
+                        VertexBuffer.unbind();
+                    }
                 } else {
                     data.hasData[i] = false;
                 }
@@ -331,19 +429,27 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         data.compiled = true;
     }
 
-    private void collectTileEntities() {
+    private void rebuildAllTileEntities() {
+        tileEntities.clear();
+        rebuildTileEntitiesForSections(sectionBlocks.keySet());
+    }
+
+    private void rebuildTileEntitiesForSections(Collection<SectionPos> targetSections) {
         var mc = Minecraft.getInstance();
-        var tes = new HashSet<BlockPos>();
-        renderedBlocksMap.forEach((blocks, hook) -> {
+        for (var sp : targetSections) {
+            tileEntities.removeIf(pos -> SectionPos.fromBlock(pos).equals(sp));
+            var blocks = sectionBlocks.get(sp);
+            if (blocks == null) {
+                continue;
+            }
             for (var pos : blocks) {
                 if (Thread.interrupted()) return;
                 BlockEntity tile = world.getBlockEntity(pos);
                 if (tile != null && mc.getBlockEntityRenderDispatcher().getRenderer(tile) != null) {
-                    tes.add(pos);
+                    tileEntities.add(pos.immutable());
                 }
             }
-        });
-        tileEntities = tes;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -375,7 +481,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
         compileDirtySections();
 
-        List<BlockPos> uncompiledBlocks = collectUncompiledBlocks();
+        List<BlockPos> uncompiledBlocks = collectUncompiledBlocks(MAX_IMMEDIATE_FALLBACK_BLOCKS);
 
         var bsr = mc.getBlockRenderer();
         var randomSource = RandomSource.createNewThreadLocalInstance();
@@ -402,6 +508,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
 
             setDefaultRenderLayerState(layer);
+            layer.setupRenderState();
 
             drawCompiledSectionVBOs(i);
 
@@ -438,12 +545,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
     }
 
-    private List<BlockPos> collectUncompiledBlocks() {
+    private List<BlockPos> collectUncompiledBlocks(int limit) {
         List<BlockPos> uncompiled = new ArrayList<>();
         for (var entry : sectionBlocks.entrySet()) {
             var data = sections.get(entry.getKey());
             if (data == null || !data.compiled) {
-                uncompiled.addAll(entry.getValue());
+                for (var pos : entry.getValue()) {
+                    uncompiled.add(pos);
+                    if (uncompiled.size() >= limit) {
+                        return uncompiled;
+                    }
+                }
             }
         }
         return uncompiled;

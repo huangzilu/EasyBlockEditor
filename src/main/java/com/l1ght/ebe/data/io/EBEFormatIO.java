@@ -5,6 +5,8 @@ import com.l1ght.ebe.data.*;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.TagParser;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 
@@ -13,11 +15,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class EBEFormatIO {
+    private static final Logger LOG = LoggerFactory.getLogger("EBE/Format");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Gson GSON_COMPACT = new GsonBuilder().create();
 
     public static void write(BuildingModel model, Path file) throws IOException {
+        write(model, file, false);
+    }
+
+    public static void write(BuildingModel model, Path file, boolean compact) throws IOException {
         var root = new JsonObject();
         root.addProperty("format", "ebe");
         root.addProperty("version", 1);
@@ -123,13 +135,21 @@ public class EBEFormatIO {
         root.add("regions", regionsArray);
 
         Files.createDirectories(file.getParent());
-        try (var writer = new OutputStreamWriter(Files.newOutputStream(file), StandardCharsets.UTF_8)) {
-            GSON.toJson(root, writer);
+        OutputStream out = Files.newOutputStream(file);
+        if (compact) {
+            out = new GZIPOutputStream(out, 65536);
+        }
+        try (var writer = new OutputStreamWriter(out, StandardCharsets.UTF_8)) {
+            (compact ? GSON_COMPACT : GSON).toJson(root, writer);
         }
     }
 
     public static BuildingModel read(Path file) throws IOException {
-        var root = JsonParser.parseReader(new InputStreamReader(Files.newInputStream(file), StandardCharsets.UTF_8)).getAsJsonObject();
+        JsonObject root;
+        try (InputStream in = openPossiblyCompressed(file);
+             var reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+            root = JsonParser.parseReader(reader).getAsJsonObject();
+        }
 
         var model = new BuildingModel();
         var metaJson = root.getAsJsonObject("metadata");
@@ -188,7 +208,7 @@ public class EBEFormatIO {
                             if (elem.isJsonObject()) {
                                 region.getBlocks().set(x, y, z, SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject()));
                             } else {
-                                region.getBlocks().set(x, y, z, elem.getAsString());
+                                region.getBlocks().set(x, y, z, resolveBlockStateFromString(elem.getAsString()));
                             }
                         }
                         idx++;
@@ -213,5 +233,33 @@ public class EBEFormatIO {
             }
         }
         return model;
+    }
+
+    private static BlockState resolveBlockStateFromString(String id) {
+        if (id == null || id.isEmpty() || id.equals("minecraft:air") || id.equals("air")) {
+            return Blocks.AIR.defaultBlockState();
+        }
+        try {
+            var block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(id));
+            return block.map(value -> value.defaultBlockState()).orElseGet(() -> {
+                LOG.warn("Unknown block ID in EBE file: {}, falling back to stone", id);
+                return Blocks.STONE.defaultBlockState();
+            });
+        } catch (Exception e) {
+            LOG.warn("Failed to resolve block ID in EBE file: {}", id, e);
+            return Blocks.STONE.defaultBlockState();
+        }
+    }
+
+    private static InputStream openPossiblyCompressed(Path file) throws IOException {
+        var buffered = new BufferedInputStream(Files.newInputStream(file));
+        buffered.mark(2);
+        int b0 = buffered.read();
+        int b1 = buffered.read();
+        buffered.reset();
+        if (b0 == 0x1F && b1 == 0x8B) {
+            return new GZIPInputStream(buffered, 65536);
+        }
+        return buffered;
     }
 }

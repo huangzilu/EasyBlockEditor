@@ -21,16 +21,18 @@ public class ProjectionData {
     private Mirror mirror = Mirror.NONE;
     private List<ProjectionBlock> blocks;
     private int minX, minY, minZ, maxX, maxY, maxZ;
+    private int renderVersion = 0;
+    private int meshVersion = 0;
 
     public ProjectionData(BuildingModel model, BlockPos origin) {
         this.model = model;
         this.origin = origin;
         this.blocks = new ArrayList<>();
-        computeBlocks();
-        this.centerPoint = new BlockPos((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+        computeBlocks(true);
+        this.centerPoint = origin;
     }
 
-    private void computeBlocks() {
+    private void computeBlocks(boolean meshChanged) {
         blocks.clear();
         minX = Integer.MAX_VALUE; minY = Integer.MAX_VALUE; minZ = Integer.MAX_VALUE;
         maxX = Integer.MIN_VALUE; maxY = Integer.MIN_VALUE; maxZ = Integer.MIN_VALUE;
@@ -73,6 +75,10 @@ public class ProjectionData {
                 }
             }
         }
+        renderVersion++;
+        if (meshChanged) {
+            meshVersion++;
+        }
     }
 
     private static BlockPos rotatePos(BlockPos pos, Rotation rot) {
@@ -98,10 +104,13 @@ public class ProjectionData {
         return state;
     }
 
-    public void setOrigin(BlockPos origin) { this.origin = origin; computeBlocks(); }
-    public void setRotation(Rotation rotation) { this.rotation = rotation; computeBlocks(); }
-    public void setMirror(Mirror mirror) { this.mirror = mirror; computeBlocks(); }
-    public void setCenterPoint(BlockPos center) { this.centerPoint = center; computeBlocks(); }
+    public void setOrigin(BlockPos origin) {
+        this.origin = origin;
+        computeBlocks(rotation != Rotation.NONE || mirror != Mirror.NONE);
+    }
+    public void setRotation(Rotation rotation) { this.rotation = rotation; computeBlocks(true); }
+    public void setMirror(Mirror mirror) { this.mirror = mirror; computeBlocks(true); }
+    public void setCenterPoint(BlockPos center) { this.centerPoint = center; computeBlocks(true); }
 
     public void rotateClockwise90() {
         this.rotation = switch (this.rotation) {
@@ -110,7 +119,7 @@ public class ProjectionData {
             case CLOCKWISE_180 -> Rotation.COUNTERCLOCKWISE_90;
             case COUNTERCLOCKWISE_90 -> Rotation.NONE;
         };
-        computeBlocks();
+        computeBlocks(true);
     }
 
     public void rotateCounterClockwise90() {
@@ -120,23 +129,23 @@ public class ProjectionData {
             case CLOCKWISE_180 -> Rotation.CLOCKWISE_90;
             case CLOCKWISE_90 -> Rotation.NONE;
         };
-        computeBlocks();
+        computeBlocks(true);
     }
 
     public void rotate180() {
         this.rotation = this.rotation == Rotation.NONE ? Rotation.CLOCKWISE_180 :
                 this.rotation == Rotation.CLOCKWISE_180 ? Rotation.NONE : Rotation.CLOCKWISE_180;
-        computeBlocks();
+        computeBlocks(true);
     }
 
     public void toggleMirrorLeftRight() {
         this.mirror = this.mirror == Mirror.LEFT_RIGHT ? Mirror.NONE : Mirror.LEFT_RIGHT;
-        computeBlocks();
+        computeBlocks(true);
     }
 
     public void toggleMirrorFrontBack() {
         this.mirror = this.mirror == Mirror.FRONT_BACK ? Mirror.NONE : Mirror.FRONT_BACK;
-        computeBlocks();
+        computeBlocks(true);
     }
 
     public Direction getFacing() {
@@ -161,6 +170,8 @@ public class ProjectionData {
     public Rotation getRotation() { return rotation; }
     public Mirror getMirror() { return mirror; }
     public BlockPos getCenterPoint() { return centerPoint; }
+    public int getRenderVersion() { return renderVersion; }
+    public int getMeshVersion() { return meshVersion; }
 
     public record ProjectionBlock(BlockPos pos, BlockState state, CompoundTag nbt) {
         public boolean hasNbt() { return nbt != null && !nbt.isEmpty(); }

@@ -1,5 +1,8 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.client.keybind.EBEKeyBinding;
+import com.l1ght.ebe.client.keybind.EBEKeyBindings;
+import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.lowdragmc.lowdraglib2.configurator.ui.BooleanConfigurator;
 import com.lowdragmc.lowdraglib2.configurator.ui.ConfiguratorGroup;
@@ -13,10 +16,16 @@ import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import dev.vfyjxf.taffy.style.FlexDirection;
+import dev.vfyjxf.taffy.style.AlignItems;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
+import net.minecraft.ChatFormatting;
 
 import java.util.List;
+import java.util.Map;
 
 public class SettingsUI {
 
@@ -24,10 +33,10 @@ public class SettingsUI {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.editor.settings").getString());
         dialog.setAutoClose(false);
-        dialog.overlay.layout(l -> l.width(380).heightPercent(80));
+        dialog.overlay.layout(l -> l.width(380));
 
         var tabView = new TabView();
-        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).flex(1).widthPercent(100));
+        tabView.layout(l -> l.flexDirection(FlexDirection.COLUMN).widthPercent(100));
 
         var header = tabView.tabHeaderContainer;
         var content = tabView.tabContentContainer;
@@ -35,6 +44,8 @@ public class SettingsUI {
         tabView.removeChild(content);
         tabView.addChild(header);
         tabView.addChild(content);
+
+        content.layout(l -> l.widthPercent(100).height(320));
 
         tabView.addTab(new Tab().setText(Component.translatable("ebe.editor.settings.general")),
                 createGeneralTab());
@@ -44,12 +55,17 @@ public class SettingsUI {
                 createProjectionTab());
         tabView.addTab(new Tab().setText(Component.translatable("ebe.editor.settings.printer")),
                 createPrinterTab());
+        tabView.addTab(new Tab().setText(Component.translatable("ebe.editor.settings.keybindings")),
+                createKeybindingsTab());
 
         dialog.addContent(tabView);
 
         dialog.addButton(new Button()
                 .setText(Component.translatable("ebe.editor.settings.ok"))
-                .setOnClick(e -> dialog.close()));
+                .setOnClick(e -> {
+                    KeyRecordingManager.cancelRecording();
+                    dialog.close();
+                }));
 
         dialog.show(parent);
     }
@@ -161,7 +177,7 @@ public class SettingsUI {
                 EBEClientConfig.projectionRenderDistance::get,
                 v -> { EBEClientConfig.projectionRenderDistance.set(v.intValue()); EBEClientConfig.SPEC.save(); },
                 64, false
-        ).setRange(16, 256).setWheel(16));
+        ).setRange(0, Integer.MAX_VALUE).setWheel(16));
 
         scroller.addScrollViewChild(group);
         return scroller;
@@ -179,9 +195,100 @@ public class SettingsUI {
                 EBEClientConfig.printerRange::get,
                 v -> { EBEClientConfig.printerRange.set(v.intValue()); EBEClientConfig.SPEC.save(); },
                 3, false
-        ).setRange(1, 16).setWheel(1));
+        ).setRange(0, Integer.MAX_VALUE).setWheel(1));
+
+        group.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.material_source_range").getString(),
+                EBEClientConfig.printerMaterialSourceRange::get,
+                v -> { EBEClientConfig.printerMaterialSourceRange.set(v.intValue()); EBEClientConfig.SPEC.save(); },
+                64, false
+        ).setRange(0, Integer.MAX_VALUE).setWheel(16));
+
+        group.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.printer.parallelism").getString(),
+                EBEClientConfig.printerParallelism::get,
+                v -> { EBEClientConfig.printerParallelism.set(v.intValue()); EBEClientConfig.SPEC.save(); },
+                1, false
+        ).setRange(1, 8).setWheel(1));
 
         scroller.addScrollViewChild(group);
         return scroller;
+    }
+
+    private static UIElement createKeybindingsTab() {
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+
+        Map<String, List<EBEKeyBinding>> byCategory = EBEKeyBindings.getByCategory();
+        String[] catOrder = {EBEKeyBindings.CAT_EDIT, EBEKeyBindings.CAT_TOOLS, EBEKeyBindings.CAT_FLIGHT, EBEKeyBindings.CAT_MOUSE, EBEKeyBindings.CAT_REMOTE};
+
+        for (String cat : catOrder) {
+            List<EBEKeyBinding> bindings = byCategory.get(cat);
+            if (bindings == null || bindings.isEmpty()) continue;
+
+            var group = new ConfiguratorGroup(Component.translatable(cat).getString(), false);
+
+            for (EBEKeyBinding binding : bindings) {
+                var row = createKeybindingRow(binding);
+                group.addConfigurator(new com.lowdragmc.lowdraglib2.configurator.ui.Configurator("")
+                        .addInlineChild(row));
+            }
+
+            scroller.addScrollViewChild(group);
+        }
+
+        var resetAllBtn = new Button()
+                .setText(Component.translatable("ebe.settings.keybindings.reset_all"))
+                .setOnClick(e -> {
+                    for (var b : EBEKeyBindings.getAll()) b.resetToDefault();
+                    EBEClientConfig.saveAllKeybindings();
+                    EditorUI.refreshKeybindHints();
+                });
+        resetAllBtn.layout(l -> l.widthPercent(100).height(24).marginTop(8));
+        scroller.addScrollViewChild(resetAllBtn);
+
+        return scroller;
+    }
+
+    private static UIElement createKeybindingRow(EBEKeyBinding binding) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).height(24).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).paddingHorizontal(4));
+
+        var nameLbl = new Label();
+        nameLbl.setText(Component.translatable(binding.getId()));
+        nameLbl.layout(l -> l.flex(1).height(20));
+        row.addChild(nameLbl);
+
+        var bindBtn = new Button();
+        bindBtn.setText(Component.literal(binding.getDisplayName()));
+        bindBtn.layout(l -> l.width(120).height(20).flexShrink(0));
+        bindBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                bindBtn.setText(Component.translatable("ebe.settings.keybindings.recording")
+                        .withStyle(ChatFormatting.YELLOW));
+                KeyRecordingManager.startRecording(binding, () -> {
+                    bindBtn.setText(Component.literal(binding.getDisplayName()));
+                    EditorUI.refreshKeybindHints();
+                });
+            }
+        });
+        row.addChild(bindBtn);
+
+        var resetBtn = new Button();
+        resetBtn.setText(Component.literal("R").withStyle(ChatFormatting.GRAY));
+        resetBtn.layout(l -> l.width(24).height(20).flexShrink(0).marginLeft(4));
+        resetBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                binding.resetToDefault();
+                bindBtn.setText(Component.literal(binding.getDisplayName()));
+                EBEClientConfig.saveAllKeybindings();
+                EditorUI.refreshKeybindHints();
+            }
+        });
+        row.addChild(resetBtn);
+
+        return row;
     }
 }

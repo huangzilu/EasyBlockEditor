@@ -1,12 +1,13 @@
 package com.l1ght.ebe.client.ui;
 
-import com.l1ght.ebe.client.keybind.EBEKeyMappings;
+import com.l1ght.ebe.client.keybind.EBEKeyBindings;
+import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
-import com.l1ght.ebe.projection.PrinterController;
+import com.l1ght.ebe.client.projection.PrinterController;
 import com.l1ght.ebe.projection.PrinterMode;
-import com.l1ght.ebe.projection.ProjectionManager;
+import com.l1ght.ebe.client.projection.ProjectionManager;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
@@ -55,15 +56,10 @@ import java.util.Map;
 
 public class EditorUI {
 
-    private static final Map<String, String> EDIT_SHORTCUTS = Map.of(
-            "ebe.editor.undo", "Ctrl+Z",
-            "ebe.editor.redo", "Ctrl+Y",
-            "ebe.editor.copy", "Ctrl+C",
-            "ebe.editor.paste", "Ctrl+V",
-            "ebe.editor.cut", "Ctrl+X",
-            "ebe.editor.select_all", "Ctrl+A",
-            "ebe.editor.deselect", "Ctrl+D"
-    );
+    private static String getShortcutDisplay(String i18nKey) {
+        var binding = EBEKeyBindings.getById(i18nKey);
+        return binding != null ? binding.getDisplayName() : "";
+    }
 
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
@@ -122,6 +118,9 @@ public class EditorUI {
     private static UIElement openMenuAnchor;
 
     public static ModularUI createModularUI() {
+        ProjectionManager.loadPersistentStateIfNeeded();
+        projectionPanel = null;
+        projectionPanelVisible = false;
         rootElement = new UIElement();
         rootElement.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN));
         rootElement.setId("root");
@@ -274,8 +273,8 @@ public class EditorUI {
             var text = Component.translatable(key);
             boolean isChecked = false;
 
-            var shortcut = EDIT_SHORTCUTS.get(key);
-            if (shortcut != null) {
+            var shortcut = getShortcutDisplay(key);
+            if (!shortcut.isEmpty()) {
                 text = text.copy().append(Component.literal("  " + shortcut).withStyle(ChatFormatting.DARK_GRAY));
             }
 
@@ -292,7 +291,7 @@ public class EditorUI {
             }
 
             if (isChecked) {
-                var check = Component.literal("✓ ").withStyle(ChatFormatting.GREEN);
+                var check = Component.literal("*").withStyle(ChatFormatting.GREEN);
                 text = check.append(text);
                 item.style(s -> s.background(Sprites.RECT_RD_DARK));
             } else {
@@ -692,7 +691,7 @@ public class EditorUI {
             cornerBtn.layout(l -> l.widthPercent(100).height(16));
             cornerBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
             cornerBtn.setOnClick(e -> {
-                if (proj != null) proj.setCenterPoint(corners[finalI]);
+                if (proj != null) ProjectionManager.setProjectionCenter(corners[finalI]);
                 switchProjectionTab(currentProjectionTab);
             });
             container.addChild(cornerBtn);
@@ -706,17 +705,17 @@ public class EditorUI {
         if (proj != null) {
             var cp = proj.getCenterPoint();
             var cxRow = buildCoordRow("CX", cp.getX(), (val) -> {
-                proj.setCenterPoint(new BlockPos(val, cp.getY(), cp.getZ()));
+                ProjectionManager.setProjectionCenter(new BlockPos(val, cp.getY(), cp.getZ()));
                 switchProjectionTab(currentProjectionTab);
             });
             container.addChild(cxRow);
             var cyRow = buildCoordRow("CY", cp.getY(), (val) -> {
-                proj.setCenterPoint(new BlockPos(cp.getX(), val, cp.getZ()));
+                ProjectionManager.setProjectionCenter(new BlockPos(cp.getX(), val, cp.getZ()));
                 switchProjectionTab(currentProjectionTab);
             });
             container.addChild(cyRow);
             var czRow = buildCoordRow("CZ", cp.getZ(), (val) -> {
-                proj.setCenterPoint(new BlockPos(cp.getX(), cp.getY(), val));
+                ProjectionManager.setProjectionCenter(new BlockPos(cp.getX(), cp.getY(), val));
                 switchProjectionTab(currentProjectionTab);
             });
             container.addChild(czRow);
@@ -800,21 +799,21 @@ public class EditorUI {
         ccwBtn.setText(Component.translatable("ebe.projection.rotate_ccw"));
         ccwBtn.layout(l -> l.flex(1).height(16));
         ccwBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        ccwBtn.setOnClick(e -> { proj.rotateCounterClockwise90(); switchProjectionTab(2); });
+        ccwBtn.setOnClick(e -> { ProjectionManager.rotateCounterClockwise90(); switchProjectionTab(2); });
         rotBtnRow.addChild(ccwBtn);
 
         var cwBtn = new Button();
         cwBtn.setText(Component.translatable("ebe.projection.rotate_cw"));
         cwBtn.layout(l -> l.flex(1).height(16));
         cwBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        cwBtn.setOnClick(e -> { proj.rotateClockwise90(); switchProjectionTab(2); });
+        cwBtn.setOnClick(e -> { ProjectionManager.rotateClockwise90(); switchProjectionTab(2); });
         rotBtnRow.addChild(cwBtn);
 
         var r180Btn = new Button();
         r180Btn.setText(Component.translatable("ebe.projection.rotate_180"));
         r180Btn.layout(l -> l.flex(1).height(16));
         r180Btn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        r180Btn.setOnClick(e -> { proj.rotate180(); switchProjectionTab(2); });
+        r180Btn.setOnClick(e -> { ProjectionManager.rotate180(); switchProjectionTab(2); });
         rotBtnRow.addChild(r180Btn);
 
         container.addChild(rotBtnRow);
@@ -823,7 +822,7 @@ public class EditorUI {
         resetRotBtn.setText(Component.translatable("ebe.projection.reset_rotation"));
         resetRotBtn.layout(l -> l.widthPercent(100).height(16));
         resetRotBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        resetRotBtn.setOnClick(e -> { proj.setRotation(net.minecraft.world.level.block.Rotation.NONE); proj.setMirror(net.minecraft.world.level.block.Mirror.NONE); switchProjectionTab(2); });
+        resetRotBtn.setOnClick(e -> { ProjectionManager.resetTransform(); switchProjectionTab(2); });
         container.addChild(resetRotBtn);
 
         var mirrorLabel = new Label();
@@ -838,14 +837,14 @@ public class EditorUI {
         lrBtn.setText(Component.translatable("ebe.projection.mirror_lr"));
         lrBtn.layout(l -> l.flex(1).height(16));
         lrBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        lrBtn.setOnClick(e -> { proj.toggleMirrorLeftRight(); switchProjectionTab(2); });
+        lrBtn.setOnClick(e -> { ProjectionManager.toggleMirrorLeftRight(); switchProjectionTab(2); });
         mirrorRow.addChild(lrBtn);
 
         var fbBtn = new Button();
         fbBtn.setText(Component.translatable("ebe.projection.mirror_fb"));
         fbBtn.layout(l -> l.flex(1).height(16));
         fbBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
-        fbBtn.setOnClick(e -> { proj.toggleMirrorFrontBack(); switchProjectionTab(2); });
+        fbBtn.setOnClick(e -> { ProjectionManager.toggleMirrorFrontBack(); switchProjectionTab(2); });
         mirrorRow.addChild(fbBtn);
 
         container.addChild(mirrorRow);
@@ -857,17 +856,17 @@ public class EditorUI {
 
         var cp = proj.getCenterPoint();
         var cxRow = buildCoordRow("CX", cp.getX(), (val) -> {
-            proj.setCenterPoint(new BlockPos(val, cp.getY(), cp.getZ()));
+            ProjectionManager.setProjectionCenter(new BlockPos(val, cp.getY(), cp.getZ()));
             switchProjectionTab(2);
         });
         container.addChild(cxRow);
         var cyRow = buildCoordRow("CY", cp.getY(), (val) -> {
-            proj.setCenterPoint(new BlockPos(cp.getX(), val, cp.getZ()));
+            ProjectionManager.setProjectionCenter(new BlockPos(cp.getX(), val, cp.getZ()));
             switchProjectionTab(2);
         });
         container.addChild(cyRow);
         var czRow = buildCoordRow("CZ", cp.getZ(), (val) -> {
-            proj.setCenterPoint(new BlockPos(cp.getX(), cp.getY(), val));
+            ProjectionManager.setProjectionCenter(new BlockPos(cp.getX(), cp.getY(), val));
             switchProjectionTab(2);
         });
         container.addChild(czRow);
@@ -972,7 +971,7 @@ public class EditorUI {
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
             leftDivider.setDisplay(false);
-            leftCollapseBtn.setText(Component.literal("▶"));
+            leftCollapseBtn.setText(Component.literal(">"));
         }
         if (!rightPanelVisible) {
             rightPanel.setDisplay(false);
@@ -1073,7 +1072,7 @@ public class EditorUI {
         btn.setId("toolbarCollapseBtn");
 
         var inner = new Label();
-        inner.setText(Component.literal(toolbarExpanded ? "◀" : "▶"));
+        inner.setText(Component.literal(toolbarExpanded ? "<" : ">"));
         inner.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(8));
         btn.addChild(inner);
 
@@ -1095,7 +1094,7 @@ public class EditorUI {
                     .map(c -> (Label) c)
                     .findFirst().orElse(null);
             if (inner != null) {
-                inner.setText(Component.literal(toolbarExpanded ? "◀" : "▶"));
+                inner.setText(Component.literal(toolbarExpanded ? "<" : ">"));
             }
         }
     }
@@ -1807,7 +1806,7 @@ public class EditorUI {
         branchLabel.setId("historyBranchLabel");
         branchLabel.layout(l -> l.widthPercent(100).paddingHorizontal(2));
         branchLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAFF).textShadow(false));
-        branchLabel.setText(Component.literal("⌥ " + history.getCurrentBranch()));
+        branchLabel.setText(Component.literal("Branch: " + history.getCurrentBranch()));
         branchLabel.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showBranchSwitchDialog(); });
         registerTooltip(branchLabel, Component.translatable("ebe.history.switch_branch"));
         container.addChild(branchLabel);
@@ -2207,7 +2206,7 @@ public class EditorUI {
 
         var toggleBtn = new Button();
         toggleBtn.setId("printerToggleBtn");
-        toggleBtn.setText(Component.translatable("ebe.printer.toggle"));
+        updatePrinterToggleText(toggleBtn);
         toggleBtn.layout(l -> l.widthPercent(100).height(22));
         toggleBtn.style(s -> s.background(PrinterController.isActive() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
         toggleBtn.setOnClick(e -> {
@@ -2215,6 +2214,107 @@ public class EditorUI {
             updatePrinterToggleBtn();
         });
         container.addChild(toggleBtn);
+
+        var parallelLabel = new Label();
+        parallelLabel.setText(Component.translatable("ebe.printer.parallelism")
+                .append(Component.literal(": " + EBEClientConfig.printerParallelism.get())));
+        parallelLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        container.addChild(parallelLabel);
+
+        var parallelRow = new UIElement();
+        parallelRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(3));
+        var parallelMinus = new Button();
+        parallelMinus.setText(Component.literal("-"));
+        parallelMinus.layout(l -> l.flex(1).height(16));
+        parallelMinus.setOnClick(e -> {
+            int value = Math.max(1, EBEClientConfig.printerParallelism.get() - 1);
+            EBEClientConfig.printerParallelism.set(value);
+            EBEClientConfig.SPEC.save();
+            parallelLabel.setText(Component.translatable("ebe.printer.parallelism").append(Component.literal(": " + value)));
+        });
+        parallelRow.addChild(parallelMinus);
+
+        var parallelPlus = new Button();
+        parallelPlus.setText(Component.literal("+"));
+        parallelPlus.layout(l -> l.flex(1).height(16));
+        parallelPlus.setOnClick(e -> {
+            int value = Math.min(8, EBEClientConfig.printerParallelism.get() + 1);
+            EBEClientConfig.printerParallelism.set(value);
+            EBEClientConfig.SPEC.save();
+            parallelLabel.setText(Component.translatable("ebe.printer.parallelism").append(Component.literal(": " + value)));
+        });
+        parallelRow.addChild(parallelPlus);
+        container.addChild(parallelRow);
+
+        var sourceLabel = new Label();
+        sourceLabel.setId("printerSourceLabel");
+        updatePrinterSourceLabel(sourceLabel);
+        sourceLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        container.addChild(sourceLabel);
+
+        var sourceRow = new UIElement();
+        sourceRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(3));
+        var selectSourceBtn = new Button();
+        selectSourceBtn.setText(Component.translatable("ebe.printer.select_chest"));
+        selectSourceBtn.layout(l -> l.flex(1).height(18));
+        selectSourceBtn.setOnClick(e -> PrinterController.requestMaterialSourceSelection());
+        sourceRow.addChild(selectSourceBtn);
+
+        var clearSourceBtn = new Button();
+        clearSourceBtn.setText(Component.translatable("ebe.printer.clear_chest"));
+        clearSourceBtn.layout(l -> l.flex(1).height(18));
+        clearSourceBtn.setOnClick(e -> {
+            PrinterController.clearMaterialSource();
+            updatePrinterSourceLabel(sourceLabel);
+        });
+        sourceRow.addChild(clearSourceBtn);
+        container.addChild(sourceRow);
+
+        var sourceRangeLabel = new Label();
+        sourceRangeLabel.setText(Component.translatable("ebe.printer.material_source_range")
+                .append(Component.literal(": " + formatPrinterRange(EBEClientConfig.printerMaterialSourceRange.get()))));
+        sourceRangeLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+        container.addChild(sourceRangeLabel);
+
+        var sourceRangeRow = new UIElement();
+        sourceRangeRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(3));
+        var sourceRangeMinus = new Button();
+        sourceRangeMinus.setText(Component.literal("-64"));
+        sourceRangeMinus.layout(l -> l.flex(1).height(16));
+        sourceRangeMinus.setOnClick(e -> {
+            int current = EBEClientConfig.printerMaterialSourceRange.get();
+            int value = current <= 0 ? 64 : Math.max(0, current - 64);
+            EBEClientConfig.printerMaterialSourceRange.set(value);
+            EBEClientConfig.SPEC.save();
+            sourceRangeLabel.setText(Component.translatable("ebe.printer.material_source_range")
+                    .append(Component.literal(": " + formatPrinterRange(value))));
+        });
+        sourceRangeRow.addChild(sourceRangeMinus);
+
+        var sourceRangePlus = new Button();
+        sourceRangePlus.setText(Component.literal("+64"));
+        sourceRangePlus.layout(l -> l.flex(1).height(16));
+        sourceRangePlus.setOnClick(e -> {
+            int current = EBEClientConfig.printerMaterialSourceRange.get();
+            int value = current <= 0 ? 64 : Math.min(Integer.MAX_VALUE, current + 64);
+            EBEClientConfig.printerMaterialSourceRange.set(value);
+            EBEClientConfig.SPEC.save();
+            sourceRangeLabel.setText(Component.translatable("ebe.printer.material_source_range")
+                    .append(Component.literal(": " + formatPrinterRange(value))));
+        });
+        sourceRangeRow.addChild(sourceRangePlus);
+
+        var sourceRangeUnlimited = new Button();
+        sourceRangeUnlimited.setText(Component.literal("0"));
+        sourceRangeUnlimited.layout(l -> l.flex(1).height(16));
+        sourceRangeUnlimited.setOnClick(e -> {
+            EBEClientConfig.printerMaterialSourceRange.set(0);
+            EBEClientConfig.SPEC.save();
+            sourceRangeLabel.setText(Component.translatable("ebe.printer.material_source_range")
+                    .append(Component.literal(": " + formatPrinterRange(0))));
+        });
+        sourceRangeRow.addChild(sourceRangeUnlimited);
+        container.addChild(sourceRangeRow);
 
         var rangeLabel = new Label();
         rangeLabel.setId("printerRangeLabel");
@@ -2261,8 +2361,27 @@ public class EditorUI {
     private static void updatePrinterToggleBtn() {
         var btn = UIUtils.findById(rightPanel, "printerToggleBtn");
         if (btn instanceof Button b) {
+            updatePrinterToggleText(b);
             b.style(s -> s.background(PrinterController.isActive() ? Sprites.RECT_RD_DARK : Sprites.RECT_RD));
         }
+    }
+
+    private static void updatePrinterToggleText(Button button) {
+        button.setText(Component.translatable(PrinterController.isActive() ? "ebe.printer.running" : "ebe.printer.stopped"));
+    }
+
+    private static void updatePrinterSourceLabel(Label label) {
+        var source = PrinterController.getMaterialSourcePos();
+        if (source == null) {
+            label.setText(Component.translatable("ebe.printer.no_chest_bound"));
+        } else {
+            label.setText(Component.translatable("ebe.printer.bound_chest")
+                    .append(Component.literal(": " + source.getX() + ", " + source.getY() + ", " + source.getZ())));
+        }
+    }
+
+    private static String formatPrinterRange(int range) {
+        return range <= 0 ? "Unlimited" : Integer.toString(range);
     }
 
     private static void updatePrinterMissingMaterials(Label label) {
@@ -2310,7 +2429,7 @@ public class EditorUI {
 
         var branchLabel = findById(rootElement, "historyBranchLabel");
         if (branchLabel instanceof Label bl) {
-            bl.setText(Component.literal("⌥ " + history.getCurrentBranch()));
+            bl.setText(Component.literal("Branch: " + history.getCurrentBranch()));
         }
 
         var tags = history.getVersionTags();
@@ -2361,7 +2480,7 @@ public class EditorUI {
         rollbackBtn.layout(l -> l.width(14).height(14));
         rollbackBtn.style(s -> s.background(Sprites.RECT_DARK));
         var rollbackIcon = new Label();
-        rollbackIcon.setText(Component.literal("↩"));
+        rollbackIcon.setText(Component.literal("<-"));
         rollbackIcon.textStyle(ts -> ts.fontSize(8).textShadow(false));
         rollbackBtn.addChild(rollbackIcon);
         rollbackBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
@@ -2418,7 +2537,7 @@ public class EditorUI {
         jumpBtn.layout(l -> l.width(16).height(16).flexShrink(0));
         jumpBtn.style(s -> s.background(Sprites.RECT_RD));
         var jumpLabel = new Label();
-        jumpLabel.setText(Component.literal("↩"));
+        jumpLabel.setText(Component.literal("->"));
         jumpLabel.textStyle(ts -> ts.fontSize(9).textShadow(false));
         jumpBtn.addChild(jumpLabel);
         var displayIdxCapture = displayIdx;
@@ -2537,7 +2656,7 @@ public class EditorUI {
         for (var branch : branches) {
             var btn = new Button();
             boolean isCurrent = branch.name().equals(history.getCurrentBranch());
-            btn.setText(Component.literal((isCurrent ? "● " : "○ ") + branch.name()));
+            btn.setText(Component.literal((isCurrent ? "* " : "  ") + branch.name()));
             btn.layout(l -> l.widthPercent(100).height(18));
             btn.textStyle(ts -> ts.fontSize(9).textColor(isCurrent ? 0xFF55FF55 : 0xFFDDDDDD).textShadow(false));
             if (!isCurrent) {
@@ -2828,7 +2947,7 @@ public class EditorUI {
                 row.addChild(editBtn);
 
                 var delBtn = new Button();
-                delBtn.setText(Component.literal("✕"));
+                delBtn.setText(Component.literal("X"));
                 delBtn.layout(l -> l.width(14).height(14));
                 delBtn.setOnClick(e -> {
                     tag.remove(key);
@@ -3081,7 +3200,7 @@ public class EditorUI {
 
     private static Button buildCollapseButton(boolean isLeft) {
         var btn = new Button();
-        btn.setText(Component.literal(isLeft ? "◀" : "▶"));
+        btn.setText(Component.literal(isLeft ? "<" : ">"));
         btn.layout(l -> l.width(14).heightPercent(100));
         btn.style(s -> s.background(Sprites.RECT_DARK));
         btn.setId(isLeft ? "leftCollapseBtn" : "rightCollapseBtn");
@@ -3122,14 +3241,14 @@ public class EditorUI {
         leftPanelVisible = !leftPanelVisible;
         leftPanel.setDisplay(leftPanelVisible);
         leftDivider.setDisplay(leftPanelVisible);
-        leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "◀" : "▶"));
+        leftCollapseBtn.setText(Component.literal(leftPanelVisible ? "<" : ">"));
     }
 
     private static void toggleRightPanel() {
         rightPanelVisible = !rightPanelVisible;
         rightPanel.setDisplay(rightPanelVisible);
         rightDivider.setDisplay(rightPanelVisible);
-        rightCollapseBtn.setText(Component.literal(rightPanelVisible ? "▶" : "◀"));
+        rightCollapseBtn.setText(Component.literal(rightPanelVisible ? ">" : "<"));
     }
 
     private static void toggleBlockIndicator() {
@@ -3488,7 +3607,7 @@ public class EditorUI {
                 valRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
                         .alignItems(AlignItems.CENTER).gapAll(4));
                 var valLabel = new Label();
-                valLabel.setText(Component.literal("→"));
+                valLabel.setText(Component.literal("->"));
                 valLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).textShadow(false).fontSize(9));
                 valLabel.layout(l -> l.width(12));
                 valRow.addChild(valLabel);
@@ -4414,7 +4533,7 @@ public class EditorUI {
             row.addChild(weightField);
 
             var delBtn = new Button();
-            delBtn.setText(Component.literal("✕"));
+            delBtn.setText(Component.literal("X"));
             delBtn.layout(l -> l.width(16).height(16));
             delBtn.setOnClick(e -> {
                 randomFillEntries.remove(idx);
@@ -4778,33 +4897,46 @@ public class EditorUI {
         if (!(hintsLabel instanceof Label l)) return;
 
         var tool = state.getActiveTool();
+        String undo = EBEKeyBindings.UNDO.getDisplayName();
+        String redo = EBEKeyBindings.REDO.getDisplayName();
+        String copy = EBEKeyBindings.COPY.getDisplayName();
+        String paste = EBEKeyBindings.PASTE.getDisplayName();
+        String cut = EBEKeyBindings.CUT.getDisplayName();
+        String selectMulti = EBEKeyBindings.SELECT_MULTI.getDisplayName();
+        String boxSurface = EBEKeyBindings.BOX_SELECT_SURFACE.getDisplayName();
+        String boxPenetrate = EBEKeyBindings.BOX_SELECT_PENETRATE.getDisplayName();
+        String sameType = EBEKeyBindings.SELECT_SAME_TYPE.getDisplayName();
+        String deselect = EBEKeyBindings.DESELECT_BLOCK.getDisplayName();
+        String fillExec = EBEKeyBindings.FILL_EXECUTE.getDisplayName();
+        String grabViewport = EBEKeyBindings.GRAB_VIEWPORT.getDisplayName();
+
         String text = switch (tool) {
-            case SELECT -> "■ " +
+            case SELECT -> "* " +
                     Component.translatable("ebe.hints.select.click").getString() + "\n" +
-                    "■ Ctrl+" + Component.translatable("ebe.hints.select.multi").getString() + "\n" +
-                    "■ Shift+LMB: " + Component.translatable("ebe.hints.select.box_surface").getString() + "\n" +
-                    "■ Shift+RMB: " + Component.translatable("ebe.hints.select.box_penetrate").getString() + "\n" +
-                    "■ Ctrl+Shift+" + Component.translatable("ebe.hints.select.same_type").getString() + "\n" +
-                    "■ RMB: " + Component.translatable("ebe.hints.select.deselect").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z/Y\n" +
-                    "■ " + Component.translatable("ebe.hints.common.clipboard").getString() + ": Ctrl+C/V/X";
-            case PLACE -> "■ " +
+                    "* " + selectMulti + ": " + Component.translatable("ebe.hints.select.multi").getString() + "\n" +
+                    "* " + boxSurface + ": " + Component.translatable("ebe.hints.select.box_surface").getString() + "\n" +
+                    "* " + boxPenetrate + ": " + Component.translatable("ebe.hints.select.box_penetrate").getString() + "\n" +
+                    "* " + sameType + ": " + Component.translatable("ebe.hints.select.same_type").getString() + "\n" +
+                    "* " + deselect + ": " + Component.translatable("ebe.hints.select.deselect").getString() + "\n" +
+                    "* " + Component.translatable("ebe.hints.common.undo").getString() + ": " + undo + "/" + redo + "\n" +
+                    "* " + Component.translatable("ebe.hints.common.clipboard").getString() + ": " + copy + "/" + paste + "/" + cut;
+            case PLACE -> "* " +
                     Component.translatable("ebe.hints.place.click").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
-            case DELETE -> "■ " +
+                    "* " + Component.translatable("ebe.hints.common.undo").getString() + ": " + undo;
+            case DELETE -> "* " +
                     Component.translatable("ebe.hints.delete.click").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
-            case REPLACE -> "■ " +
+                    "* " + Component.translatable("ebe.hints.common.undo").getString() + ": " + undo;
+            case REPLACE -> "* " +
                     Component.translatable("ebe.hints.replace.click").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.common.undo").getString() + ": Ctrl+Z";
-            case GRAB -> "■ " +
+                    "* " + Component.translatable("ebe.hints.common.undo").getString() + ": " + undo;
+            case GRAB -> "* " +
                     Component.translatable("ebe.hints.grab.click").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.grab.middle").getString();
-            case MEASURE -> "■ " +
+                    "* " + grabViewport + ": " + Component.translatable("ebe.hints.grab.middle").getString();
+            case MEASURE -> "* " +
                     Component.translatable("ebe.hints.measure.click").getString();
-            case FILL -> "■ " +
+            case FILL -> "* " +
                     Component.translatable("ebe.hints.fill.click").getString() + "\n" +
-                    "■ " + Component.translatable("ebe.hints.fill.ctrl").getString();
+                    "* " + fillExec + ": " + Component.translatable("ebe.hints.fill.execute").getString();
         };
         l.setText(Component.literal(text));
     }
@@ -5073,7 +5205,7 @@ public class EditorUI {
                     int diff = count - invCount;
                     var diffLabel = new Label();
                     if (diff <= 0) {
-                        diffLabel.setText(Component.literal(count + "/" + invCount + " ✓"));
+                        diffLabel.setText(Component.literal(count + "/" + invCount + " ok"));
                         diffLabel.textStyle(ts -> ts.fontSize(8).textColor(0xFF55FF55).textShadow(false));
                     } else {
                         diffLabel.setText(Component.literal(count + "/" + invCount + " -" + diff));
@@ -5168,50 +5300,47 @@ public class EditorUI {
 
     public static boolean handleKeyPress(int keyCode, int scanCode, int modifiers) {
         if (isTextFieldFocused()) return false;
-        boolean ctrl = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0;
+        if (KeyRecordingManager.isRecording()) return true;
 
-        if (ctrl) {
-            if (keyCode == GLFW.GLFW_KEY_Z) { undo(); return true; }
-            if (keyCode == GLFW.GLFW_KEY_Y) { redo(); return true; }
-            if (keyCode == GLFW.GLFW_KEY_C) { clipboard.copy(session.getModel(), selection); return true; }
-            if (keyCode == GLFW.GLFW_KEY_V) {
-                clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
-                        state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
-                var lastEntry = history.getLastEntry();
-                if (lastEntry != null) {
-                    ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-                } else {
-                    ViewportFactory.refreshFromModel(session.getModel());
-                }
-                refreshMaterialList();
-                refreshHistoryList();
-                return true;
+        if (EBEKeyBindings.UNDO.matchesKey(keyCode, modifiers)) { undo(); return true; }
+        if (EBEKeyBindings.REDO.matchesKey(keyCode, modifiers)) { redo(); return true; }
+        if (EBEKeyBindings.COPY.matchesKey(keyCode, modifiers)) { clipboard.copy(session.getModel(), selection); return true; }
+        if (EBEKeyBindings.PASTE.matchesKey(keyCode, modifiers)) {
+            clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
+                    state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
+            var lastEntry = history.getLastEntry();
+            if (lastEntry != null) {
+                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+            } else {
+                ViewportFactory.refreshFromModel(session.getModel());
             }
-            if (keyCode == GLFW.GLFW_KEY_X) {
-                clipboard.cut(session.getModel(), selection, history);
-                var lastEntry = history.getLastEntry();
-                if (lastEntry != null) {
-                    ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-                } else {
-                    ViewportFactory.refreshFromModel(session.getModel());
-                }
-                refreshMaterialList();
-                refreshHistoryList();
-                updateSelectionCount();
-                return true;
-            }
-            if (keyCode == GLFW.GLFW_KEY_A) { selectAll(); return true; }
-            if (keyCode == GLFW.GLFW_KEY_D) { selection.clear(); updateSelectionCount(); return true; }
-            return false;
+            refreshMaterialList();
+            refreshHistoryList();
+            return true;
         }
+        if (EBEKeyBindings.CUT.matchesKey(keyCode, modifiers)) {
+            clipboard.cut(session.getModel(), selection, history);
+            var lastEntry = history.getLastEntry();
+            if (lastEntry != null) {
+                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
+            } else {
+                ViewportFactory.refreshFromModel(session.getModel());
+            }
+            refreshMaterialList();
+            refreshHistoryList();
+            updateSelectionCount();
+            return true;
+        }
+        if (EBEKeyBindings.SELECT_ALL.matchesKey(keyCode, modifiers)) { selectAll(); return true; }
+        if (EBEKeyBindings.DESELECT.matchesKey(keyCode, modifiers)) { selection.clear(); updateSelectionCount(); return true; }
 
-        if (EBEKeyMappings.TOOL_SELECT.matches(keyCode, scanCode)) { selectTool(EditorTool.SELECT); return true; }
-        if (EBEKeyMappings.TOOL_PLACE.matches(keyCode, scanCode)) { selectTool(EditorTool.PLACE); return true; }
-        if (EBEKeyMappings.TOOL_DELETE.matches(keyCode, scanCode)) { selectTool(EditorTool.DELETE); return true; }
-        if (EBEKeyMappings.TOOL_REPLACE.matches(keyCode, scanCode)) { selectTool(EditorTool.REPLACE); return true; }
-        if (EBEKeyMappings.TOOL_GRAB.matches(keyCode, scanCode)) { selectTool(EditorTool.GRAB); return true; }
-        if (EBEKeyMappings.TOOL_MEASURE.matches(keyCode, scanCode)) { selectTool(EditorTool.MEASURE); return true; }
-        if (EBEKeyMappings.TOOL_FILL.matches(keyCode, scanCode)) { selectTool(EditorTool.FILL); return true; }
+        if (EBEKeyBindings.TOOL_SELECT.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.SELECT); return true; }
+        if (EBEKeyBindings.TOOL_PLACE.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.PLACE); return true; }
+        if (EBEKeyBindings.TOOL_DELETE.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.DELETE); return true; }
+        if (EBEKeyBindings.TOOL_REPLACE.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.REPLACE); return true; }
+        if (EBEKeyBindings.TOOL_GRAB.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.GRAB); return true; }
+        if (EBEKeyBindings.TOOL_MEASURE.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.MEASURE); return true; }
+        if (EBEKeyBindings.TOOL_FILL.matchesKey(keyCode, modifiers)) { selectTool(EditorTool.FILL); return true; }
         return false;
     }
 

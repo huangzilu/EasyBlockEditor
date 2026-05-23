@@ -5,6 +5,8 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 public class PlaceProgressPayload implements CustomPacketPayload {
@@ -40,7 +42,9 @@ public class PlaceProgressPayload implements CustomPacketPayload {
 
     public static void handleClient(PlaceProgressPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            com.l1ght.ebe.projection.ProjectionManager.setProgress(payload.placed, payload.total);
+            if (FMLEnvironment.dist == Dist.CLIENT) {
+                com.l1ght.ebe.client.ClientOnlyHooks.setProjectionProgress(payload.placed, payload.total);
+            }
         });
     }
 }
