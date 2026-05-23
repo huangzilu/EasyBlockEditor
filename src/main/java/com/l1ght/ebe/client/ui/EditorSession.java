@@ -17,6 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class EditorSession {
+    private static final long ASYNC_VIEWPORT_COMPUTE_FILE_THRESHOLD_BYTES = 1_500_000L;
+
     private BuildingModel model;
     private Path currentFile;
     private ComputedProjection computedProjection;
@@ -41,6 +43,16 @@ public class EditorSession {
         ProjectionComputePlanner.clearCache();
     }
 
+    public void restoreModel(BuildingModel restoredModel, boolean markDirty) {
+        if (restoredModel == null) return;
+        this.model = restoredModel.deepCopy();
+        this.computedProjection = null;
+        ProjectionComputePlanner.clearCache();
+        if (markDirty) {
+            this.dirty = true;
+        }
+    }
+
     public String getCurrentName() {
         return currentFile != null ? currentFile.getFileName().toString() : "untitled";
     }
@@ -51,7 +63,7 @@ public class EditorSession {
         this.model.getMetadata().setName(name);
         this.currentFile = null;
         this.dirty = false;
-        EditorUI.getHistory().clear();
+        EditorUI.getHistory().clear(this.model);
         EditorUI.refreshHistoryList();
     }
 
@@ -95,6 +107,9 @@ public class EditorSession {
         LoadedFile loaded = readFile(file);
         ComputedProjection computed = null;
         try {
+            if (shouldPreferSynchronousViewportLoad(file)) {
+                return new LoadedFile(file, loaded.model(), null);
+            }
             String cacheKey = fileComputeKey(file);
             computed = ProjectionComputePlanner.computeAsync(
                     cacheKey,
@@ -112,13 +127,21 @@ public class EditorSession {
         return new LoadedFile(file, loaded.model(), computed);
     }
 
+    public static boolean shouldPreferSynchronousViewportLoad(Path file) {
+        try {
+            return Files.size(file) <= ASYNC_VIEWPORT_COMPUTE_FILE_THRESHOLD_BYTES;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public void applyLoaded(LoadedFile loaded) {
         this.model = loaded.model();
         this.computedProjection = loaded.computed();
         Path file = loaded.file();
         this.currentFile = file;
         this.dirty = false;
-        EditorUI.getHistory().clear();
+        EditorUI.getHistory().clear(this.model);
         loadHistory();
         EditorUI.refreshHistoryList();
     }
@@ -143,7 +166,7 @@ public class EditorSession {
     }
 
     void saveHistory() {
-        EditorUI.getHistory().saveHistory(getHistoryPath());
+        EditorUI.getHistory().saveHistory(getHistoryPath(), model);
     }
 
     private void backupCurrentFile() throws Exception {
@@ -153,7 +176,7 @@ public class EditorSession {
     }
 
     private void loadHistory() {
-        EditorUI.getHistory().loadHistory(getHistoryPath());
+        EditorUI.getHistory().loadHistory(getHistoryPath(), model);
     }
 
     private static String stripSupportedExtension(String filename) {

@@ -52,20 +52,35 @@ public class EditorState {
 
     public String buildStatusText() {
         var sb = new StringBuilder();
-        sb.append(mode.name());
-        sb.append(" | ").append(activeTool.name());
-        sb.append(" | ").append(cursorPosition);
+        sb.append(net.minecraft.network.chat.Component.translatable(mode.getKey()).getString());
+        sb.append(" | ")
+                .append(net.minecraft.network.chat.Component.translatable("ebe.status.tool").getString())
+                .append(": ")
+                .append(net.minecraft.network.chat.Component.translatable(activeTool.getTranslationKey()).getString());
+        sb.append(" | ")
+                .append(net.minecraft.network.chat.Component.translatable("ebe.status.position").getString())
+                .append(": ")
+                .append(cursorPosition);
         if (!selectedBlock.isEmpty()) {
             sb.append(" | ").append(selectedBlock);
         }
         if (activeBlockState != null) {
-            var name = activeBlockState.getBlock().getDescriptionId();
-            sb.append(" | Material: ").append(name);
+            var name = activeBlockState.getBlock().getName().getString();
+            sb.append(" | ")
+                    .append(net.minecraft.network.chat.Component.translatable("ebe.status.material").getString())
+                    .append(": ")
+                    .append(name);
         }
         if (selectedCount > 0) {
-            sb.append(" | x").append(selectedCount);
+            sb.append(" | ")
+                    .append(net.minecraft.network.chat.Component.translatable("ebe.status.selected").getString())
+                    .append(": ")
+                    .append(selectedCount);
         }
-        sb.append(" | ").append(fps).append(" FPS");
+        sb.append(" | ")
+                .append(net.minecraft.network.chat.Component.translatable("ebe.status.fps").getString())
+                .append(": ")
+                .append(fps);
         return sb.toString();
     }
 }

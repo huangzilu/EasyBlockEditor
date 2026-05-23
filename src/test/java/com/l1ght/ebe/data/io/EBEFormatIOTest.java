@@ -83,6 +83,27 @@ class EBEFormatIOTest {
     }
 
     @Test
+    void testBlockLayerOverridesRoundTrip(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("layer-overrides.ebe");
+        var model = new BuildingModel();
+        var region = model.addRegion(2, 1, 1);
+        region.getBlocks().set(0, 0, 0, "minecraft:stone");
+        region.getBlocks().set(1, 0, 0, "minecraft:dirt");
+        var layer = model.addLayer("detail", false, true);
+        assertTrue(model.assignBlockToLayer(1, 0, 0, layer.getId()));
+
+        EBEFormatIO.write(model, file);
+        var loaded = EBEFormatIO.read(file);
+        var loadedLayer = findLayer(loaded, "detail");
+
+        assertNotNull(loadedLayer);
+        assertFalse(loadedLayer.isVisible());
+        assertTrue(loadedLayer.isLocked());
+        assertEquals(loadedLayer.getId(), loaded.getLayerIdAt(1, 0, 0));
+        assertNotEquals(loadedLayer.getId(), loaded.getLayerIdAt(0, 0, 0));
+    }
+
+    @Test
     void testUTF8Filename(@TempDir Path dir) throws Exception {
         var file = dir.resolve("中文文件名.ebe");
         var model = new BuildingModel();

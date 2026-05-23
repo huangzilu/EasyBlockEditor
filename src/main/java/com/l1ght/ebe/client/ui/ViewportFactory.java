@@ -62,6 +62,8 @@ public class ViewportFactory {
     private static final int DEFERRED_COMPILE_FRAMES = 60;
     private static final int DELTA_OVERLAY_FRAMES = 20;
     private static final int AUTO_MATERIAL_REFRESH_BLOCK_LIMIT = 100_000;
+    private static final int SYNC_MODEL_LOAD_VOLUME_LIMIT = 250_000;
+    private static final int SYNC_COMPUTED_LOAD_BLOCK_LIMIT = 80_000;
     private static final int PROGRESSIVE_LOAD_BLOCKS_PER_TICK = 4096;
     private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
@@ -411,6 +413,20 @@ public class ViewportFactory {
         loadFromModelProgressive(model, true);
     }
 
+    public static boolean shouldLoadModelProgressively(BuildingModel model) {
+        if (model == null) return false;
+        long volume = 0L;
+        for (var region : model.getRegions()) {
+            volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
+            if (volume > SYNC_MODEL_LOAD_VOLUME_LIMIT) return true;
+        }
+        return false;
+    }
+
+    public static boolean shouldLoadComputedProgressively(ComputedProjection computed) {
+        return computed != null && computed.blockCount() > SYNC_COMPUTED_LOAD_BLOCK_LIMIT;
+    }
+
     public static void loadFromModelProgressive(BuildingModel model, boolean autoCamera) {
         if (currentScene == null) {
             LOG.error("loadFromModelProgressive: currentScene is null");
@@ -608,10 +624,7 @@ public class ViewportFactory {
     private static int loadRegion(Region region) {
         var container = region.getBlocks();
         var model = EditorUI.getSession().getModel();
-        var layer = model.getLayer(region.getLayerId());
         var displayFilter = EditorUI.getState().getDisplayFilter();
-        boolean layerVisible = layer == null || layer.isVisible();
-        float layerOpacity = layer != null ? layer.getOpacity() : 1.0f;
         int count = 0;
         for (int y = 0; y < region.getSizeY(); y++) {
             for (int z = 0; z < region.getSizeZ(); z++) {
@@ -623,7 +636,7 @@ public class ViewportFactory {
                         int wy = y + region.getOffsetY();
                         int wz = z + region.getOffsetZ();
 
-                        if (!layerVisible) continue;
+                        if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                         if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
 
                         addBlockToViewportWorld(new BlockPos(wx, wy, wz), blockState);
@@ -697,12 +710,10 @@ public class ViewportFactory {
             int wx = load.x + region.getOffsetX();
             int wy = load.y + region.getOffsetY();
             int wz = load.z + region.getOffsetZ();
-            var layer = load.model.getLayer(region.getLayerId());
-            boolean layerVisible = layer == null || layer.isVisible();
             load.visited++;
 
             if (blockState != null && !blockState.isAir()
-                    && layerVisible
+                    && load.model.isLayerVisibleAt(region, wx, wy, wz)
                     && displayFilter.shouldDisplay(wx, wy, wz, obj)) {
                 var pos = new BlockPos(wx, wy, wz);
                 addBlockToViewportWorld(pos, blockState);
@@ -1331,7 +1342,6 @@ public class ViewportFactory {
         var displayFilter = EditorUI.getState().getDisplayFilter();
         int totalBlocks = 0;
         for (var region : model.getRegions()) {
-            if (!model.isLayerVisible(region.getLayerId())) continue;
             for (int y = 0; y < region.getSizeY(); y++) {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
@@ -1341,6 +1351,7 @@ public class ViewportFactory {
                             int wx = x + region.getOffsetX();
                             int wy = y + region.getOffsetY();
                             int wz = z + region.getOffsetZ();
+                            if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                             if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
                             addBlockToViewportWorld(new BlockPos(wx, wy, wz), blockState);
                             totalBlocks++;

@@ -9,7 +9,12 @@ public enum HistoryActionType {
     FILL("ebe.history.fill"),
     ROTATE("ebe.history.rotate"),
     MIRROR("ebe.history.mirror"),
-    TRANSLATE("ebe.history.translate");
+    TRANSLATE("ebe.history.translate"),
+    LAYER_CREATE("ebe.history.layer_create"),
+    LAYER_ASSIGN("ebe.history.layer_assign"),
+    LAYER_DELETE("ebe.history.layer_delete"),
+    LAYER_MERGE("ebe.history.layer_merge"),
+    LAYER_UPDATE("ebe.history.layer_update");
 
     private final String key;
 

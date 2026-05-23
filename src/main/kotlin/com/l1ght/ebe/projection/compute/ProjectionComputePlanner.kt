@@ -72,8 +72,6 @@ object ProjectionComputePlanner {
         val localCenter = centerPoint.subtract(origin)
         for (region in model.regions) {
             val container = region.blocks
-            val layer = model.getLayer(region.layerId)
-            val layerVisible = layer == null || layer.isVisible
             val ox = region.offsetX
             val oy = region.offsetY
             val oz = region.offsetZ
@@ -103,7 +101,7 @@ object ProjectionComputePlanner {
                         val immutablePos = worldPos.immutable()
                         val nbt: CompoundTag? = region.getBlockEntity(x, y, z)
                         blocks.add(BlockEntry(immutablePos, state, nbt))
-                        if (includeViewportPlan && layerVisible) {
+                        if (includeViewportPlan && model.isLayerVisibleAt(region, ox + x, oy + y, oz + z)) {
                             viewportEntries.add(ViewportEntry(localPos.immutable(), rawState, source))
                         }
 

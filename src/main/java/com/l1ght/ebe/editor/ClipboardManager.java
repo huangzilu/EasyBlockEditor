@@ -6,7 +6,6 @@ import com.l1ght.ebe.editor.history.HistoryEntry;
 import com.l1ght.ebe.editor.history.HistoryManager;
 import com.l1ght.ebe.editor.selection.SelectionManager;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -42,8 +41,7 @@ public class ClipboardManager {
         for (var p : positions) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
             var state = model.getBlockAt(x, y, z);
-            if (state instanceof BlockState bs && bs.isAir()) continue;
-            if (state instanceof String s && (s.isEmpty() || s.equals("minecraft:air"))) continue;
+            if (BuildingModel.isAirLike(state)) continue;
 
             posList.add(new long[]{x, y, z});
             minX = Math.min(minX, x);
@@ -95,12 +93,8 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(),
-                    HistoryActionType.PASTE,
-                    snapshots.toArray(Object[][]::new),
-                    targetOrigin.getX(), targetOrigin.getY(), targetOrigin.getZ(),
-                    repBlock, snapshots.size()));
+            pushHistory(history, HistoryActionType.PASTE, snapshots, null, model,
+                    targetOrigin.getX(), targetOrigin.getY(), targetOrigin.getZ(), repBlock);
         }
     }
 
@@ -117,6 +111,7 @@ public class ClipboardManager {
                                 HistoryManager history, HistoryActionType actionType) {
         if (selection.isEmpty()) return;
 
+        var beforeLayerState = model.captureLayerState();
         List<Object[]> snapshots = new ArrayList<>();
         var positions = selection.getPositions();
         int repX = 0, repY = 0, repZ = 0;
@@ -125,8 +120,7 @@ public class ClipboardManager {
         for (var p : positions) {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
             var oldState = model.getBlockAt(x, y, z);
-            if (oldState instanceof BlockState bs && bs.isAir()) continue;
-            if (oldState instanceof String s && s.equals("minecraft:air")) continue;
+            if (BuildingModel.isAirLike(oldState)) continue;
 
             snapshots.add(new Object[]{x, y, z, oldState, "minecraft:air"});
             model.setBlockAt(x, y, z, "minecraft:air");
@@ -136,10 +130,7 @@ public class ClipboardManager {
         selection.clear();
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), actionType,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+            pushHistory(history, actionType, snapshots, beforeLayerState, model, repX, repY, repZ, repBlock);
         }
     }
 
@@ -149,6 +140,7 @@ public class ClipboardManager {
         boolean useSelection = !selection.isEmpty();
         int repX = 0, repY = 0, repZ = 0;
 
+        var beforeLayerState = model.captureLayerState();
         if (useSelection) {
             for (var p : selection.getPositions()) {
                 int x = (int) p[0], y = (int) p[1], z = (int) p[2];
@@ -170,7 +162,7 @@ public class ClipboardManager {
                             var current = region.getBlocks().get(x, y, z);
                             if (statesMatch(current, fromState)) {
                                 snapshots.add(new Object[]{wx, wy, wz, current, toState});
-                                region.setWorldBlock(wx, wy, wz, toState);
+                                model.setBlockAt(wx, wy, wz, toState);
                                 if (snapshots.size() == 1) { repX = wx; repY = wy; repZ = wz; }
                             }
                         }
@@ -180,16 +172,15 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.REPLACE,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, toState, snapshots.size()));
+            pushHistory(history, HistoryActionType.REPLACE, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, toState);
         }
     }
 
     public void rotate(BuildingModel model, SelectionManager selection, int angle,
                        HistoryManager history) {
         if (selection.isEmpty()) return;
+        var beforeLayerState = model.captureLayerState();
 
         int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
         for (var p : selection.getPositions()) {
@@ -201,9 +192,19 @@ public class ClipboardManager {
         var positions = selection.getPositions();
         int repX = 0, repY = 0, repZ = 0;
         Object repBlock = null;
+        var oldStates = new LinkedHashMap<Long, Object>();
+        var oldLayerIds = new LinkedHashMap<Long, String>();
+        var targetMappings = new ArrayList<long[]>();
+        var sourceKeys = new java.util.HashSet<Long>();
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            sourceKeys.add(sourceKey);
+            var oldState = model.getBlockAt(ox, oy, oz);
+            oldStates.put(sourceKey, oldState);
+            oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
+
             int rx = ox - minX, rz = oz - minZ;
             int nx = switch (angle) {
                 case 0 -> -rz; case 1 -> -rx; default -> rz;
@@ -212,87 +213,140 @@ public class ClipboardManager {
                 case 0 -> rx; case 1 -> -rz; default -> -rx;
             };
             int wx = minX + nx, wy = oy, wz = minZ + nz;
-
-            var oldState = model.getBlockAt(ox, oy, oz);
-            var oldAtNew = model.getBlockAt(wx, wy, wz);
-
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
-            snapshots.add(new Object[]{wx, wy, wz, oldAtNew, oldState});
-
-            model.setBlockAt(ox, oy, oz, "minecraft:air");
-            model.setBlockAt(wx, wy, wz, oldState);
+            targetMappings.add(new long[]{ox, oy, oz, wx, wy, wz});
             if (repBlock == null) { repX = ox; repY = oy; repZ = oz; repBlock = oldState; }
         }
 
-        selection.clear();
+        var existingAtTarget = new LinkedHashMap<Long, Object>();
+        for (var mapping : targetMappings) {
+            int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
+            long targetKey = SelectionManager.packPos(wx, wy, wz);
+            if (!sourceKeys.contains(targetKey)) {
+                existingAtTarget.put(targetKey, model.getBlockAt(wx, wy, wz));
+            }
+        }
+
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+        }
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
+            long targetKey = SelectionManager.packPos(wx, wy, wz);
+            var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            snapshots.add(new Object[]{wx, wy, wz, existing, oldState});
+        }
+
         for (var p : positions) {
-            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            int rx = ox - minX, rz = oz - minZ;
-            int nx = switch (angle) {
-                case 0 -> -rz; case 1 -> -rx; default -> rz;
-            };
-            int nz = switch (angle) {
-                case 0 -> rx; case 1 -> -rz; default -> -rx;
-            };
-            selection.add(minX + nx, oy, minZ + nz);
+            model.setBlockAt((int) p[0], (int) p[1], (int) p[2], "minecraft:air");
+        }
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            model.setBlockAt(wx, wy, wz, oldState);
+            if (!BuildingModel.isAirLike(oldState)) {
+                model.setBlockLayerOverride(wx, wy, wz, oldLayerIds.get(sourceKey));
+            }
+        }
+
+        selection.clear();
+        for (var mapping : targetMappings) {
+            selection.add((int) mapping[3], (int) mapping[4], (int) mapping[5]);
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.ROTATE,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+            pushHistory(history, HistoryActionType.ROTATE, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, repBlock);
         }
     }
 
     public void mirror(BuildingModel model, SelectionManager selection, int axis,
                        int centerX, int centerY, int centerZ, HistoryManager history) {
         if (selection.isEmpty()) return;
+        var beforeLayerState = model.captureLayerState();
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
         int repX = 0, repY = 0, repZ = 0;
         Object repBlock = null;
+        var oldStates = new LinkedHashMap<Long, Object>();
+        var oldLayerIds = new LinkedHashMap<Long, String>();
+        var targetMappings = new ArrayList<long[]>();
+        var sourceKeys = new java.util.HashSet<Long>();
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            sourceKeys.add(sourceKey);
+            var oldState = model.getBlockAt(ox, oy, oz);
+            oldStates.put(sourceKey, oldState);
+            oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
+
             int nx = switch (axis) { case 0 -> 2 * centerX - ox; default -> ox; };
             int ny = switch (axis) { case 1 -> 2 * centerY - oy; default -> oy; };
             int nz = switch (axis) { case 2 -> 2 * centerZ - oz; default -> oz; };
 
-            if (nx == ox && ny == oy && nz == oz) continue;
-
-            var oldState = model.getBlockAt(ox, oy, oz);
-            var oldAtNew = model.getBlockAt(nx, ny, nz);
-
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
-            snapshots.add(new Object[]{nx, ny, nz, oldAtNew, oldState});
-
-            model.setBlockAt(ox, oy, oz, "minecraft:air");
-            model.setBlockAt(nx, ny, nz, oldState);
+            targetMappings.add(new long[]{ox, oy, oz, nx, ny, nz});
             if (repBlock == null) { repX = ox; repY = oy; repZ = oz; repBlock = oldState; }
         }
 
-        selection.clear();
+        var existingAtTarget = new LinkedHashMap<Long, Object>();
+        for (var mapping : targetMappings) {
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long targetKey = SelectionManager.packPos(nx, ny, nz);
+            if (!sourceKeys.contains(targetKey)) {
+                existingAtTarget.put(targetKey, model.getBlockAt(nx, ny, nz));
+            }
+        }
+
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+        }
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long targetKey = SelectionManager.packPos(nx, ny, nz);
+            var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            snapshots.add(new Object[]{nx, ny, nz, existing, oldState});
+        }
+
         for (var p : positions) {
-            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            int nx = switch (axis) { case 0 -> 2 * centerX - ox; default -> ox; };
-            int ny = switch (axis) { case 1 -> 2 * centerY - oy; default -> oy; };
-            int nz = switch (axis) { case 2 -> 2 * centerZ - oz; default -> oz; };
-            selection.add(nx, ny, nz);
+            model.setBlockAt((int) p[0], (int) p[1], (int) p[2], "minecraft:air");
+        }
+        for (var mapping : targetMappings) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            model.setBlockAt(nx, ny, nz, oldState);
+            if (!BuildingModel.isAirLike(oldState)) {
+                model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
+            }
+        }
+
+        selection.clear();
+        for (var mapping : targetMappings) {
+            selection.add((int) mapping[3], (int) mapping[4], (int) mapping[5]);
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.MIRROR,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+            pushHistory(history, HistoryActionType.MIRROR, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, repBlock);
         }
     }
 
     public void translateSelection(BuildingModel model, SelectionManager selection, int dx, int dy, int dz,
                                    HistoryManager history) {
         if (selection.isEmpty()) return;
+        var beforeLayerState = model.captureLayerState();
 
         var snapshots = new ArrayList<Object[]>();
         var positions = selection.getPositions();
@@ -300,27 +354,36 @@ public class ClipboardManager {
         Object repBlock = null;
 
         var oldStates = new LinkedHashMap<Long, Object>();
+        var oldLayerIds = new LinkedHashMap<Long, String>();
+        var sourceKeys = new java.util.HashSet<Long>();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            oldStates.put(SelectionManager.packPos(ox, oy, oz), model.getBlockAt(ox, oy, oz));
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            sourceKeys.add(sourceKey);
+            oldStates.put(sourceKey, model.getBlockAt(ox, oy, oz));
+            oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
         }
 
         var existingAtTarget = new LinkedHashMap<Long, Object>();
         for (var p : positions) {
             int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
             long packed = SelectionManager.packPos(nx, ny, nz);
-            if (!oldStates.containsKey(packed)) {
+            if (!sourceKeys.contains(packed)) {
                 existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
             }
         }
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
+            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
+            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+        }
+        for (var p : positions) {
+            int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int nx = ox + dx, ny = oy + dy, nz = oz + dz;
             var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            var existing = existingAtTarget.get(SelectionManager.packPos(nx, ny, nz));
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
-            snapshots.add(new Object[]{nx, ny, nz, existing != null ? existing : "minecraft:air", oldState});
+            var existing = existingAtTarget.getOrDefault(SelectionManager.packPos(nx, ny, nz), "minecraft:air");
+            snapshots.add(new Object[]{nx, ny, nz, existing, oldState});
         }
 
         for (var p : positions) {
@@ -328,8 +391,12 @@ public class ClipboardManager {
         }
         for (var p : positions) {
             int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
-            var oldState = oldStates.get(SelectionManager.packPos((int) p[0], (int) p[1], (int) p[2]));
+            long sourceKey = SelectionManager.packPos((int) p[0], (int) p[1], (int) p[2]);
+            var oldState = oldStates.get(sourceKey);
             model.setBlockAt(nx, ny, nz, oldState);
+            if (!BuildingModel.isAirLike(oldState)) {
+                model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
+            }
         }
 
         selection.clear();
@@ -339,10 +406,8 @@ public class ClipboardManager {
 
         if (!snapshots.isEmpty()) {
             if (repBlock == null) { repX = (int) positions.iterator().next()[0] + dx; repY = (int) positions.iterator().next()[1] + dy; repZ = (int) positions.iterator().next()[2] + dz; repBlock = oldStates.values().iterator().next(); }
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.TRANSLATE,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+            pushHistory(history, HistoryActionType.TRANSLATE, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, repBlock);
         }
     }
 
@@ -350,6 +415,7 @@ public class ClipboardManager {
                      HistoryManager history) {
         if (selection.isEmpty()) return;
 
+        var beforeLayerState = model.captureLayerState();
         List<Object[]> snapshots = new ArrayList<>();
         int repX = 0, repY = 0, repZ = 0;
         for (var p : selection.getPositions()) {
@@ -364,10 +430,8 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.FILL,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, fillState, snapshots.size()));
+            pushHistory(history, HistoryActionType.FILL, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, fillState);
         }
     }
 
@@ -378,6 +442,7 @@ public class ClipboardManager {
         double totalWeight = ratios.values().stream().mapToDouble(Double::doubleValue).sum();
         if (totalWeight <= 0) return;
 
+        var beforeLayerState = model.captureLayerState();
         List<Object[]> snapshots = new ArrayList<>();
         var random = new java.util.Random();
         int repX = 0, repY = 0, repZ = 0;
@@ -406,18 +471,50 @@ public class ClipboardManager {
         }
 
         if (!snapshots.isEmpty()) {
-            history.push(new HistoryEntry(
-                    history.nextId(), HistoryActionType.FILL,
-                    snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+            pushHistory(history, HistoryActionType.FILL, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, repBlock);
         }
     }
 
     private boolean statesMatch(Object a, Object b) {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
-        String sa = a instanceof BlockState bs ? bs.getBlock().getDescriptionId() : a.toString();
-        String sb = b instanceof BlockState bs ? bs.getBlock().getDescriptionId() : b.toString();
-        return sa.equals(sb);
+        return stateKey(a).equals(stateKey(b));
+    }
+
+    private void pushHistory(HistoryManager history, HistoryActionType actionType, List<Object[]> snapshots,
+                             BuildingModel.LayerState beforeLayerState, BuildingModel model,
+                             int primaryX, int primaryY, int primaryZ, Object primaryBlock) {
+        BuildingModel.LayerState afterLayerState = null;
+        if (beforeLayerState != null) {
+            afterLayerState = model.captureLayerState();
+            if (beforeLayerState.equals(afterLayerState)) {
+                beforeLayerState = null;
+                afterLayerState = null;
+            }
+        }
+        history.push(new HistoryEntry(
+                history.nextId(), actionType,
+                snapshots.toArray(Object[][]::new),
+                beforeLayerState, afterLayerState,
+                primaryX, primaryY, primaryZ,
+                primaryBlock, snapshots.size(), System.currentTimeMillis()));
+    }
+
+    private String stateKey(Object state) {
+        if (state == null) return "";
+        if (isMinecraftBlockState(state)) {
+            try {
+                var block = state.getClass().getMethod("getBlock").invoke(state);
+                return String.valueOf(block.getClass().getMethod("getDescriptionId").invoke(block));
+            } catch (ReflectiveOperationException ignored) {
+                return state.toString();
+            }
+        }
+        return state.toString();
+    }
+
+    private boolean isMinecraftBlockState(Object state) {
+        return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
     }
 }

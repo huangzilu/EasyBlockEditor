@@ -16,6 +16,7 @@ import com.l1ght.ebe.projection.PrinterMode;
 import com.l1ght.ebe.client.projection.ProjectionManager;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
+import com.l1ght.ebe.data.BuildingModel;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -380,27 +381,15 @@ public class EditorUI {
         root.child("ebe.editor.redo", () -> redo());
         root.child("ebe.editor.copy", () -> clipboard.copy(session.getModel(), selection));
         root.child("ebe.editor.paste", () -> {
+            int beforeUndo = history.undoSize();
             clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
                     state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
-            var lastEntry = history.getLastEntry();
-            if (lastEntry != null) {
-                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-            } else {
-                ViewportFactory.refreshFromModel(session.getModel());
-            }
-            refreshMaterialList();
-            refreshHistoryList();
+            finishClipboardMutation(beforeUndo);
         });
         root.child("ebe.editor.cut", () -> {
+            int beforeUndo = history.undoSize();
             clipboard.cut(session.getModel(), selection, history);
-            var lastEntry = history.getLastEntry();
-            if (lastEntry != null) {
-                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-            } else {
-                ViewportFactory.refreshFromModel(session.getModel());
-            }
-            refreshMaterialList();
-            refreshHistoryList();
+            finishClipboardMutation(beforeUndo);
             updateSelectionCount();
         });
         root.child("ebe.editor.select_all", () -> selectAll());
@@ -459,10 +448,19 @@ public class EditorUI {
             }
             session.applyLoaded(loaded);
             setStatus(Component.translatable("ebe.editor.loading.viewport", loaded.file().getFileName().toString()));
+            boolean preferSyncViewport = EditorSession.shouldPreferSynchronousViewportLoad(loaded.file());
             if (loaded.computed() != null) {
-                ViewportFactory.loadFromComputedProgressive(loaded.computed());
+                if (!preferSyncViewport && ViewportFactory.shouldLoadComputedProgressively(loaded.computed())) {
+                    ViewportFactory.loadFromComputedProgressive(loaded.computed());
+                } else {
+                    ViewportFactory.loadFromModel(session.getModel());
+                }
             } else {
-                ViewportFactory.loadFromModelProgressive(session.getModel());
+                if (!preferSyncViewport && ViewportFactory.shouldLoadModelProgressively(session.getModel())) {
+                    ViewportFactory.loadFromModelProgressive(session.getModel());
+                } else {
+                    ViewportFactory.loadFromModel(session.getModel());
+                }
             }
         }));
     }
@@ -1538,15 +1536,25 @@ public class EditorUI {
     private static void undo() {
         var entry = history.undo();
         if (entry == null) return;
+        var model = session.getModel();
         var snapshots = entry.getSnapshots();
-        var reversed = new Object[snapshots.length][];
-        for (int i = 0; i < snapshots.length; i++) {
+        var reversed = new ArrayList<Object[]>();
+        for (int i = snapshots.length - 1; i >= 0; i--) {
             var s = snapshots[i];
-            reversed[i] = new Object[]{s[0], s[1], s[2], s[4], s[3]};
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-            session.getModel().setBlockAt(x, y, z, s[3]);
+            model.setBlockAt(x, y, z, s[3]);
+            reversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
         }
-        ViewportFactory.applyBlockDeltasFromModel(reversed);
+        if (entry.isLayerChange()) {
+            model.restoreLayerState(entry.getBeforeLayerState());
+        }
+        session.markDirty();
+        if (entry.isLayerChange()) {
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(model);
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(reversed.toArray(Object[][]::new));
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -1554,11 +1562,21 @@ public class EditorUI {
     private static void redo() {
         var entry = history.redo();
         if (entry == null) return;
+        var model = session.getModel();
         for (var s : entry.getSnapshots()) {
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-            session.getModel().setBlockAt(x, y, z, s[4]);
+            model.setBlockAt(x, y, z, s[4]);
         }
-        ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
+        if (entry.isLayerChange()) {
+            model.restoreLayerState(entry.getAfterLayerState());
+        }
+        session.markDirty();
+        if (entry.isLayerChange()) {
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(model);
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -1569,14 +1587,27 @@ public class EditorUI {
         var undone = history.popUndoEntries(count);
         var model = session.getModel();
         var allReversed = new ArrayList<Object[]>();
+        boolean needsFullRefresh = false;
         for (var entry : undone) {
-            for (var s : entry.getSnapshots()) {
+            var snapshots = entry.getSnapshots();
+            for (int i = snapshots.length - 1; i >= 0; i--) {
+                var s = snapshots[i];
                 int x = (int) s[0], y = (int) s[1], z = (int) s[2];
                 model.setBlockAt(x, y, z, s[3]);
                 allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
             }
+            if (entry.isLayerChange()) {
+                model.restoreLayerState(entry.getBeforeLayerState());
+                needsFullRefresh = true;
+            }
         }
-        ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
+        session.markDirty();
+        if (needsFullRefresh) {
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(model);
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -1589,14 +1620,27 @@ public class EditorUI {
         var undone = history.popUndoEntries(count);
         var model = session.getModel();
         var allReversed = new ArrayList<Object[]>();
+        boolean needsFullRefresh = false;
         for (var entry : undone) {
-            for (var s : entry.getSnapshots()) {
+            var snapshots = entry.getSnapshots();
+            for (int i = snapshots.length - 1; i >= 0; i--) {
+                var s = snapshots[i];
                 int x = (int) s[0], y = (int) s[1], z = (int) s[2];
                 model.setBlockAt(x, y, z, s[3]);
                 allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
             }
+            if (entry.isLayerChange()) {
+                model.restoreLayerState(entry.getBeforeLayerState());
+                needsFullRefresh = true;
+            }
         }
-        ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
+        session.markDirty();
+        if (needsFullRefresh) {
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(model);
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(allReversed.toArray(Object[][]::new));
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -1993,10 +2037,14 @@ public class EditorUI {
         addBtn.layout(l -> l.width(20).height(20));
         addBtn.setOnClick(e -> {
             if (session != null) {
-                session.getModel().addLayer("Layer " + session.getModel().getLayers().size(), true, false);
-                refreshLayersList();
+                var before = session.getModel().captureLayerState();
+                session.getModel().addLayer(Component.translatable("ebe.layer.default_name",
+                        session.getModel().getLayers().size()).getString(), true, false);
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_CREATE,
+                        Component.translatable("ebe.layer.new").getString(), 1, false);
             }
         });
+        registerTooltip(addBtn, Component.translatable("ebe.layer.new"));
         header.addChild(addBtn);
 
         var title = new Label();
@@ -2021,6 +2069,7 @@ public class EditorUI {
 
     private static UIElement layersListContainer;
     private static String renamingLayerId = null;
+    private static BuildingModel.LayerState renamingLayerBeforeState = null;
 
     public static void refreshLayersList() {
         if (layersListContainer == null || session == null) return;
@@ -2040,9 +2089,10 @@ public class EditorUI {
             registerTooltip(visBtn, Component.translatable("ebe.layer.visible"));
             visBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
                 if (e.button != 0) return;
+                var before = session.getModel().captureLayerState();
                 layer.setVisible(!layer.isVisible());
-                refreshLayersList();
-                ViewportFactory.refreshFromModel(session.getModel());
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_UPDATE,
+                        layer.getName(), session.getModel().countBlocksInLayer(layer.getId()), true);
             });
             row.addChild(visBtn);
 
@@ -2055,8 +2105,10 @@ public class EditorUI {
             registerTooltip(lockBtn, Component.translatable("ebe.layer.locked"));
             lockBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
                 if (e.button != 0) return;
+                var before = session.getModel().captureLayerState();
                 layer.setLocked(!layer.isLocked());
-                refreshLayersList();
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_UPDATE,
+                        layer.getName(), 1, false);
             });
             row.addChild(lockBtn);
 
@@ -2071,12 +2123,16 @@ public class EditorUI {
                 });
                 tf.addEventListener(UIEvents.KEY_DOWN, e2 -> {
                     if (e2.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER || e2.keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+                        finishPendingLayerRename(layer);
                         renamingLayerId = null;
+                        renamingLayerBeforeState = null;
                         refreshLayersList();
                     }
                 });
                 tf.addEventListener(UIEvents.BLUR, e2 -> {
+                    finishPendingLayerRename(layer);
                     renamingLayerId = null;
+                    renamingLayerBeforeState = null;
                     refreshLayersList();
                 });
                 row.addChild(tf);
@@ -2091,6 +2147,7 @@ public class EditorUI {
                     long now = System.currentTimeMillis();
                     if (now - lastClickTime[0] < 400) {
                         renamingLayerId = layer.getId();
+                        renamingLayerBeforeState = session.getModel().captureLayerState();
                         refreshLayersList();
                     }
                     lastClickTime[0] = now;
@@ -2108,9 +2165,10 @@ public class EditorUI {
             delBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
                 if (e.button != 0) return;
                 if (session.getModel().getLayers().size() <= 1) return;
+                var before = session.getModel().captureLayerState();
                 session.getModel().removeLayer(layer.getId());
-                refreshLayersList();
-                ViewportFactory.refreshFromModel(session.getModel());
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_DELETE,
+                        layer.getName(), 1, true);
             });
             row.addChild(delBtn);
 
@@ -2124,24 +2182,21 @@ public class EditorUI {
             moveToBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
                 if (e.button != 0) return;
                 if (session == null || selection.isEmpty()) return;
-                for (var region : session.getModel().getRegions()) {
-                    for (int y = 0; y < region.getSizeY(); y++) {
-                        for (int z = 0; z < region.getSizeZ(); z++) {
-                            for (int x = 0; x < region.getSizeX(); x++) {
-                                int wx = x + region.getOffsetX();
-                                int wy = y + region.getOffsetY();
-                                int wz = z + region.getOffsetZ();
-                                if (selection.contains(wx, wy, wz)) {
-                                    region.setLayerId(layer.getId());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                ViewportFactory.refreshFromModel(session.getModel());
+                var before = session.getModel().captureLayerState();
+                int moved = assignSelectionToLayer(layer.getId());
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_ASSIGN,
+                        layer.getName(), moved, true);
             });
             row.addChild(moveToBtn);
+
+            var mergeBtn = new UIElement();
+            mergeBtn.layout(l -> l.width(14).height(14));
+            mergeBtn.style(s -> s.backgroundTexture(EditorIcons.COPY));
+            registerTooltip(mergeBtn, Component.translatable("ebe.layer.merge_into"));
+            mergeBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+                if (e.button == 0) showMergeLayerDialog(layer);
+            });
+            row.addChild(mergeBtn);
 
             layersListContainer.addChild(row);
         }
@@ -2155,29 +2210,93 @@ public class EditorUI {
         createLayerBtn.layout(l -> l.flex(1).height(18));
         createLayerBtn.setOnClick(e -> {
             if (session == null || selection.isEmpty()) return;
-            var newLayer = session.getModel().addLayer("Layer " + session.getModel().getLayers().size(), true, false);
-            for (var region : session.getModel().getRegions()) {
-                for (int y = 0; y < region.getSizeY(); y++) {
-                    for (int z = 0; z < region.getSizeZ(); z++) {
-                        for (int x = 0; x < region.getSizeX(); x++) {
-                            int wx = x + region.getOffsetX();
-                            int wy = y + region.getOffsetY();
-                            int wz = z + region.getOffsetZ();
-                            if (selection.contains(wx, wy, wz)) {
-                                if (newLayer.getId().equals(region.getLayerId())) continue;
-                                region.setLayerId(newLayer.getId());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            refreshLayersList();
-            ViewportFactory.refreshFromModel(session.getModel());
+            var before = session.getModel().captureLayerState();
+            var newLayer = session.getModel().addLayer(Component.translatable("ebe.layer.selection_name",
+                    session.getModel().getLayers().size()).getString(), true, false);
+            int moved = assignSelectionToLayer(newLayer.getId());
+            finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_CREATE,
+                    newLayer.getName(), moved, true);
         });
         actionRow.addChild(createLayerBtn);
 
         layersListContainer.addChild(actionRow);
+    }
+
+    private static int assignSelectionToLayer(String layerId) {
+        if (session == null || selection.isEmpty()) return 0;
+        int moved = 0;
+        for (var packed : selection.getAllPacked()) {
+            int x = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+            int y = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+            int z = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+            if (session.getModel().assignBlockToLayer(x, y, z, layerId)) {
+                moved++;
+            }
+        }
+        return moved;
+    }
+
+    private static void finishPendingLayerRename(BuildingModel.Layer layer) {
+        if (session == null || renamingLayerBeforeState == null || layer == null) return;
+        finishLayerEdit(renamingLayerBeforeState,
+                com.l1ght.ebe.editor.history.HistoryActionType.LAYER_UPDATE,
+                layer.getName(), 1, false);
+    }
+
+    private static void finishLayerEdit(BuildingModel.LayerState before,
+                                        com.l1ght.ebe.editor.history.HistoryActionType type,
+                                        String label,
+                                        int affected,
+                                        boolean refreshViewport) {
+        if (session == null || before == null) return;
+        var after = session.getModel().captureLayerState();
+        if (!before.equals(after)) {
+            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                    history.nextId(), type, before, after, label, Math.max(1, affected)));
+            session.markDirty();
+        }
+        refreshLayersList();
+        if (refreshViewport) {
+            ViewportFactory.refreshFromModel(session.getModel());
+        }
+        refreshHistoryList();
+        updateStatusBar();
+    }
+
+    private static void showMergeLayerDialog(BuildingModel.Layer sourceLayer) {
+        if (session == null || sourceLayer == null || session.getModel().getLayers().size() <= 1) return;
+        var dialog = new Dialog();
+        dialog.setTitle(Component.translatable("ebe.layer.merge_into_title", sourceLayer.getName()).getString());
+        dialog.darkenBackground();
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.layer.merge_into_hint"));
+        hint.textStyle(ts -> ts.fontSize(9).textColor(0xFFDDDDDD).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        dialog.addContent(hint);
+
+        for (var target : session.getModel().getLayers()) {
+            if (target.getId().equals(sourceLayer.getId())) continue;
+            var btn = new Button();
+            btn.setText(Component.literal(target.getName()));
+            btn.layout(l -> l.widthPercent(100).height(18));
+            btn.textStyle(ts -> ts.fontSize(9).textShadow(false));
+            btn.setOnClick(e -> {
+                var before = session.getModel().captureLayerState();
+                session.getModel().mergeLayerInto(sourceLayer.getId(), target.getId());
+                finishLayerEdit(before, com.l1ght.ebe.editor.history.HistoryActionType.LAYER_MERGE,
+                        sourceLayer.getName() + " -> " + target.getName(),
+                        session.getModel().countBlocksInLayer(target.getId()), true);
+                dialog.close();
+            });
+            dialog.addContent(btn);
+        }
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText("ebe.history.dialog.cancel")
+                .addClass("__cancel-button__"));
+        dialog.show(rootElement);
     }
 
     private static UIElement createMaterialsContent() {
@@ -2279,7 +2398,7 @@ public class EditorUI {
         var clearBtn = new UIElement();
         clearBtn.layout(l -> l.width(20).height(20));
         clearBtn.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
-        clearBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) { history.clear(); refreshHistoryList(); } });
+        clearBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) { history.clear(session.getModel()); refreshHistoryList(); } });
         registerTooltip(clearBtn, Component.translatable("ebe.history.clear"));
         header.addChild(clearBtn);
 
@@ -2915,7 +3034,7 @@ public class EditorUI {
             bl.setText(Component.translatable("ebe.history.branch_value", history.getCurrentBranch()));
         }
 
-        var tags = history.getVersionTags();
+        var tags = history.getVersionTagsForCurrentBranch();
         var entries = history.getUndoEntries();
         if (entries.isEmpty() && tags.isEmpty()) {
             var empty = new Label();
@@ -3035,7 +3154,11 @@ public class EditorUI {
                 .paddingLeft(20).gapAll(0));
 
         var posLabel = new Label();
-        posLabel.setText(Component.literal(entry.getPrimaryX() + ", " + entry.getPrimaryY() + ", " + entry.getPrimaryZ()));
+        if (entry.isLayerChange()) {
+            posLabel.setText(Component.literal(String.valueOf(entry.getPrimaryBlock())));
+        } else {
+            posLabel.setText(Component.literal(entry.getPrimaryX() + ", " + entry.getPrimaryY() + ", " + entry.getPrimaryZ()));
+        }
         posLabel.textStyle(ts -> ts.textColor(0xFF808080).fontSize(8).textShadow(false));
         bottomLine.addChild(posLabel);
 
@@ -3111,8 +3234,9 @@ public class EditorUI {
 
         dialog.addButton(new Button()
                 .setOnClick(e -> {
-                    history.createBranch(nameField.getText().trim());
-                    history.switchBranch(nameField.getText().trim());
+                    history.createBranch(nameField.getText().trim(), session.getModel());
+                    var restored = history.switchBranch(nameField.getText().trim(), session.getModel());
+                    applyBranchModel(restored);
                     dialog.close();
                     refreshHistoryList();
                 })
@@ -3145,7 +3269,8 @@ public class EditorUI {
             if (!isCurrent) {
                 var branchName = branch.name();
                 btn.setOnClick(e -> {
-                    history.switchBranch(branchName);
+                    var restored = history.switchBranch(branchName, session.getModel());
+                    applyBranchModel(restored);
                     dialog.close();
                     refreshHistoryList();
                 });
@@ -3172,6 +3297,18 @@ public class EditorUI {
                 .setText("ebe.history.dialog.cancel")
                 .addClass("__cancel-button__"));
         dialog.show(rootElement);
+    }
+
+    private static void applyBranchModel(BuildingModel restored) {
+        if (restored == null || session == null) return;
+        session.restoreModel(restored, true);
+        selection.clear();
+        updateSelectionCount();
+        refreshLayersList();
+        refreshPropertiesPanel();
+        ViewportFactory.refreshFromModel(session.getModel());
+        refreshMaterialList();
+        updateStatusBar();
     }
 
     private static UIElement createPropertiesContent() {
@@ -3297,7 +3434,7 @@ public class EditorUI {
         }
         if (nbt != null) {
             var nbtLabel = new Label();
-            nbtLabel.setText(Component.literal("NBT:"));
+            nbtLabel.setText(Component.translatable("ebe.nbt.label_colon"));
             nbtLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
             nbtLabel.layout(l -> l.marginTop(4));
             propertiesContainer.addChild(nbtLabel);
@@ -3305,7 +3442,7 @@ public class EditorUI {
             addNbtTree(propertiesContainer, nbt, 0);
         } else if (bs.hasBlockEntity()) {
             var nbtLabel = new Label();
-            nbtLabel.setText(Component.literal("NBT: (empty)"));
+            nbtLabel.setText(Component.translatable("ebe.nbt.empty_label"));
             nbtLabel.textStyle(ts -> ts.textColor(0xFF808080).fontSize(9));
             nbtLabel.layout(l -> l.marginTop(4));
             propertiesContainer.addChild(nbtLabel);
@@ -4136,6 +4273,8 @@ public class EditorUI {
             if (selection.isEmpty()) return;
             var model = session.getModel();
             var hist = getHistory();
+            var beforeLayerState = model.captureLayerState();
+            int beforeUndo = hist.undoSize();
             var snapshots = new ArrayList<Object[]>();
             for (var p : selection.getPositions()) {
                 int x = (int) p[0], y = (int) p[1], z = (int) p[2];
@@ -4144,15 +4283,16 @@ public class EditorUI {
                 snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
             }
             if (!snapshots.isEmpty()) {
-                hist.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                        hist.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                        snapshots.toArray(Object[][]::new),
+                pushModelEditHistory(hist, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                        snapshots, beforeLayerState, model,
                         (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                        replaceTargetState, snapshots.size()));
+                        replaceTargetState);
             }
-            ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(Object[][]::new));
-            refreshMaterialList();
-            refreshHistoryList();
+            if (hist.undoSize() > beforeUndo) {
+                refreshViewportAfterHistoryEntry(hist.getLastEntry());
+                refreshMaterialList();
+                refreshHistoryList();
+            }
         });
         content.addChild(executeBtn);
 
@@ -4907,6 +5047,7 @@ public class EditorUI {
         int cz = getIntField(fillPanel, "rotateCenterZ", 0);
 
         var positions = selection.getPositions();
+        var beforeLayerState = model.captureLayerState();
         if (cx == 0 && cy == 0 && cz == 0) {
             cx = 0; cy = 0; cz = 0;
             for (var p : positions) { cx += (int) p[0]; cy += (int) p[1]; cz += (int) p[2]; }
@@ -4914,9 +5055,14 @@ public class EditorUI {
         }
 
         var oldStates = new LinkedHashMap<Long, Object>();
+        var oldLayerIds = new LinkedHashMap<Long, String>();
+        var sourceKeys = new java.util.HashSet<Long>();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            oldStates.put(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz), model.getBlockAt(ox, oy, oz));
+            long sourceKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz);
+            sourceKeys.add(sourceKey);
+            oldStates.put(sourceKey, model.getBlockAt(ox, oy, oz));
+            oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
         }
 
         var newPositions = new LinkedHashMap<Long, Object>();
@@ -4997,7 +5143,7 @@ public class EditorUI {
         for (var mapping : posMapping) {
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long packed = com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz);
-            if (!oldStates.containsKey(packed)) {
+            if (!sourceKeys.contains(packed)) {
                 existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
             }
         }
@@ -5007,20 +5153,29 @@ public class EditorUI {
         Object repBlock = null;
         for (var mapping : posMapping) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
-            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             var oldState = oldStates.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz));
-            var existing = existingAtTarget.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz));
             snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
-            snapshots.add(new Object[]{nx, ny, nz, existing != null ? existing : "minecraft:air", newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz))});
-            if (repBlock == null) { repX = nx; repY = ny; repZ = nz; repBlock = oldState; }
+            if (repBlock == null) { repX = (int) mapping[3]; repY = (int) mapping[4]; repZ = (int) mapping[5]; repBlock = oldState; }
+        }
+        for (var mapping : posMapping) {
+            int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long targetKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz);
+            var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
+            snapshots.add(new Object[]{nx, ny, nz, existing, newPositions.get(targetKey)});
         }
 
         for (var p : positions) {
             model.setBlockAt((int) p[0], (int) p[1], (int) p[2], "minecraft:air");
         }
         for (var mapping : posMapping) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
-            model.setBlockAt(nx, ny, nz, newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz)));
+            long sourceKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz);
+            var newState = newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz));
+            model.setBlockAt(nx, ny, nz, newState);
+            if (!BuildingModel.isAirLike(newState)) {
+                model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
+            }
         }
 
         selection.clear();
@@ -5029,13 +5184,25 @@ public class EditorUI {
         }
 
         if (!snapshots.isEmpty()) {
+            var afterLayerState = model.captureLayerState();
+            if (beforeLayerState.equals(afterLayerState)) {
+                beforeLayerState = null;
+                afterLayerState = null;
+            }
             hist.push(new com.l1ght.ebe.editor.history.HistoryEntry(
                     hist.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.ROTATE,
                     snapshots.toArray(Object[][]::new),
-                    repX, repY, repZ, repBlock, snapshots.size()));
+                    beforeLayerState, afterLayerState,
+                    repX, repY, repZ, repBlock, snapshots.size(), System.currentTimeMillis()));
+            session.markDirty();
         }
 
-        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(Object[][]::new));
+        var lastEntry = hist.getLastEntry();
+        if (lastEntry != null) {
+            refreshViewportAfterHistoryEntry(lastEntry);
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(Object[][]::new));
+        }
         refreshMaterialList();
         refreshHistoryList();
     }
@@ -5115,15 +5282,9 @@ public class EditorUI {
         int cx = getIntField(fillPanel, "mirrorCenterX", 0);
         int cy = getIntField(fillPanel, "mirrorCenterY", 0);
         int cz = getIntField(fillPanel, "mirrorCenterZ", 0);
+        int beforeUndo = history.undoSize();
         clipboard.mirror(session.getModel(), selection, mirrorAxis, cx, cy, cz, history);
-        var lastEntry = history.getLastEntry();
-        if (lastEntry != null) {
-            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-        } else {
-            ViewportFactory.refreshFromModel(session.getModel());
-        }
-        refreshMaterialList();
-        refreshHistoryList();
+        finishClipboardMutation(beforeUndo);
     }
 
     private static BlockState fillBlockState = null;
@@ -5250,30 +5411,18 @@ public class EditorUI {
         for (var entry : randomFillEntries) {
             ratios.put(entry.blockState, (double) entry.weight);
         }
+        int beforeUndo = history.undoSize();
         clipboard.fillRandom(session.getModel(), selection, ratios, history);
-        var lastEntry = history.getLastEntry();
-        if (lastEntry != null) {
-            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-        } else {
-            ViewportFactory.refreshFromModel(session.getModel());
-        }
-        refreshMaterialList();
-        refreshHistoryList();
+        finishClipboardMutation(beforeUndo);
     }
 
     private static void executeFill() {
         if (session == null || fillBlockState == null) return;
         var selection = getSelection();
         if (selection.isEmpty()) return;
+        int beforeUndo = history.undoSize();
         clipboard.fill(session.getModel(), selection, fillBlockState, history);
-        var lastEntry = history.getLastEntry();
-        if (lastEntry != null) {
-            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-        } else {
-            ViewportFactory.refreshFromModel(session.getModel());
-        }
-        refreshMaterialList();
-        refreshHistoryList();
+        finishClipboardMutation(beforeUndo);
     }
 
     private static void executeTranslate() {
@@ -5284,15 +5433,9 @@ public class EditorUI {
         int dy = getIntField(fillPanel, "fillDyField", 0);
         int dz = getIntField(fillPanel, "fillDzField", 0);
         if (dx == 0 && dy == 0 && dz == 0) return;
+        int beforeUndo = history.undoSize();
         clipboard.translateSelection(session.getModel(), selection, dx, dy, dz, history);
-        var lastEntry = history.getLastEntry();
-        if (lastEntry != null) {
-            ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-        } else {
-            ViewportFactory.refreshFromModel(session.getModel());
-        }
-        refreshMaterialList();
-        refreshHistoryList();
+        finishClipboardMutation(beforeUndo);
     }
 
     private static int getIntField(UIElement parent, String id, int defaultVal) {
@@ -5366,6 +5509,8 @@ public class EditorUI {
         if (session == null || replaceSourceBlock == null || replaceTargetState == null) return;
         var model = session.getModel();
         var history = getHistory();
+        var beforeLayerState = model.captureLayerState();
+        int beforeUndo = history.undoSize();
         var snapshots = new ArrayList<Object[]>();
         for (var region : model.getRegions()) {
             for (int y = 0; y < region.getSizeY(); y++) {
@@ -5386,13 +5531,16 @@ public class EditorUI {
             }
         }
         if (!snapshots.isEmpty()) {
-            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                    snapshots.toArray(new Object[0][]),
+            pushModelEditHistory(history, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots, beforeLayerState, model,
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                    replaceSourceBlock.getDescriptionId(), snapshots.size()));
+                    replaceSourceBlock.getDescriptionId());
         }
-        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
+        if (history.undoSize() > beforeUndo) {
+            refreshViewportAfterHistoryEntry(history.getLastEntry());
+            refreshMaterialList();
+            refreshHistoryList();
+        }
     }
 
     private static void executeByConditionReplace() {
@@ -5400,6 +5548,8 @@ public class EditorUI {
         if (conditionType.equals("property") && replaceSourceBlock == null) return;
         var model = session.getModel();
         var history = getHistory();
+        var beforeLayerState = model.captureLayerState();
+        int beforeUndo = history.undoSize();
 
         String propName = "", propVal = "";
         if (conditionType.equals("property")) {
@@ -5452,13 +5602,16 @@ public class EditorUI {
             }
         }
         if (!snapshots.isEmpty()) {
-            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                    snapshots.toArray(new Object[0][]),
+            pushModelEditHistory(history, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots, beforeLayerState, model,
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                    replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
+                    replaceTargetState.getBlock().getDescriptionId());
         }
-        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
+        if (history.undoSize() > beforeUndo) {
+            refreshViewportAfterHistoryEntry(history.getLastEntry());
+            refreshMaterialList();
+            refreshHistoryList();
+        }
     }
 
     private static boolean matchesPropertyCondition(BlockState bs) {
@@ -5562,6 +5715,8 @@ public class EditorUI {
         var selection = getSelection();
         var history = getHistory();
         if (selection.isEmpty()) return;
+        var beforeLayerState = model.captureLayerState();
+        int beforeUndo = history.undoSize();
         var snapshots = new ArrayList<Object[]>();
         for (var packed : selection.getAllPacked()) {
             int x = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
@@ -5572,13 +5727,16 @@ public class EditorUI {
             snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
         }
         if (!snapshots.isEmpty()) {
-            history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
-                    history.nextId(), com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                    snapshots.toArray(new Object[0][]),
+            pushModelEditHistory(history, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                    snapshots, beforeLayerState, model,
                     (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                    replaceTargetState.getBlock().getDescriptionId(), snapshots.size()));
+                    replaceTargetState.getBlock().getDescriptionId());
         }
-        ViewportFactory.applyBlockDeltasFromModel(snapshots.toArray(new Object[0][]));
+        if (history.undoSize() > beforeUndo) {
+            refreshViewportAfterHistoryEntry(history.getLastEntry());
+            refreshMaterialList();
+            refreshHistoryList();
+        }
     }
 
     private static void refreshAfterEdit() {
@@ -5586,6 +5744,51 @@ public class EditorUI {
         ViewportFactory.refreshFromModel(model);
         refreshMaterialList();
         refreshHistoryList();
+    }
+
+    private static void refreshViewportAfterHistoryEntry(com.l1ght.ebe.editor.history.HistoryEntry entry) {
+        if (entry == null || session == null) return;
+        if (entry.isLayerChange()) {
+            refreshLayersList();
+            ViewportFactory.refreshFromModel(session.getModel());
+        } else {
+            ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
+        }
+    }
+
+    private static boolean finishClipboardMutation(int previousUndoSize) {
+        if (session == null || history.undoSize() <= previousUndoSize) return false;
+        session.markDirty();
+        refreshViewportAfterHistoryEntry(history.getLastEntry());
+        refreshMaterialList();
+        refreshHistoryList();
+        updateStatusBar();
+        return true;
+    }
+
+    private static void pushModelEditHistory(com.l1ght.ebe.editor.history.HistoryManager hist,
+                                             com.l1ght.ebe.editor.history.HistoryActionType type,
+                                             List<Object[]> snapshots,
+                                             BuildingModel.LayerState beforeLayerState,
+                                             BuildingModel model,
+                                             int primaryX, int primaryY, int primaryZ,
+                                             Object primaryBlock) {
+        if (snapshots.isEmpty()) return;
+        BuildingModel.LayerState afterLayerState = null;
+        if (beforeLayerState != null) {
+            afterLayerState = model.captureLayerState();
+            if (beforeLayerState.equals(afterLayerState)) {
+                beforeLayerState = null;
+                afterLayerState = null;
+            }
+        }
+        hist.push(new com.l1ght.ebe.editor.history.HistoryEntry(
+                hist.nextId(), type, snapshots.toArray(Object[][]::new),
+                beforeLayerState, afterLayerState,
+                primaryX, primaryY, primaryZ, primaryBlock, snapshots.size(), System.currentTimeMillis()));
+        if (session != null) {
+            session.markDirty();
+        }
     }
 
     public static void refreshKeybindHints() {
@@ -5683,7 +5886,7 @@ public class EditorUI {
     }
 
     private static void showMaterialDiffDialog() {
-        var tags = history.getVersionTags();
+        var tags = history.getVersionTagsForCurrentBranch();
         if (tags.isEmpty()) {
             Dialog.showNotification("ebe.materials.diff_calc",
                     Component.translatable("ebe.history.empty").getString(), (Runnable) null)
@@ -5917,7 +6120,7 @@ public class EditorUI {
                     int diff = count - invCount;
                     var diffLabel = new Label();
                     if (diff <= 0) {
-                        diffLabel.setText(Component.literal(count + "/" + invCount + " ok"));
+                        diffLabel.setText(Component.translatable("ebe.materials.enough_count", count, invCount));
                         diffLabel.textStyle(ts -> ts.fontSize(8).textColor(0xFF55FF55).textShadow(false));
                     } else {
                         diffLabel.setText(Component.literal(count + "/" + invCount + " -" + diff));
@@ -5927,7 +6130,7 @@ public class EditorUI {
                     mainLine.addChild(diffLabel);
                 } else {
                     var countLabel = new Label();
-                    countLabel.setText(Component.literal("×" + count));
+                    countLabel.setText(Component.literal("x" + count));
                     countLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFCCCCCC).textShadow(false));
                     countLabel.layout(l -> l.width(40).flexShrink(0));
                     mainLine.addChild(countLabel);
@@ -5938,7 +6141,7 @@ public class EditorUI {
                 if (hasNbt) {
                     var nbtHint = new Label();
                     var shortNbt = blockKey.nbt().length() > 60 ? blockKey.nbt().substring(0, 57) + "..." : blockKey.nbt();
-                    nbtHint.setText(Component.literal("NBT: " + shortNbt));
+                    nbtHint.setText(Component.translatable("ebe.nbt.value", shortNbt));
                     nbtHint.textStyle(ts -> ts.fontSize(7).textColor(0xFF888888).textShadow(false));
                     row.addChild(nbtHint);
                 }
@@ -6009,6 +6212,10 @@ public class EditorUI {
         }
     }
 
+    public static void setMeasuredFps(int fps) {
+        state.setFps(Math.max(0, fps));
+    }
+
     // ========== Key Input Handler (called from EditorScreen) ==========
 
     public static boolean handleKeyPress(int keyCode, int scanCode, int modifiers) {
@@ -6019,28 +6226,16 @@ public class EditorUI {
         if (EBEKeyBindings.REDO.matchesKey(keyCode, modifiers)) { redo(); return true; }
         if (EBEKeyBindings.COPY.matchesKey(keyCode, modifiers)) { clipboard.copy(session.getModel(), selection); return true; }
         if (EBEKeyBindings.PASTE.matchesKey(keyCode, modifiers)) {
+            int beforeUndo = history.undoSize();
             clipboard.paste(session.getModel(), new net.minecraft.core.BlockPos(
                     state.getCursorX(), state.getCursorY(), state.getCursorZ()), history);
-            var lastEntry = history.getLastEntry();
-            if (lastEntry != null) {
-                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-            } else {
-                ViewportFactory.refreshFromModel(session.getModel());
-            }
-            refreshMaterialList();
-            refreshHistoryList();
+            finishClipboardMutation(beforeUndo);
             return true;
         }
         if (EBEKeyBindings.CUT.matchesKey(keyCode, modifiers)) {
+            int beforeUndo = history.undoSize();
             clipboard.cut(session.getModel(), selection, history);
-            var lastEntry = history.getLastEntry();
-            if (lastEntry != null) {
-                ViewportFactory.applyBlockDeltasFromModel(lastEntry.getSnapshots());
-            } else {
-                ViewportFactory.refreshFromModel(session.getModel());
-            }
-            refreshMaterialList();
-            refreshHistoryList();
+            finishClipboardMutation(beforeUndo);
             updateSelectionCount();
             return true;
         }

@@ -1,6 +1,11 @@
 package com.l1ght.ebe.editor.history;
 
+import com.l1ght.ebe.data.BuildingModel;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class HistoryManagerTest {
@@ -100,5 +105,53 @@ class HistoryManagerTest {
         assertEquals("feature", hm.getCurrentBranch());
         hm.switchBranch("main");
         assertEquals("main", hm.getCurrentBranch());
+    }
+
+    @Test
+    void testBranchModelsAreIsolated() {
+        var hm = new HistoryManager(10);
+        var model = new BuildingModel();
+        model.addRegion(3, 1, 1);
+        model.setBlockAt(0, 0, 0, "minecraft:stone");
+
+        hm.createBranch("feature", model);
+        model.setBlockAt(0, 0, 0, "minecraft:dirt");
+
+        var feature = hm.switchBranch("feature", model);
+        assertNotNull(feature);
+        assertEquals("minecraft:stone", feature.getBlockAt(0, 0, 0));
+
+        feature.setBlockAt(0, 0, 0, "minecraft:gold_block");
+        var main = hm.switchBranch("main", feature);
+        assertNotNull(main);
+        assertEquals("minecraft:dirt", main.getBlockAt(0, 0, 0));
+
+        var featureAgain = hm.switchBranch("feature", main);
+        assertNotNull(featureAgain);
+        assertEquals("minecraft:gold_block", featureAgain.getBlockAt(0, 0, 0));
+    }
+
+    @Test
+    void testLayerHistoryPersists(@TempDir Path dir) {
+        var model = new BuildingModel();
+        model.addRegion(2, 1, 1);
+        model.setBlockAt(0, 0, 0, "minecraft:stone");
+        var before = model.captureLayerState();
+        var layer = model.addLayer("detail", true, false);
+        assertTrue(model.assignBlockToLayer(0, 0, 0, layer.getId()));
+        var after = model.captureLayerState();
+
+        var hm = new HistoryManager(10);
+        hm.push(new HistoryEntry(hm.nextId(), HistoryActionType.LAYER_ASSIGN, before, after, "detail", 1));
+        var file = dir.resolve("history.json");
+        hm.saveHistory(file, model);
+
+        var loaded = new HistoryManager(10);
+        loaded.loadHistory(file, model);
+        var entry = loaded.undo();
+
+        assertNotNull(entry);
+        assertTrue(entry.isLayerChange());
+        assertTrue(entry.getAfterLayerState().blockLayerOverrides().containsValue(layer.getId()));
     }
 }

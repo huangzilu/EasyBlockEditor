@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.l1ght.ebe.data.BuildingModel;
+import com.l1ght.ebe.data.io.EBEFormatIO;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -17,6 +19,7 @@ public class HistoryManager {
 
     private final List<HistoryEntry> undoStack = new ArrayList<>();
     private final List<HistoryEntry> redoStack = new ArrayList<>();
+    private final Map<Integer, HistoryEntry> entriesById = new LinkedHashMap<>();
     private final List<VersionTag> versionTags = new ArrayList<>();
     private final List<Branch> branches = new ArrayList<>();
     private final Map<String, BranchState> branchStates = new LinkedHashMap<>();
@@ -29,11 +32,12 @@ public class HistoryManager {
         this.maxSize = maxSize;
         this.nextId = 0;
         branches.add(new Branch("main", 0));
-        saveBranchState("main");
+        saveBranchState("main", null);
     }
 
     public void push(HistoryEntry entry) {
         undoStack.add(entry);
+        entriesById.put(entry.getId(), entry);
         redoStack.clear();
         if (undoStack.size() > maxSize) undoStack.removeFirst();
         updateBranchHead();
@@ -56,6 +60,7 @@ public class HistoryManager {
         if (redoStack.isEmpty()) return null;
         var entry = redoStack.removeLast();
         undoStack.add(entry);
+        entriesById.put(entry.getId(), entry);
         updateBranchHead();
         return entry;
     }
@@ -85,15 +90,20 @@ public class HistoryManager {
     public List<HistoryEntry> getRedoEntries() { return Collections.unmodifiableList(redoStack); }
 
     public void clear() {
+        clear(null);
+    }
+
+    public void clear(BuildingModel currentModel) {
         undoStack.clear();
         redoStack.clear();
+        entriesById.clear();
         versionTags.clear();
         branches.clear();
         branchStates.clear();
         nextId = 0;
         currentBranch = "main";
         branches.add(new Branch("main", 0));
-        saveBranchState("main");
+        saveBranchState("main", currentModel);
     }
 
     public VersionTag createVersionTag(String label, String description) {
@@ -111,56 +121,92 @@ public class HistoryManager {
         return Collections.unmodifiableList(versionTags);
     }
 
+    public List<VersionTag> getVersionTagsForCurrentBranch() {
+        var result = new ArrayList<VersionTag>();
+        for (var tag : versionTags) {
+            if (currentBranch.equals(tag.branch())) result.add(tag);
+        }
+        return Collections.unmodifiableList(result);
+    }
+
     public Branch createBranch(String name) {
+        return createBranch(name, null);
+    }
+
+    public Branch createBranch(String name, BuildingModel model) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Branch name is blank");
+        for (var existing : branches) {
+            if (existing.name().equals(name)) return existing;
+        }
+        saveBranchState(currentBranch, model);
         int headEntryId = undoStack.isEmpty() ? 0 : undoStack.getLast().getId();
         var branch = new Branch(name, headEntryId);
         branches.add(branch);
-        saveBranchState(name);
+        branchStates.put(name, new BranchState(currentUndoIds(), currentRedoIds(),
+                model != null ? model.deepCopy() : currentBranchModel()));
         return branch;
     }
 
     public void switchBranch(String name) {
+        switchBranch(name, null);
+    }
+
+    public BuildingModel switchBranch(String name, BuildingModel currentModel) {
         for (var b : branches) {
             if (b.name().equals(name)) {
-                saveBranchState(currentBranch);
+                saveBranchState(currentBranch, currentModel);
                 currentBranch = name;
                 restoreBranchState(name);
-                return;
+                var state = branchStates.get(name);
+                return state != null && state.model() != null ? state.model().deepCopy() : null;
             }
         }
+        return null;
+    }
+
+    public void captureCurrentBranchModel(BuildingModel model) {
+        saveBranchState(currentBranch, model);
     }
 
     public String getCurrentBranch() { return currentBranch; }
     public List<Branch> getBranches() { return Collections.unmodifiableList(branches); }
 
-    private void saveBranchState(String branchName) {
+    private void saveBranchState(String branchName, BuildingModel model) {
+        var existing = branchStates.get(branchName);
+        BuildingModel snapshot = model != null ? model.deepCopy() : existing != null ? existing.model() : null;
+        branchStates.put(branchName, new BranchState(currentUndoIds(), currentRedoIds(), snapshot));
+    }
+
+    private List<Integer> currentUndoIds() {
         var undoIds = new ArrayList<Integer>();
         for (var e : undoStack) undoIds.add(e.getId());
+        return undoIds;
+    }
+
+    private List<Integer> currentRedoIds() {
         var redoIds = new ArrayList<Integer>();
         for (var e : redoStack) redoIds.add(e.getId());
-        branchStates.put(branchName, new BranchState(undoIds, redoIds));
+        return redoIds;
+    }
+
+    private BuildingModel currentBranchModel() {
+        var state = branchStates.get(currentBranch);
+        return state != null && state.model() != null ? state.model().deepCopy() : null;
     }
 
     private void restoreBranchState(String branchName) {
         var state = branchStates.get(branchName);
         if (state == null) return;
 
-        var allEntries = new ArrayList<HistoryEntry>();
-        allEntries.addAll(undoStack);
-        allEntries.addAll(redoStack);
-
-        var entryMap = new HashMap<Integer, HistoryEntry>();
-        for (var e : allEntries) entryMap.put(e.getId(), e);
-
         undoStack.clear();
         redoStack.clear();
 
         for (int id : state.undoEntryIds()) {
-            var e = entryMap.get(id);
+            var e = entriesById.get(id);
             if (e != null) undoStack.add(e);
         }
         for (int id : state.redoEntryIds()) {
-            var e = entryMap.get(id);
+            var e = entriesById.get(id);
             if (e != null) redoStack.add(e);
         }
     }
@@ -204,7 +250,9 @@ public class HistoryManager {
     }
 
     private static String stateToBlockKey(Object state) {
-        if (state instanceof BlockState bs && !bs.isAir()) {
+        if (isMinecraftBlockState(state)) {
+            BlockState bs = (BlockState) state;
+            if (bs.isAir()) return "";
             return BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString();
         }
         if (state instanceof String s && !s.isEmpty() && !s.equals("minecraft:air")) {
@@ -215,10 +263,11 @@ public class HistoryManager {
 
     public record VersionTag(int id, String label, String description, long timestamp, int entryId, String branch) {}
     public record Branch(String name, int headEntryId) {}
-    public record BranchState(List<Integer> undoEntryIds, List<Integer> redoEntryIds) {}
+    public record BranchState(List<Integer> undoEntryIds, List<Integer> redoEntryIds, BuildingModel model) {}
 
     private static String stateToString(Object state) {
-        if (state instanceof BlockState bs) {
+        if (isMinecraftBlockState(state)) {
+            BlockState bs = (BlockState) state;
             var key = BuiltInRegistries.BLOCK.getKey(bs.getBlock());
             var props = bs.getValues();
             if (props.isEmpty()) return key.toString();
@@ -234,11 +283,26 @@ public class HistoryManager {
         return state != null ? state.toString() : "minecraft:air";
     }
 
+    private static boolean isMinecraftBlockState(Object state) {
+        return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
+    }
+
     public void saveHistory(Path file) {
+        saveHistory(file, null);
+    }
+
+    public void saveHistory(Path file, BuildingModel currentModel) {
         try {
+            captureCurrentBranchModel(currentModel);
             var json = new JsonObject();
             json.addProperty("nextId", nextId);
             json.addProperty("currentBranch", currentBranch);
+
+            var allEntries = new JsonArray();
+            entriesById.values().stream()
+                    .sorted(Comparator.comparingInt(HistoryEntry::getId))
+                    .forEach(entry -> allEntries.add(serializeEntry(entry)));
+            json.add("allEntries", allEntries);
 
             var undoArr = new JsonArray();
             for (var entry : undoStack) undoArr.add(serializeEntry(entry));
@@ -280,6 +344,9 @@ public class HistoryManager {
                 var rArr = new JsonArray();
                 for (int id : entry.getValue().redoEntryIds()) rArr.add(id);
                 bsObj.add("redoIds", rArr);
+                if (entry.getValue().model() != null) {
+                    bsObj.add("model", EBEFormatIO.toJson(entry.getValue().model()));
+                }
                 bsArr.add(bsObj);
             }
             json.add("branchStates", bsArr);
@@ -292,6 +359,10 @@ public class HistoryManager {
     }
 
     public void loadHistory(Path file) {
+        loadHistory(file, null);
+    }
+
+    public void loadHistory(Path file, BuildingModel currentModel) {
         try {
             if (!Files.exists(file)) return;
             JsonObject json;
@@ -302,25 +373,32 @@ public class HistoryManager {
 
             undoStack.clear();
             redoStack.clear();
+            entriesById.clear();
             versionTags.clear();
             branches.clear();
             branchStates.clear();
             nextId = json.get("nextId").getAsInt();
             currentBranch = json.has("currentBranch") ? json.get("currentBranch").getAsString() : "main";
 
-            var allEntries = new ArrayList<HistoryEntry>();
+            if (json.has("allEntries")) {
+                for (var elem : json.getAsJsonArray("allEntries")) {
+                    var e = deserializeEntry(elem.getAsJsonObject());
+                    entriesById.put(e.getId(), e);
+                }
+            }
+
             if (json.has("undoStack")) {
                 for (var elem : json.getAsJsonArray("undoStack")) {
                     var e = deserializeEntry(elem.getAsJsonObject());
+                    entriesById.putIfAbsent(e.getId(), e);
                     undoStack.add(e);
-                    allEntries.add(e);
                 }
             }
             if (json.has("redoStack")) {
                 for (var elem : json.getAsJsonArray("redoStack")) {
                     var e = deserializeEntry(elem.getAsJsonObject());
+                    entriesById.putIfAbsent(e.getId(), e);
                     redoStack.add(e);
-                    allEntries.add(e);
                 }
             }
 
@@ -343,14 +421,10 @@ public class HistoryManager {
                     var bObj = elem.getAsJsonObject();
                     branches.add(new Branch(bObj.get("name").getAsString(), bObj.get("headEntryId").getAsInt()));
                 }
-            } else {
-                branches.add(new Branch("main", 0));
             }
+            if (branches.isEmpty()) branches.add(new Branch("main", 0));
 
             if (json.has("branchStates")) {
-                var entryMap = new HashMap<Integer, HistoryEntry>();
-                for (var e : allEntries) entryMap.put(e.getId(), e);
-
                 for (var elem : json.getAsJsonArray("branchStates")) {
                     var bsObj = elem.getAsJsonObject();
                     var branchName = bsObj.get("branch").getAsString();
@@ -358,13 +432,20 @@ public class HistoryManager {
                     var redoIds = new ArrayList<Integer>();
                     for (var id : bsObj.getAsJsonArray("undoIds")) undoIds.add(id.getAsInt());
                     for (var id : bsObj.getAsJsonArray("redoIds")) redoIds.add(id.getAsInt());
-                    branchStates.put(branchName, new BranchState(undoIds, redoIds));
+                    BuildingModel model = null;
+                    if (bsObj.has("model") && bsObj.get("model").isJsonObject()) {
+                        model = EBEFormatIO.fromJson(bsObj.getAsJsonObject("model"));
+                    } else if (branchName.equals(currentBranch) && currentModel != null) {
+                        model = currentModel.deepCopy();
+                    }
+                    branchStates.put(branchName, new BranchState(undoIds, redoIds, model));
                 }
             }
 
             if (!branchStates.containsKey(currentBranch)) {
-                saveBranchState(currentBranch);
+                saveBranchState(currentBranch, currentModel);
             }
+            restoreBranchState(currentBranch);
         } catch (Exception ignored) {}
     }
 
@@ -390,6 +471,11 @@ public class HistoryManager {
             snapArr.add(sArr);
         }
         eObj.add("snapshots", snapArr);
+
+        if (entry.isLayerChange()) {
+            eObj.add("beforeLayerState", GSON.toJsonTree(entry.getBeforeLayerState()));
+            eObj.add("afterLayerState", GSON.toJsonTree(entry.getAfterLayerState()));
+        }
         return eObj;
     }
 
@@ -403,7 +489,7 @@ public class HistoryManager {
         String pBlock = eObj.get("primaryBlock").getAsString();
         int count = eObj.get("affectedCount").getAsInt();
 
-        var snapArr = eObj.getAsJsonArray("snapshots");
+        var snapArr = eObj.has("snapshots") ? eObj.getAsJsonArray("snapshots") : new JsonArray();
         var snapshots = new Object[snapArr.size()][5];
         int si = 0;
         for (var sElem : snapArr) {
@@ -416,6 +502,13 @@ public class HistoryManager {
             si++;
         }
 
-        return new HistoryEntry(id, type, snapshots, px, py, pz, pBlock, count, timestamp);
+        BuildingModel.LayerState beforeLayerState = null;
+        BuildingModel.LayerState afterLayerState = null;
+        if (eObj.has("beforeLayerState") && eObj.has("afterLayerState")) {
+            beforeLayerState = GSON.fromJson(eObj.get("beforeLayerState"), BuildingModel.LayerState.class);
+            afterLayerState = GSON.fromJson(eObj.get("afterLayerState"), BuildingModel.LayerState.class);
+        }
+        return new HistoryEntry(id, type, snapshots, beforeLayerState, afterLayerState,
+                px, py, pz, pBlock, count, timestamp);
     }
 }

@@ -2,6 +2,7 @@ package com.l1ght.ebe.data.io;
 
 import com.google.gson.*;
 import com.l1ght.ebe.data.*;
+import com.l1ght.ebe.util.PosKey;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.TagParser;
@@ -32,6 +33,19 @@ public class EBEFormatIO {
     }
 
     public static void write(BuildingModel model, Path file, boolean compact) throws IOException {
+        var root = toJson(model);
+
+        Files.createDirectories(file.getParent());
+        OutputStream out = Files.newOutputStream(file);
+        if (compact) {
+            out = new GZIPOutputStream(out, 65536);
+        }
+        try (var writer = new OutputStreamWriter(out, StandardCharsets.UTF_8)) {
+            (compact ? GSON_COMPACT : GSON).toJson(root, writer);
+        }
+    }
+
+    public static JsonObject toJson(BuildingModel model) {
         var root = new JsonObject();
         root.addProperty("format", "ebe");
         root.addProperty("version", 1);
@@ -88,8 +102,7 @@ public class EBEFormatIO {
             for (int y = 0; y < region.getSizeY(); y++) {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
-                        BlockState state = resolveBlockStateObject(data.get(x, y, z));
-                        blockData.add(paletteIndex(state, paletteIds, paletteArray));
+                        blockData.add(paletteIndex(data.get(x, y, z), paletteIds, paletteArray));
                     }
                 }
             }
@@ -119,20 +132,25 @@ public class EBEFormatIO {
         }
         root.add("regions", regionsArray);
 
+        var layerOverrides = new JsonArray();
+        for (var entry : model.getBlockLayerOverrides().entrySet()) {
+            var obj = new JsonObject();
+            var posArray = new JsonArray();
+            posArray.add(PosKey.unpackX(entry.getKey()));
+            posArray.add(PosKey.unpackY(entry.getKey()));
+            posArray.add(PosKey.unpackZ(entry.getKey()));
+            obj.add("pos", posArray);
+            obj.addProperty("layer", entry.getValue());
+            layerOverrides.add(obj);
+        }
+        root.add("block_layer_overrides", layerOverrides);
+
         var entitiesArray = new JsonArray();
         for (var entity : model.getEntities()) {
             entitiesArray.add(entity.toString());
         }
         root.add("entities", entitiesArray);
-
-        Files.createDirectories(file.getParent());
-        OutputStream out = Files.newOutputStream(file);
-        if (compact) {
-            out = new GZIPOutputStream(out, 65536);
-        }
-        try (var writer = new OutputStreamWriter(out, StandardCharsets.UTF_8)) {
-            (compact ? GSON_COMPACT : GSON).toJson(root, writer);
-        }
+        return root;
     }
 
     public static BuildingModel read(Path file) throws IOException {
@@ -141,7 +159,10 @@ public class EBEFormatIO {
              var reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
             root = JsonParser.parseReader(reader).getAsJsonObject();
         }
+        return fromJson(root);
+    }
 
+    public static BuildingModel fromJson(JsonObject root) throws IOException {
         var model = new BuildingModel();
         var metaJson = root.getAsJsonObject("metadata");
         var meta = model.getMetadata();
@@ -203,7 +224,7 @@ public class EBEFormatIO {
                     if (elem.isJsonObject()) {
                         palette[i] = SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject());
                     } else {
-                        palette[i] = resolveBlockStateFromString(elem.getAsString());
+                        palette[i] = elem.getAsString();
                     }
                 }
             }
@@ -223,7 +244,7 @@ public class EBEFormatIO {
                             } else if (elem.isJsonObject()) {
                                 region.getBlocks().set(x, y, z, SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject()));
                             } else {
-                                region.getBlocks().set(x, y, z, resolveBlockStateFromString(elem.getAsString()));
+                                region.getBlocks().set(x, y, z, elem.getAsString());
                             }
                         }
                         idx++;
@@ -247,6 +268,17 @@ public class EBEFormatIO {
                 }
             }
         }
+        if (root.has("block_layer_overrides")) {
+            for (var elem : root.getAsJsonArray("block_layer_overrides")) {
+                try {
+                    var obj = elem.getAsJsonObject();
+                    var pos = obj.getAsJsonArray("pos");
+                    String layerId = obj.get("layer").getAsString();
+                    model.setBlockLayerOverride(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt(), layerId);
+                } catch (Exception ignored) {
+                }
+            }
+        }
         if (root.has("entities")) {
             for (var elem : root.getAsJsonArray("entities")) {
                 try {
@@ -258,14 +290,38 @@ public class EBEFormatIO {
         return model;
     }
 
-    private static int paletteIndex(BlockState state, Map<String, Integer> paletteIds, JsonArray paletteArray) {
-        String key = stateToString(state);
+    private static int paletteIndex(Object state, Map<String, Integer> paletteIds, JsonArray paletteArray) {
+        String key = stateKey(state);
         Integer existing = paletteIds.get(key);
         if (existing != null) return existing;
         int id = paletteIds.size();
         paletteIds.put(key, id);
-        paletteArray.add(blockStateToJson(state));
+        paletteArray.add(stateToJsonElement(state));
         return id;
+    }
+
+    private static String stateKey(Object state) {
+        if (isMinecraftBlockState(state)) {
+            return stateToString((BlockState) state);
+        }
+        return normalizeStateString(state);
+    }
+
+    private static JsonElement stateToJsonElement(Object state) {
+        if (isMinecraftBlockState(state)) {
+            return blockStateToJson((BlockState) state);
+        }
+        return new JsonPrimitive(normalizeStateString(state));
+    }
+
+    private static String normalizeStateString(Object state) {
+        if (state == null) return "minecraft:air";
+        String value = state.toString();
+        return value == null || value.isEmpty() ? "minecraft:air" : value;
+    }
+
+    private static boolean isMinecraftBlockState(Object state) {
+        return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
     }
 
     private static JsonObject blockStateToJson(BlockState bs) {

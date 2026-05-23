@@ -1,6 +1,8 @@
 package com.l1ght.ebe.data;
 
+import com.l1ght.ebe.util.PosKey;
 import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class BuildingModelTest {
@@ -79,9 +81,52 @@ class BuildingModelTest {
     }
 
     @Test
+    void testSparseBlockLayerAssignment() {
+        var model = new BuildingModel();
+        var region = model.addRegion(2, 1, 1);
+        region.getBlocks().set(0, 0, 0, "minecraft:stone");
+        region.getBlocks().set(1, 0, 0, "minecraft:dirt");
+        var detail = model.addLayer("detail", true, false);
+
+        assertTrue(model.assignBlockToLayer(0, 0, 0, detail.getId()));
+        assertEquals(detail.getId(), model.getLayerIdAt(0, 0, 0));
+        assertNotEquals(detail.getId(), model.getLayerIdAt(1, 0, 0));
+        assertEquals(1, model.countBlocksInLayer(detail.getId()));
+
+        detail.setVisible(false);
+        assertFalse(model.isLayerVisibleAt(region, 0, 0, 0));
+        assertTrue(model.isLayerVisibleAt(region, 1, 0, 0));
+    }
+
+    @Test
+    void testMergeLayerIntoTransfersSparseAssignments() {
+        var model = new BuildingModel();
+        var region = model.addRegion(2, 1, 1);
+        region.getBlocks().set(0, 0, 0, "minecraft:stone");
+        region.getBlocks().set(1, 0, 0, "minecraft:dirt");
+        var source = model.addLayer("source", true, false);
+        var target = model.addLayer("target", true, false);
+
+        assertTrue(model.assignBlockToLayer(0, 0, 0, source.getId()));
+        model.mergeLayerInto(source.getId(), target.getId());
+
+        assertNull(model.getLayer(source.getId()));
+        assertEquals(target.getId(), model.getLayerIdAt(0, 0, 0));
+        assertEquals(1, model.countBlocksInLayer(target.getId()));
+    }
+
+    @Test
     void testBlockOutsideRegions() {
         var model = new BuildingModel();
         model.addRegion(4, 4, 4);
         assertEquals("minecraft:air", model.getBlockAt(100, 100, 100));
+    }
+
+    @Test
+    void testPositionKeyRoundTrip() {
+        long packed = PosKey.pack(-12345, -64, 54321);
+        assertEquals(-12345, PosKey.unpackX(packed));
+        assertEquals(-64, PosKey.unpackY(packed));
+        assertEquals(54321, PosKey.unpackZ(packed));
     }
 }

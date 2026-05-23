@@ -1,5 +1,7 @@
 package com.l1ght.ebe.editor.selection;
 
+import com.l1ght.ebe.util.PosKey;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -8,12 +10,12 @@ public class SelectionManager {
     private boolean nbtSensitive = false;
 
     public static long packPos(int x, int y, int z) {
-        return ((long) x & 0xFFFFFFFFL) | (((long) y & 0xFFFFL) << 32) | (((long) z & 0xFFFFFFFFL) << 48);
+        return PosKey.pack(x, y, z);
     }
 
-    public static int unpackX(long packed) { return (int) packed; }
-    public static int unpackY(long packed) { return (int) ((packed >> 32) & 0xFFFF); }
-    public static int unpackZ(long packed) { return (int) (packed >> 48); }
+    public static int unpackX(long packed) { return PosKey.unpackX(packed); }
+    public static int unpackY(long packed) { return PosKey.unpackY(packed); }
+    public static int unpackZ(long packed) { return PosKey.unpackZ(packed); }
 
     public void add(int x, int y, int z) { selected.add(packPos(x, y, z)); }
     public void remove(int x, int y, int z) { selected.remove(packPos(x, y, z)); }

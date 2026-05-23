@@ -9,6 +9,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
+import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
 import dev.vfyjxf.taffy.style.AlignContent;
 import dev.vfyjxf.taffy.style.AlignItems;
 import dev.vfyjxf.taffy.style.FlexDirection;
@@ -24,10 +25,10 @@ public final class HelpManualUI {
     private static final String MOD_ID = "ebe";
     private static final String DEFAULT_VERSION = "0.1.0";
 
-    private static final int COVER = 0xFF243039;
-    private static final int COVER_DARK = 0xFF151C22;
-    private static final int PAPER = 0xFFF3EBD6;
-    private static final int PAPER_ALT = 0xFFE7D7B5;
+    private static final int COVER = 0xFFE4D1A6;
+    private static final int COVER_DARK = 0xFFF7EEDC;
+    private static final int PAPER = 0xFFFFF7E8;
+    private static final int PAPER_ALT = 0xFFF4E4BE;
     private static final int INK = 0xFF2A2118;
     private static final int INK_SOFT = 0xFF5D4A35;
     private static final int ACCENT = 0xFF1F7A8C;
@@ -88,10 +89,13 @@ public final class HelpManualUI {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.help.manual.title").getString());
         dialog.setAutoClose(false);
+        dialog.setClickOutsideClose(false);
         dialog.darkenBackground();
         dialog.overlay.layout(l -> l.width(830).maxHeightPercent(92));
+        swallowMouse(dialog.overlay);
         dialog.contentContainer.layout(l -> l.widthPercent(100).height(438).paddingAll(0));
         dialog.contentContainer.style(s -> s.backgroundTexture(new ColorRectTexture(COVER_DARK)));
+        swallowMouse(dialog.contentContainer);
 
         dialog.addContent(buildBook(runtime));
         dialog.addButton(new Button()
@@ -100,6 +104,33 @@ public final class HelpManualUI {
 
         renderAll(runtime);
         dialog.show(parent);
+    }
+
+    private static void swallowMouse(UIElement element) {
+        element.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+        element.addEventListener(UIEvents.MOUSE_UP, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+        element.addEventListener(UIEvents.CLICK, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+        element.addEventListener(UIEvents.DOUBLE_CLICK, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+        element.addEventListener(UIEvents.MOUSE_MOVE, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+        element.addEventListener(UIEvents.MOUSE_WHEEL, e -> {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
     }
 
     public static String version() {
@@ -123,10 +154,10 @@ public final class HelpManualUI {
 
         var spine = new UIElement();
         spine.layout(l -> l.width(16).heightPercent(100).flexDirection(FlexDirection.COLUMN).alignItems(AlignItems.CENTER));
-        spine.style(s -> s.backgroundTexture(new ColorRectTexture(0xFF6D5331)));
+        spine.style(s -> s.backgroundTexture(new ColorRectTexture(0xFFB88D4D)));
         var spineLine = new UIElement();
         spineLine.layout(l -> l.width(3).heightPercent(100));
-        spineLine.style(s -> s.backgroundTexture(new ColorRectTexture(0xFF3A2B1C)));
+        spineLine.style(s -> s.backgroundTexture(new ColorRectTexture(0xFF7A5C2E)));
         spine.addChild(spineLine);
         book.addChild(spine);
 
@@ -188,7 +219,7 @@ public final class HelpManualUI {
         root.addChild(runtime.searchResults);
 
         var contentsLabel = label(Component.translatable("ebe.help.manual.contents").getString(), INK, 10.5f, false);
-        contentsLabel.style(s -> s.backgroundTexture(new ColorRectTexture(0x22B8975D)));
+        contentsLabel.style(s -> s.backgroundTexture(new ColorRectTexture(0xFFFFF2D2)));
         contentsLabel.layout(l -> l.widthPercent(100).height(16).paddingHorizontal(4));
         root.addChild(contentsLabel);
 
@@ -289,8 +320,8 @@ public final class HelpManualUI {
                 btn.layout(l -> l.widthPercent(100).height(19).paddingHorizontal(4));
                 btn.textStyle(s -> s.textColor(active ? 0xFFFFFFFF : INK).fontSize(8.2f).textShadow(false));
                 btn.buttonStyle(s -> s
-                        .baseTexture(new ColorRectTexture(active ? ACCENT : 0x00FFFFFF))
-                        .hoverTexture(new ColorRectTexture(active ? ACCENT : 0x33B8975D))
+                    .baseTexture(new ColorRectTexture(active ? ACCENT : 0xFFFFF7E8))
+                    .hoverTexture(new ColorRectTexture(active ? ACCENT : 0xFFFFEDC0))
                         .pressedTexture(new ColorRectTexture(ACCENT_DARK)));
                 btn.setOnClick(e -> selectPage(runtime, page));
                 runtime.toc.addChild(btn);

@@ -2,6 +2,7 @@ package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
@@ -11,6 +12,8 @@ import java.util.List;
 
 public class EditorScreen extends Screen {
     private final ModularUI modularUI;
+    private long fpsWindowStart = System.nanoTime();
+    private int fpsFrames = 0;
 
     public EditorScreen() {
         super(Component.translatable("ebe.screen.editor"));
@@ -55,6 +58,20 @@ public class EditorScreen extends Screen {
     public void tick() {
         super.tick();
         ViewportFactory.tickCamera();
+        EditorUI.updateStatusBar();
+    }
+
+    @Override
+    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+        super.render(guiGraphics, mouseX, mouseY, partialTick);
+        fpsFrames++;
+        long now = System.nanoTime();
+        long elapsed = now - fpsWindowStart;
+        if (elapsed >= 1_000_000_000L) {
+            EditorUI.setMeasuredFps(Math.max(1, Math.round(fpsFrames * 1_000_000_000f / elapsed)));
+            fpsFrames = 0;
+            fpsWindowStart = now;
+        }
     }
 
     @Override
