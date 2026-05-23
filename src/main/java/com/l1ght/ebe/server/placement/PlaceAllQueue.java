@@ -4,6 +4,7 @@ import com.l1ght.ebe.network.PlaceBlocksPayload;
 import com.l1ght.ebe.network.PlaceProgressPayload;
 import com.l1ght.ebe.server.ServerSettingsManager;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
@@ -46,10 +47,16 @@ public class PlaceAllQueue {
             for (var entry : chunkEntries) {
                 var state = Block.stateById(entry.stateId());
                 if (state != null && !state.isAir()) {
+                    boolean placed = false;
                     if (job.level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
                         job.placed++;
+                        placed = true;
                     } else if (job.level.getBlockState(entry.pos()).getBlock() == state.getBlock()) {
                         job.placed++;
+                        placed = true;
+                    }
+                    if (placed) {
+                        applyBlockEntityNbt(job.level, entry.pos(), state, entry.nbt());
                     }
                 }
             }
@@ -76,6 +83,27 @@ public class PlaceAllQueue {
         }
         int limit = ServerSettingsManager.get().maxEditSize;
         return maxX - minX + 1 <= limit && maxY - minY + 1 <= limit && maxZ - minZ + 1 <= limit;
+    }
+
+    private static void applyBlockEntityNbt(ServerLevel level, BlockPos pos, net.minecraft.world.level.block.state.BlockState state, String nbtStr) {
+        if (nbtStr == null || nbtStr.isBlank()) return;
+        try {
+            var beNbt = TagParser.parseTag(nbtStr);
+            beNbt.remove("x");
+            beNbt.remove("y");
+            beNbt.remove("z");
+            beNbt.remove("id");
+            var be = level.getBlockEntity(pos);
+            if (be != null) {
+                beNbt.putInt("x", pos.getX());
+                beNbt.putInt("y", pos.getY());
+                beNbt.putInt("z", pos.getZ());
+                be.loadWithComponents(beNbt, level.registryAccess());
+                be.setChanged();
+                level.sendBlockUpdated(pos, state, state, Block.UPDATE_ALL);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private static class Job {

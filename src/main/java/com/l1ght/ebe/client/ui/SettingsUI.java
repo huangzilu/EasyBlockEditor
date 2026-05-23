@@ -140,6 +140,137 @@ public class SettingsUI {
 
         scroller.addScrollViewChild(group);
 
+        var performanceGroup = new ConfiguratorGroup(Component.translatable("ebe.settings.viewport_performance").getString(), false);
+
+        performanceGroup.addConfigurator(new SelectorConfigurator<>(
+                Component.translatable("ebe.settings.viewport_performance.mode").getString(),
+                () -> normalizeViewportPerformanceMode(EBEClientConfig.viewportPerformanceMode.get()),
+                v -> {
+                    EBEClientConfig.viewportPerformanceMode.set(v);
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                },
+                "balanced", false,
+                List.of("quality", "balanced", "performance"),
+                mode -> Component.translatable("ebe.settings.viewport_performance.mode." + mode).getString()
+        ));
+
+        performanceGroup.addConfigurator(new BooleanConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.degrade_while_moving").getString(),
+                EBEClientConfig.viewportDegradeWhileMoving::get,
+                v -> {
+                    EBEClientConfig.viewportDegradeWhileMoving.set(v);
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                },
+                true, false
+        ));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.render_distance").getString(),
+                EBEClientConfig.viewportRenderDistance::get,
+                v -> {
+                    EBEClientConfig.viewportRenderDistance.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                },
+                0, false
+        ).setRange(0, Integer.MAX_VALUE).setWheel(32));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.compile_budget").getString(),
+                EBEClientConfig.viewportCompileBudgetMs::get,
+                v -> {
+                    EBEClientConfig.viewportCompileBudgetMs.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                2.5, true
+        ).setRange(0.0, 20.0).setWheel(0.25));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.moving_compile_budget").getString(),
+                EBEClientConfig.viewportMovingCompileBudgetMs::get,
+                v -> {
+                    EBEClientConfig.viewportMovingCompileBudgetMs.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                0.25, true
+        ).setRange(0.0, 20.0).setWheel(0.25));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.load_budget").getString(),
+                EBEClientConfig.viewportLoadBudgetMs::get,
+                v -> {
+                    EBEClientConfig.viewportLoadBudgetMs.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                2.0, true
+        ).setRange(0.25, 20.0).setWheel(0.25));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.moving_load_budget").getString(),
+                EBEClientConfig.viewportMovingLoadBudgetMs::get,
+                v -> {
+                    EBEClientConfig.viewportMovingLoadBudgetMs.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                0.75, true
+        ).setRange(0.0, 20.0).setWheel(0.25));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.load_blocks").getString(),
+                EBEClientConfig.viewportLoadBlocksPerFrame::get,
+                v -> {
+                    EBEClientConfig.viewportLoadBlocksPerFrame.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                2048, false
+        ).setRange(128, 16384).setWheel(256));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.fallback_blocks").getString(),
+                EBEClientConfig.viewportFallbackBlocks::get,
+                v -> {
+                    EBEClientConfig.viewportFallbackBlocks.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                1536, false
+        ).setRange(0, 16384).setWheel(256));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.moving_fallback_blocks").getString(),
+                EBEClientConfig.viewportMovingFallbackBlocks::get,
+                v -> {
+                    EBEClientConfig.viewportMovingFallbackBlocks.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                128, false
+        ).setRange(0, 16384).setWheel(128));
+
+        performanceGroup.addConfigurator(new BooleanConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.dynamic_fbo").getString(),
+                EBEClientConfig.viewportDynamicFboScale::get,
+                v -> {
+                    EBEClientConfig.viewportDynamicFboScale.set(v);
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                },
+                true, false
+        ));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.moving_fbo_scale").getString(),
+                EBEClientConfig.viewportMovingFboScale::get,
+                v -> {
+                    EBEClientConfig.viewportMovingFboScale.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                },
+                0.65, true
+        ).setRange(0.25, 1.0).setWheel(0.05));
+
+        scroller.addScrollViewChild(performanceGroup);
+
         var probeButton = new Button()
                 .setText(Component.translatable("ebe.settings.shader_probe"))
                 .setOnClick(e -> ViewportFactory.loadShaderProbeScene());
@@ -156,6 +287,15 @@ public class SettingsUI {
         EBEClientConfig.viewportShaderMode.set("off");
         EBEClientConfig.SPEC.save();
         return "off";
+    }
+
+    private static String normalizeViewportPerformanceMode(String mode) {
+        if ("quality".equals(mode) || "balanced".equals(mode) || "performance".equals(mode)) {
+            return mode;
+        }
+        EBEClientConfig.viewportPerformanceMode.set("balanced");
+        EBEClientConfig.SPEC.save();
+        return "balanced";
     }
 
     private static UIElement createProjectionTab() {

@@ -2,7 +2,7 @@ package com.l1ght.ebe.command;
 
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.loading.FMLEnvironment;
@@ -11,7 +11,7 @@ import net.neoforged.fml.loading.FMLEnvironment;
 public class EBEClientCommands {
 
     @SubscribeEvent(priority = EventPriority.HIGH)
-    public static void onRegisterClientCommands(RegisterCommandsEvent event) {
+    public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher().register(
                 net.minecraft.commands.Commands.literal("ebe")
                         .then(net.minecraft.commands.Commands.literal("open")

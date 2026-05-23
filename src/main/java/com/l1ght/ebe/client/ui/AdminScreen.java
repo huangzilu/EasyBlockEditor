@@ -8,7 +8,7 @@ public class AdminScreen extends Screen {
     private final ModularUI modularUI;
 
     public AdminScreen() {
-        super(Component.literal("EasyBlockEditor Admin"));
+        super(Component.translatable("ebe.admin.title"));
         this.modularUI = AdminUI.createModularUI();
     }
 

@@ -1903,7 +1903,7 @@ public class EditorUI {
             row.addChild(name);
 
             var apply = new Button();
-            apply.setText(Component.literal("Apply"));
+            apply.setText(Component.translatable("ebe.nbt.template.apply"));
             apply.layout(l -> l.width(48).height(16));
             apply.setOnClick(e -> {
                 var tag = NbtTemplateManager.get(entry.getKey());
@@ -1932,7 +1932,7 @@ public class EditorUI {
         var current = session.getModel().getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ());
         if (current == null) return;
         var dialog = new Dialog();
-        dialog.setTitle("NBT field diff");
+        dialog.setTitle(Component.translatable("ebe.nbt.template.diff_title").getString());
         dialog.overlay.layout(l -> l.width(320));
         for (var entry : NbtTemplateManager.all().entrySet()) {
             var template = NbtTemplateManager.get(entry.getKey());
@@ -1941,7 +1941,7 @@ public class EditorUI {
             btn.setOnClick(e -> {
                 dialog.close();
                 var result = new Dialog();
-                result.setTitle("NBT field diff: " + entry.getKey());
+                result.setTitle(Component.translatable("ebe.nbt.template.diff_title_named", entry.getKey()).getString());
                 result.overlay.layout(l -> l.width(320));
                 var label = new Label();
                 label.setText(Component.literal(diffNbtFields(template, current)));
@@ -1958,7 +1958,7 @@ public class EditorUI {
     }
 
     private static String diffNbtFields(net.minecraft.nbt.CompoundTag base, net.minecraft.nbt.CompoundTag current) {
-        if (base == null) return "Template could not be parsed.";
+        if (base == null) return Component.translatable("ebe.nbt.template.parse_failed").getString();
         var lines = new StringBuilder();
         for (String key : current.getAllKeys()) {
             if (!base.contains(key)) lines.append("+ ").append(key).append(" = ").append(current.get(key)).append('\n');
@@ -2286,7 +2286,7 @@ public class EditorUI {
         branchLabel.setId("historyBranchLabel");
         branchLabel.layout(l -> l.widthPercent(100).paddingHorizontal(2));
         branchLabel.textStyle(ts -> ts.fontSize(9).textColor(0xFFAAAAFF).textShadow(false));
-        branchLabel.setText(Component.literal("Branch: " + history.getCurrentBranch()));
+        branchLabel.setText(Component.translatable("ebe.history.branch_value", history.getCurrentBranch()));
         branchLabel.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showBranchSwitchDialog(); });
         registerTooltip(branchLabel, Component.translatable("ebe.history.switch_branch"));
         container.addChild(branchLabel);
@@ -2909,7 +2909,7 @@ public class EditorUI {
 
         var branchLabel = findById(rootElement, "historyBranchLabel");
         if (branchLabel instanceof Label bl) {
-            bl.setText(Component.literal("Branch: " + history.getCurrentBranch()));
+            bl.setText(Component.translatable("ebe.history.branch_value", history.getCurrentBranch()));
         }
 
         var tags = history.getVersionTags();
@@ -3215,7 +3215,7 @@ public class EditorUI {
         addPropField(propertiesContainer, "ID", itemKey.toString(), 0xFFCCCC88);
 
         var modLabel = new Label();
-        modLabel.setText(Component.literal("Mod: " + modId));
+        modLabel.setText(Component.translatable("ebe.editor.properties.mod", modId));
         modLabel.textStyle(ts -> ts.textColor(0xFF888888).fontSize(9));
         propertiesContainer.addChild(modLabel);
 
@@ -3223,7 +3223,7 @@ public class EditorUI {
         posSection.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingTop(4));
 
         var posLabel = new Label();
-        posLabel.setText(Component.literal("Position:"));
+        posLabel.setText(Component.translatable("ebe.editor.properties.position"));
         posLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
         posSection.addChild(posLabel);
 
@@ -3239,7 +3239,7 @@ public class EditorUI {
         var propsList = bs.getProperties();
         if (!propsList.isEmpty()) {
             var propsLabel = new Label();
-            propsLabel.setText(Component.literal("BlockStates:"));
+            propsLabel.setText(Component.translatable("ebe.editor.properties.blockstates"));
             propsLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
             propertiesContainer.addChild(propsLabel);
 
@@ -3669,6 +3669,25 @@ public class EditorUI {
             error.setText(Component.translatable("ebe.editor.files.read_failed", e.getMessage()));
             error.textStyle(ts -> ts.textColor(0xFFFF6666).fontSize(9).textShadow(false));
             fileListContainer.addChild(error);
+        }
+    }
+
+    public static void importDroppedFiles(List<Path> files) {
+        if (files == null || files.isEmpty()) return;
+        Path firstImported = null;
+        for (Path file : files) {
+            if (file == null || !FileManager.SUPPORTED_EXTENSIONS.contains(FileManager.getFileExtension(file).toLowerCase())) {
+                continue;
+            }
+            final Path[] imported = new Path[1];
+            ImportDialog.importFile(file, path -> imported[0] = path);
+            if (firstImported == null && imported[0] != null) {
+                firstImported = imported[0];
+            }
+        }
+        refreshFileList();
+        if (firstImported != null) {
+            beginLoadFile(firstImported);
         }
     }
 

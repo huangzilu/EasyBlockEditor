@@ -6,6 +6,9 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
+import java.nio.file.Path;
+import java.util.List;
+
 public class EditorScreen extends Screen {
     private final ModularUI modularUI;
 
@@ -89,6 +92,11 @@ public class EditorScreen extends Screen {
             return true;
         }
         return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public void onFilesDrop(List<Path> files) {
+        EditorUI.importDroppedFiles(files);
     }
 
     private int getActiveModifiers() {

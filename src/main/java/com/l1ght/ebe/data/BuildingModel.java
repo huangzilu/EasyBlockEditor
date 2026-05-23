@@ -64,7 +64,16 @@ public class BuildingModel {
     }
 
     public Layer addLayer(String name, boolean visible, boolean locked) {
-        var layer = new Layer("layer_" + nextLayerId++, name, visible, locked);
+        return addLayer("layer_" + nextLayerId++, name, visible, locked);
+    }
+
+    public Layer addLayer(String id, String name, boolean visible, boolean locked) {
+        if (id == null || id.isBlank()) {
+            id = "layer_" + nextLayerId++;
+        } else {
+            bumpNextLayerId(id);
+        }
+        var layer = new Layer(id, name, visible, locked);
         layers.add(layer);
         return layer;
     }
@@ -123,6 +132,15 @@ public class BuildingModel {
             }
         }
         return true;
+    }
+
+    private void bumpNextLayerId(String id) {
+        if (!id.startsWith("layer_")) return;
+        try {
+            int numeric = Integer.parseInt(id.substring("layer_".length()));
+            nextLayerId = Math.max(nextLayerId, numeric + 1);
+        } catch (NumberFormatException ignored) {
+        }
     }
 
     public Object getBlockAt(int wx, int wy, int wz) {

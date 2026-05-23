@@ -71,8 +71,7 @@ public class WorkgroupActionPayload implements CustomPacketPayload {
     }
 
     private static void syncAll(MinecraftServer server) {
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            PacketDistributor.sendToPlayer(player, new WorkgroupSyncPayload(WorkgroupManager.toClientJson(player)));
-        }
+        WorkgroupNetworkSync.syncAll(server);
+        WorkgroupNetworkSync.syncAdmins(server);
     }
 }

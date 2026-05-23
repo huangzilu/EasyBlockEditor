@@ -1,6 +1,7 @@
 package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.data.io.FileManager;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import net.minecraft.client.resources.language.I18n;
@@ -55,16 +56,22 @@ public class ImportDialog {
 
         File file = new File(selected);
         if (!file.isFile()) return;
+        importFile(file.toPath(), onFileSelected);
+    }
+
+    public static void importFile(Path source, Consumer<Path> onFileSelected) {
+        if (source == null || !Files.isRegularFile(source)) return;
+        if (!FileManager.SUPPORTED_EXTENSIONS.contains(FileManager.getFileExtension(source).toLowerCase())) return;
         try {
             var destDir = Path.of(EBEClientConfig.schematicDir.get());
             Files.createDirectories(destDir);
-            var dest = destDir.resolve(file.getName());
-            if (!file.toPath().equals(dest)) {
-                Files.copy(file.toPath(), dest, StandardCopyOption.REPLACE_EXISTING);
+            var dest = destDir.resolve(source.getFileName().toString());
+            if (!source.toAbsolutePath().normalize().equals(dest.toAbsolutePath().normalize())) {
+                Files.copy(source, dest, StandardCopyOption.REPLACE_EXISTING);
             }
             onFileSelected.accept(dest);
         } catch (IOException e) {
-            onFileSelected.accept(file.toPath());
+            onFileSelected.accept(source);
         }
     }
 

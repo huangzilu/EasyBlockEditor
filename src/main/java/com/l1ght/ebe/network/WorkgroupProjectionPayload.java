@@ -9,7 +9,6 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
-import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 import java.util.UUID;
@@ -28,8 +27,8 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
 
     public WorkgroupProjectionPayload(String action, UUID groupId, UUID projectionId, String fileName, BlockPos origin, boolean visible) {
         this.action = action == null ? "update" : action;
-        this.groupId = groupId;
-        this.projectionId = projectionId;
+        this.groupId = groupId == null ? new UUID(0L, 0L) : groupId;
+        this.projectionId = projectionId == null ? new UUID(0L, 0L) : projectionId;
         this.fileName = fileName == null ? "" : fileName;
         this.origin = origin == null ? BlockPos.ZERO : origin;
         this.visible = visible;
@@ -56,6 +55,8 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
     public static void handleServer(WorkgroupProjectionPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
+            Workgroup group = WorkgroupManager.groupFor(player);
+            if (group == null || payload.groupId == null || !group.id.equals(payload.groupId)) return;
             if ("remove".equalsIgnoreCase(payload.action)) {
                 WorkgroupManager.removeProjection(payload.groupId, payload.projectionId);
             } else {
@@ -71,7 +72,8 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
                         System.currentTimeMillis()
                 ));
             }
-            PacketDistributor.sendToPlayer(player, new WorkgroupSyncPayload(WorkgroupManager.toClientJson(player)));
+            WorkgroupNetworkSync.syncGroup(player.server, group.id);
+            WorkgroupNetworkSync.syncAdmins(player.server);
         });
     }
 }

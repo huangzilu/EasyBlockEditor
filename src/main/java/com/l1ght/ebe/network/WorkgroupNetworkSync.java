@@ -23,6 +23,14 @@ public final class WorkgroupNetworkSync {
         }
     }
 
+    public static void syncAdmins(MinecraftServer server) {
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.hasPermissions(2)) {
+                AdminActionPayload.sendAdminSync(player);
+            }
+        }
+    }
+
     public static void syncGroup(MinecraftServer server, UUID groupId) {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             Workgroup group = WorkgroupManager.groupFor(player);

@@ -18,6 +18,18 @@ public class EBEClientConfig {
     public static final ModConfigSpec.DoubleValue flightSpeed;
     public static final ModConfigSpec.IntValue historyMaxEntries;
     public static final ModConfigSpec.ConfigValue<String> viewportShaderMode;
+    public static final ModConfigSpec.ConfigValue<String> viewportPerformanceMode;
+    public static final ModConfigSpec.BooleanValue viewportDegradeWhileMoving;
+    public static final ModConfigSpec.IntValue viewportRenderDistance;
+    public static final ModConfigSpec.DoubleValue viewportCompileBudgetMs;
+    public static final ModConfigSpec.DoubleValue viewportMovingCompileBudgetMs;
+    public static final ModConfigSpec.DoubleValue viewportLoadBudgetMs;
+    public static final ModConfigSpec.DoubleValue viewportMovingLoadBudgetMs;
+    public static final ModConfigSpec.IntValue viewportLoadBlocksPerFrame;
+    public static final ModConfigSpec.IntValue viewportFallbackBlocks;
+    public static final ModConfigSpec.IntValue viewportMovingFallbackBlocks;
+    public static final ModConfigSpec.BooleanValue viewportDynamicFboScale;
+    public static final ModConfigSpec.DoubleValue viewportMovingFboScale;
     public static final ModConfigSpec.IntValue printerRange;
     public static final ModConfigSpec.IntValue printerMaterialSourceRange;
     public static final ModConfigSpec.IntValue printerParallelism;
@@ -58,6 +70,45 @@ public class EBEClientConfig {
         viewportShaderMode = builder
                 .comment("3D viewport shader mode: off, auto, iris, iris_full. Auto only probes when a shader pack is active.")
                 .define("viewport_shader_mode", "auto");
+
+        builder.push("viewport_performance");
+        viewportPerformanceMode = builder
+                .comment("3D editor viewport performance mode: quality, balanced, performance")
+                .define("mode", "balanced");
+        viewportDegradeWhileMoving = builder
+                .comment("Temporarily reduce expensive viewport work while the camera is moving")
+                .define("degrade_while_moving", true);
+        viewportRenderDistance = builder
+                .comment("Editor viewport render distance in blocks (0 = unlimited)")
+                .defineInRange("render_distance", 0, 0, Integer.MAX_VALUE);
+        viewportCompileBudgetMs = builder
+                .comment("Milliseconds of section compilation allowed per rendered frame while the camera is steady")
+                .defineInRange("compile_budget_ms", 2.5, 0.0, 20.0);
+        viewportMovingCompileBudgetMs = builder
+                .comment("Milliseconds of section compilation allowed per rendered frame while the camera is moving")
+                .defineInRange("moving_compile_budget_ms", 0.25, 0.0, 20.0);
+        viewportLoadBudgetMs = builder
+                .comment("Milliseconds of viewport block loading allowed per frame while the camera is steady")
+                .defineInRange("load_budget_ms", 2.0, 0.25, 20.0);
+        viewportMovingLoadBudgetMs = builder
+                .comment("Milliseconds of viewport block loading allowed per frame while the camera is moving")
+                .defineInRange("moving_load_budget_ms", 0.75, 0.0, 20.0);
+        viewportLoadBlocksPerFrame = builder
+                .comment("Maximum blocks inserted into the editor viewport per frame")
+                .defineInRange("load_blocks_per_frame", 2048, 128, 16384);
+        viewportFallbackBlocks = builder
+                .comment("Maximum uncompiled blocks rendered directly per frame while the camera is steady")
+                .defineInRange("fallback_blocks", 1536, 0, 16384);
+        viewportMovingFallbackBlocks = builder
+                .comment("Maximum uncompiled blocks rendered directly per frame while the camera is moving")
+                .defineInRange("moving_fallback_blocks", 128, 0, 16384);
+        viewportDynamicFboScale = builder
+                .comment("Use a lower Iris/FBO viewport resolution while the camera is moving")
+                .define("dynamic_fbo_scale", true);
+        viewportMovingFboScale = builder
+                .comment("Iris/FBO viewport resolution scale while the camera is moving")
+                .defineInRange("moving_fbo_scale", 0.65, 0.25, 1.0);
+        builder.pop();
         builder.pop();
 
         builder.push("printer");

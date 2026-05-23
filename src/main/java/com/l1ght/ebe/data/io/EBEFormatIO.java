@@ -14,6 +14,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -74,41 +76,24 @@ public class EBEFormatIO {
             szJson.addProperty("y", region.getSizeY());
             szJson.addProperty("z", region.getSizeZ());
             rj.add("size", szJson);
-
-            var palette = region.getBlocks().getPalette();
-            var paletteArray = new JsonArray();
-            for (Object state : palette.allStates()) {
-                if (state instanceof BlockState bs) {
-                    var entry = new JsonObject();
-                    entry.addProperty("id", BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString());
-                    if (!bs.getProperties().isEmpty()) {
-                        var props = new JsonObject();
-                        for (Property<?> prop : bs.getProperties()) {
-                            props.addProperty(prop.getName(), bs.getValue(prop).toString());
-                        }
-                        entry.add("properties", props);
-                    }
-                    paletteArray.add(entry);
-                } else {
-                    paletteArray.add(state.toString());
-                }
+            if (region.getLayerId() != null) {
+                rj.addProperty("layer", region.getLayerId());
             }
-            rj.add("palette", paletteArray);
+
+            var paletteIds = new LinkedHashMap<String, Integer>();
+            var paletteArray = new JsonArray();
 
             var data = region.getBlocks();
             var blockData = new JsonArray();
             for (int y = 0; y < region.getSizeY(); y++) {
                 for (int z = 0; z < region.getSizeZ(); z++) {
                     for (int x = 0; x < region.getSizeX(); x++) {
-                        var obj = data.get(x, y, z);
-                        if (obj instanceof BlockState bs) {
-                            blockData.add(BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString());
-                        } else {
-                            blockData.add(obj.toString());
-                        }
+                        BlockState state = resolveBlockStateObject(data.get(x, y, z));
+                        blockData.add(paletteIndex(state, paletteIds, paletteArray));
                     }
                 }
             }
+            rj.add("palette", paletteArray);
             rj.add("block_data", blockData);
 
             var beArray = new JsonArray();
@@ -163,8 +148,16 @@ public class EBEFormatIO {
         meta.setName(metaJson.get("name").getAsString());
         meta.setAuthor(metaJson.has("author") ? metaJson.get("author").getAsString() : "");
         meta.setDescription(metaJson.has("description") ? metaJson.get("description").getAsString() : "");
-        meta.setCreated(metaJson.get("created").getAsLong());
+        meta.setCreated(metaJson.has("created") ? metaJson.get("created").getAsLong() : System.currentTimeMillis());
         meta.setModified(metaJson.has("modified") ? metaJson.get("modified").getAsLong() : meta.getCreated());
+        if (metaJson.has("size") && metaJson.get("size").isJsonObject()) {
+            var sizeJson = metaJson.getAsJsonObject("size");
+            meta.setSize(
+                    sizeJson.has("x") ? sizeJson.get("x").getAsInt() : 0,
+                    sizeJson.has("y") ? sizeJson.get("y").getAsInt() : 0,
+                    sizeJson.has("z") ? sizeJson.get("z").getAsInt() : 0
+            );
+        }
 
         while (!model.getLayers().isEmpty()) {
             model.removeLayer(model.getLayers().get(0).getId());
@@ -172,10 +165,13 @@ public class EBEFormatIO {
         if (root.has("layers")) {
             for (var le : root.getAsJsonArray("layers")) {
                 var lj = le.getAsJsonObject();
+                String id = lj.has("id") ? lj.get("id").getAsString() : null;
+                String name = lj.has("name") ? lj.get("name").getAsString() : "default";
                 var layer = model.addLayer(
-                    lj.get("name").getAsString(),
-                    !lj.has("visible") || lj.get("visible").getAsBoolean(),
-                    lj.has("locked") && lj.get("locked").getAsBoolean()
+                        id,
+                        name,
+                        !lj.has("visible") || lj.get("visible").getAsBoolean(),
+                        lj.has("locked") && lj.get("locked").getAsBoolean()
                 );
                 if (lj.has("opacity")) layer.setOpacity(lj.get("opacity").getAsFloat());
             }
@@ -191,16 +187,24 @@ public class EBEFormatIO {
                 pos.get("x").getAsInt(), pos.get("y").getAsInt(), pos.get("z").getAsInt(),
                 sz.get("x").getAsInt(), sz.get("y").getAsInt(), sz.get("z").getAsInt()
             );
+            if (rj.has("layer")) {
+                String layerId = rj.get("layer").getAsString();
+                if (model.getLayer(layerId) != null) {
+                    region.setLayerId(layerId);
+                }
+            }
 
-            var paletteArray = rj.getAsJsonArray("palette");
-            Object[] palette = new Object[paletteArray.size()];
-            for (int i = 0; i < palette.length; i++) {
-                var elem = paletteArray.get(i);
-                if (elem.isJsonObject()) {
-                    var obj = elem.getAsJsonObject();
-                    palette[i] = SchematicReaders.resolveBlockStateFromJson(obj);
-                } else {
-                    palette[i] = elem.getAsString();
+            Object[] palette = new Object[0];
+            if (rj.has("palette") && rj.get("palette").isJsonArray()) {
+                var paletteArray = rj.getAsJsonArray("palette");
+                palette = new Object[paletteArray.size()];
+                for (int i = 0; i < palette.length; i++) {
+                    var elem = paletteArray.get(i);
+                    if (elem.isJsonObject()) {
+                        palette[i] = SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject());
+                    } else {
+                        palette[i] = resolveBlockStateFromString(elem.getAsString());
+                    }
                 }
             }
 
@@ -211,7 +215,12 @@ public class EBEFormatIO {
                     for (int x = 0; x < region.getSizeX(); x++) {
                         if (idx < blockData.size()) {
                             var elem = blockData.get(idx);
-                            if (elem.isJsonObject()) {
+                            if (elem.isJsonPrimitive() && elem.getAsJsonPrimitive().isNumber()) {
+                                int paletteId = elem.getAsInt();
+                                if (paletteId >= 0 && paletteId < palette.length) {
+                                    region.getBlocks().set(x, y, z, palette[paletteId]);
+                                }
+                            } else if (elem.isJsonObject()) {
                                 region.getBlocks().set(x, y, z, SchematicReaders.resolveBlockStateFromJson(elem.getAsJsonObject()));
                             } else {
                                 region.getBlocks().set(x, y, z, resolveBlockStateFromString(elem.getAsString()));
@@ -249,20 +258,90 @@ public class EBEFormatIO {
         return model;
     }
 
+    private static int paletteIndex(BlockState state, Map<String, Integer> paletteIds, JsonArray paletteArray) {
+        String key = stateToString(state);
+        Integer existing = paletteIds.get(key);
+        if (existing != null) return existing;
+        int id = paletteIds.size();
+        paletteIds.put(key, id);
+        paletteArray.add(blockStateToJson(state));
+        return id;
+    }
+
+    private static JsonObject blockStateToJson(BlockState bs) {
+        var entry = new JsonObject();
+        entry.addProperty("id", BuiltInRegistries.BLOCK.getKey(bs.getBlock()).toString());
+        if (!bs.getProperties().isEmpty()) {
+            var props = new JsonObject();
+            for (Property<?> prop : bs.getProperties()) {
+                props.addProperty(prop.getName(), bs.getValue(prop).toString());
+            }
+            entry.add("properties", props);
+        }
+        return entry;
+    }
+
+    private static String stateToString(BlockState state) {
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        if (state.getProperties().isEmpty()) return id.toString();
+        StringBuilder builder = new StringBuilder(id.toString()).append('[');
+        boolean first = true;
+        for (Property<?> prop : state.getProperties()) {
+            if (!first) builder.append(',');
+            first = false;
+            builder.append(prop.getName()).append('=').append(state.getValue(prop));
+        }
+        return builder.append(']').toString();
+    }
+
+    private static BlockState resolveBlockStateObject(Object obj) {
+        if (obj instanceof BlockState state) return state;
+        if (obj instanceof String id) return resolveBlockStateFromString(id);
+        return Blocks.AIR.defaultBlockState();
+    }
+
     private static BlockState resolveBlockStateFromString(String id) {
         if (id == null || id.isEmpty() || id.equals("minecraft:air") || id.equals("air")) {
             return Blocks.AIR.defaultBlockState();
         }
+        Map<String, String> props = new LinkedHashMap<>();
+        int propStart = id.indexOf('[');
+        if (propStart >= 0 && id.endsWith("]")) {
+            String body = id.substring(propStart + 1, id.length() - 1);
+            id = id.substring(0, propStart);
+            for (String part : body.split(",")) {
+                int eq = part.indexOf('=');
+                if (eq > 0) props.put(part.substring(0, eq), part.substring(eq + 1));
+            }
+        }
         try {
-            var block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(id));
-            return block.map(value -> value.defaultBlockState()).orElseGet(() -> {
-                LOG.warn("Unknown block ID in EBE file: {}, falling back to stone", id);
+            String blockId = id;
+            var block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(blockId));
+            return block.map(value -> applyProperties(value.defaultBlockState(), props)).orElseGet(() -> {
+                LOG.warn("Unknown block ID in EBE file: {}, falling back to stone", blockId);
                 return Blocks.STONE.defaultBlockState();
             });
         } catch (Exception e) {
             LOG.warn("Failed to resolve block ID in EBE file: {}", id, e);
             return Blocks.STONE.defaultBlockState();
         }
+    }
+
+    private static BlockState applyProperties(BlockState state, Map<String, String> props) {
+        for (var entry : props.entrySet()) {
+            for (Property<?> prop : state.getProperties()) {
+                if (prop.getName().equals(entry.getKey())) {
+                    state = setProperty(state, prop, entry.getValue());
+                    break;
+                }
+            }
+        }
+        return state;
+    }
+
+    private static <T extends Comparable<T>> BlockState setProperty(BlockState state, Property<T> prop, String value) {
+        Optional<T> parsed = prop.getValue(value);
+        return parsed.map(t -> state.setValue(prop, t)).orElse(state);
     }
 
     private static InputStream openPossiblyCompressed(Path file) throws IOException {

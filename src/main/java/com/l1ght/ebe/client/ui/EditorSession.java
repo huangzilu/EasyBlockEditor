@@ -58,6 +58,7 @@ public class EditorSession {
     public void save() throws Exception {
         if (currentFile == null) throw new IllegalStateException("No file set, use saveAs");
         model.getMetadata().setModified(System.currentTimeMillis());
+        backupCurrentFile();
         SchematicWriters.write(model, currentFile);
         saveHistory();
         dirty = false;
@@ -143,6 +144,12 @@ public class EditorSession {
 
     void saveHistory() {
         EditorUI.getHistory().saveHistory(getHistoryPath());
+    }
+
+    private void backupCurrentFile() throws Exception {
+        if (currentFile == null || !Files.exists(currentFile)) return;
+        Path backup = currentFile.resolveSibling(currentFile.getFileName().toString() + ".bak");
+        Files.copy(currentFile, backup, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
 
     private void loadHistory() {

@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.compat.IrisCompat;
 import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
+import com.l1ght.ebe.client.renderer.FastTrackedDummyWorld;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.client.renderer.HeatmapRenderHook;
@@ -74,6 +75,8 @@ public class ViewportFactory {
     private static ProgressiveModelLoad progressiveLoad;
     private static ProgressiveComputedLoad progressiveComputedLoad;
     private static int progressiveStatusCooldown = 0;
+    private static final List<BlockPos> progressiveLoadedScratch = new ArrayList<>(4096);
+    private static boolean progressiveCoreAttached = false;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -139,6 +142,11 @@ public class ViewportFactory {
     private static int pendingIrisFboWidth = -1;
     private static int pendingIrisFboHeight = -1;
     private static int pendingIrisFboStableFrames = 0;
+    private static int viewportInteractionFrames = 0;
+    private static float lastViewportYaw = Float.NaN;
+    private static float lastViewportPitch = Float.NaN;
+    private static float lastViewportZoom = Float.NaN;
+    private static Vector3f lastViewportCenter = null;
 
     private static float savedYaw = -135;
     private static float savedPitch = 25;
@@ -225,7 +233,7 @@ public class ViewportFactory {
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
         } else if (!hasContent || session == null) {
-            currentWorld = new TrackedDummyWorld();
+            currentWorld = newViewportWorld();
             createSceneRenderer();
         }
 
@@ -355,6 +363,15 @@ public class ViewportFactory {
         logShaderProbe("settings-changed");
     }
 
+    public static void onViewportPerformanceSettingsChanged() {
+        if (sectionedRenderer != null) {
+            sectionedRenderer.needCompileCache();
+        }
+        if (currentScene != null && currentScene.getRenderer() instanceof CachedIrisWorldSceneRenderer cachedRenderer) {
+            cachedRenderer.markDirty();
+        }
+    }
+
     public static void loadShaderProbeScene() {
         if (currentScene == null) {
             LOG.warn("Cannot load shader probe scene before viewport exists");
@@ -402,7 +419,8 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         releaseCachedSectionedRenderer("progressive-load-model");
-        currentWorld = new TrackedDummyWorld();
+        currentWorld = newViewportWorld();
+        progressiveCoreAttached = false;
         createSceneRenderer();
         currentScene.useCacheBuffer(true);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
@@ -435,7 +453,8 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         releaseCachedSectionedRenderer("progressive-load-computed");
-        currentWorld = new TrackedDummyWorld();
+        currentWorld = newViewportWorld();
+        progressiveCoreAttached = false;
         createSceneRenderer();
         currentScene.useCacheBuffer(true);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
@@ -467,7 +486,7 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         releaseCachedSectionedRenderer("load-model");
-        currentWorld = new TrackedDummyWorld();
+        currentWorld = newViewportWorld();
 
         int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
@@ -527,6 +546,7 @@ public class ViewportFactory {
 
     public static void tickCamera() {
         if (currentScene == null) return;
+        updateViewportInteractionState();
         tickProgressiveModelLoad();
         tickIrisViewportFailsafe();
         ensureIrisViewportFboSize();
@@ -606,13 +626,29 @@ public class ViewportFactory {
                         if (!layerVisible) continue;
                         if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
 
-                        currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
+                        addBlockToViewportWorld(new BlockPos(wx, wy, wz), blockState);
                         count++;
                     }
                 }
             }
         }
         return count;
+    }
+
+    private static TrackedDummyWorld newViewportWorld() {
+        return new FastTrackedDummyWorld();
+    }
+
+    private static void addBlockToViewportWorld(BlockPos pos, BlockState state) {
+        if (currentWorld == null || state == null || state.isAir()) {
+            return;
+        }
+        var info = new BlockInfo(state);
+        if (currentWorld instanceof FastTrackedDummyWorld fastWorld) {
+            fastWorld.addBlockFast(pos, info);
+        } else {
+            currentWorld.addBlock(pos, info);
+        }
     }
 
     public static boolean isProgressiveLoadActive() {
@@ -623,6 +659,7 @@ public class ViewportFactory {
         progressiveLoad = null;
         progressiveComputedLoad = null;
         progressiveStatusCooldown = 0;
+        progressiveCoreAttached = false;
     }
 
     private static void tickProgressiveModelLoad() {
@@ -634,15 +671,16 @@ public class ViewportFactory {
         var load = progressiveLoad;
         if (load == null || currentWorld == null || currentScene == null) return;
 
-        long deadline = System.nanoTime() + PROGRESSIVE_LOAD_NANOS_PER_TICK;
+        long deadline = System.nanoTime() + progressiveLoadBudgetNanos();
         int blocksThisTick = 0;
-        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+        progressiveLoadedScratch.clear();
+        List<BlockPos> loadedBlocks = progressiveLoadedScratch;
         var core = getSceneCore();
         var regions = load.model.getRegions();
         var displayFilter = EditorUI.getState().getDisplayFilter();
 
         while (load.regionIndex < regions.size()
-                && blocksThisTick < PROGRESSIVE_LOAD_BLOCKS_PER_TICK
+                && blocksThisTick < progressiveLoadBlockLimit()
                 && System.nanoTime() < deadline) {
             var region = regions.get(load.regionIndex);
             if (load.y >= region.getSizeY()) {
@@ -667,9 +705,9 @@ public class ViewportFactory {
                     && layerVisible
                     && displayFilter.shouldDisplay(wx, wy, wz, obj)) {
                 var pos = new BlockPos(wx, wy, wz);
-                currentWorld.addBlock(pos, new BlockInfo(blockState));
+                addBlockToViewportWorld(pos, blockState);
                 if (core != null) core.add(pos.immutable());
-                changedBlocks.put(pos.immutable(), true);
+                loadedBlocks.add(pos.immutable());
                 blocksThisTick++;
                 load.added++;
             }
@@ -685,8 +723,8 @@ public class ViewportFactory {
             }
         }
 
-        if (!changedBlocks.isEmpty()) {
-            scheduleIncrementalCompile(changedBlocks);
+        if (!loadedBlocks.isEmpty()) {
+            scheduleProgressiveLoadCompile(loadedBlocks);
         }
 
         if (progressiveStatusCooldown-- <= 0) {
@@ -699,6 +737,10 @@ public class ViewportFactory {
         if (load.regionIndex >= regions.size()) {
             progressiveLoad = null;
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
+            if (sectionedRenderer != null) {
+                sectionedRenderer.finishProgressiveLoad();
+                sectionedRenderer.rebuildTileEntities();
+            }
             if (core == null) {
                 refreshRenderedCore(load.autoCamera);
             } else if (sectionedRenderer != null && heatmapHook.isActive()) {
@@ -721,15 +763,16 @@ public class ViewportFactory {
         var load = progressiveComputedLoad;
         if (load == null || currentWorld == null || currentScene == null) return;
 
-        long deadline = System.nanoTime() + PROGRESSIVE_LOAD_NANOS_PER_TICK;
+        long deadline = System.nanoTime() + progressiveLoadBudgetNanos();
         int blocksThisTick = 0;
-        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+        progressiveLoadedScratch.clear();
+        List<BlockPos> loadedBlocks = progressiveLoadedScratch;
         var core = getSceneCore();
         var displayFilter = EditorUI.getState().getDisplayFilter();
         var batches = load.computed.getViewportBatches();
 
         while (load.batchIndex < batches.size()
-                && blocksThisTick < PROGRESSIVE_LOAD_BLOCKS_PER_TICK
+                && blocksThisTick < progressiveLoadBlockLimit()
                 && System.nanoTime() < deadline) {
             var batch = batches.get(load.batchIndex);
             var entries = batch.getEntries();
@@ -743,16 +786,16 @@ public class ViewportFactory {
             var pos = entry.getPos();
             load.visited++;
             if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
-                currentWorld.addBlock(pos, new BlockInfo(entry.getState()));
+                addBlockToViewportWorld(pos, entry.getState());
                 if (core != null) core.add(pos.immutable());
-                changedBlocks.put(pos.immutable(), true);
+                loadedBlocks.add(pos.immutable());
                 blocksThisTick++;
                 load.added++;
             }
         }
 
-        if (!changedBlocks.isEmpty()) {
-            scheduleIncrementalCompile(changedBlocks);
+        if (!loadedBlocks.isEmpty()) {
+            scheduleProgressiveLoadCompile(loadedBlocks);
         }
 
         if (progressiveStatusCooldown-- <= 0) {
@@ -766,6 +809,10 @@ public class ViewportFactory {
         if (load.batchIndex >= batches.size()) {
             progressiveComputedLoad = null;
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
+            if (sectionedRenderer != null) {
+                sectionedRenderer.finishProgressiveLoad();
+                sectionedRenderer.rebuildTileEntities();
+            }
             if (core == null) {
                 refreshRenderedCore(load.autoCamera);
             } else if (sectionedRenderer != null && heatmapHook.isActive()) {
@@ -1056,6 +1103,64 @@ public class ViewportFactory {
         }
     }
 
+    private static void scheduleProgressiveLoadCompile(List<BlockPos> loadedBlocks) {
+        if (currentScene == null || loadedBlocks.isEmpty()) return;
+        if (sectionedRenderer != null) {
+            var core = getSceneCore();
+            if (core != null && !progressiveCoreAttached) {
+                sectionedRenderer.attachRenderedCore(core, createCombinedHook());
+                progressiveCoreAttached = true;
+            }
+            sectionedRenderer.applyLoadedBlocks(loadedBlocks);
+        } else {
+            currentScene.needCompileCache();
+        }
+    }
+
+    private static long progressiveLoadBudgetNanos() {
+        boolean moving = viewportInteractionFrames > 0 && EBEClientConfig.viewportDegradeWhileMoving.get();
+        double budgetMs = moving ? EBEClientConfig.viewportMovingLoadBudgetMs.get()
+                : EBEClientConfig.viewportLoadBudgetMs.get();
+        String mode = EBEClientConfig.viewportPerformanceMode.get();
+        if ("quality".equals(mode) && moving) {
+            budgetMs = EBEClientConfig.viewportLoadBudgetMs.get();
+        } else if ("performance".equals(mode) && moving) {
+            budgetMs = Math.min(budgetMs, 0.5D);
+        }
+        return Math.max(0L, (long) (budgetMs * 1_000_000L));
+    }
+
+    private static int progressiveLoadBlockLimit() {
+        int configured = Math.max(128, EBEClientConfig.viewportLoadBlocksPerFrame.get());
+        if (viewportInteractionFrames > 0 && EBEClientConfig.viewportDegradeWhileMoving.get()) {
+            return Math.max(128, configured / 4);
+        }
+        return Math.min(PROGRESSIVE_LOAD_BLOCKS_PER_TICK, configured);
+    }
+
+    private static void updateViewportInteractionState() {
+        if (currentScene == null) return;
+        float yaw = currentScene.getRotationYaw();
+        float pitch = currentScene.getRotationPitch();
+        float zoom = currentScene.getZoom();
+        Vector3f center = new Vector3f(currentScene.getCenter());
+        boolean changed = Float.isNaN(lastViewportYaw)
+                || Math.abs(yaw - lastViewportYaw) > 0.01F
+                || Math.abs(pitch - lastViewportPitch) > 0.01F
+                || Math.abs(zoom - lastViewportZoom) > 0.01F
+                || lastViewportCenter == null
+                || center.distanceSquared(lastViewportCenter) > 0.0001F;
+        lastViewportYaw = yaw;
+        lastViewportPitch = pitch;
+        lastViewportZoom = zoom;
+        lastViewportCenter = center;
+        if (changed) {
+            viewportInteractionFrames = 10;
+        } else if (viewportInteractionFrames > 0) {
+            viewportInteractionFrames--;
+        }
+    }
+
     private static void addPendingDelta(BlockPos pos, BlockState state) {
         pendingDeltas.add(new PendingBlockDelta(pos.immutable(), state));
         pendingDeltaOverlayFrames = 0;
@@ -1211,7 +1316,7 @@ public class ViewportFactory {
         savedCenter = new Vector3f(3, 2, 3);
         releaseCachedSectionedRenderer("clear-model");
         if (currentScene != null && currentWorld != null) {
-            currentWorld = new TrackedDummyWorld();
+            currentWorld = newViewportWorld();
             createSceneRenderer();
             refreshRenderedCore(true);
         }
@@ -1222,7 +1327,7 @@ public class ViewportFactory {
         shaderProbeSceneActive = false;
         saveCameraState();
         releaseCachedSectionedRenderer("refresh-model");
-        currentWorld = new TrackedDummyWorld();
+        currentWorld = newViewportWorld();
         var displayFilter = EditorUI.getState().getDisplayFilter();
         int totalBlocks = 0;
         for (var region : model.getRegions()) {
@@ -1237,7 +1342,7 @@ public class ViewportFactory {
                             int wy = y + region.getOffsetY();
                             int wz = z + region.getOffsetZ();
                             if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
-                            currentWorld.addBlock(new BlockPos(wx, wy, wz), new BlockInfo(blockState));
+                            addBlockToViewportWorld(new BlockPos(wx, wy, wz), blockState);
                             totalBlocks++;
                         }
                     }
@@ -1462,6 +1567,7 @@ public class ViewportFactory {
         }
         detachCachedSectionedRendererFromScene(stage);
         sectionedRenderer = null;
+        progressiveCoreAttached = false;
         renderer.releaseResource();
         LOG.info("Released cached SectionedWorldSceneRenderer at {}", stage);
     }
@@ -1482,6 +1588,7 @@ public class ViewportFactory {
 
             sceneRendererField.set(currentScene, renderer);
             sectionedRenderer = renderer;
+            progressiveCoreAttached = false;
             if (oldRenderer instanceof WorldSceneRenderer worldSceneRenderer) {
                 worldSceneRenderer.releaseResource();
             }

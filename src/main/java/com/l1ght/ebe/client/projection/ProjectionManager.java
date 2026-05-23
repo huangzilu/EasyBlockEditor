@@ -403,7 +403,7 @@ public class ProjectionManager {
         List<PlaceBlocksPayload.Entry> entries = new ArrayList<>();
         for (var pb : blocks) {
             int stateId = Block.getId(pb.state());
-            entries.add(new PlaceBlocksPayload.Entry(pb.pos(), stateId));
+            entries.add(new PlaceBlocksPayload.Entry(pb.pos(), stateId, pb.hasNbt() ? pb.nbt().toString() : ""));
         }
 
         setProgress(entries.size(), entries.size());

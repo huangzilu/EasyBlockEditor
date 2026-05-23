@@ -15,7 +15,7 @@ public class EditorDialogs {
 
     public static Dialog newProjectDialog(UIElement parent, Consumer<String> onConfirm) {
         var dialog = Dialog.stringEditorDialog(
-                "New Project",
+                Component.translatable("ebe.editor.new_project").getString(),
                 "untitled",
                 s -> !s.isBlank() && !s.matches(".*[\\\\/:*?\"<>|].*"),
                 onConfirm
@@ -27,7 +27,7 @@ public class EditorDialogs {
 
     public static Dialog saveAsDialog(UIElement parent, String currentName, Consumer<String> onConfirm) {
         var dialog = Dialog.stringEditorDialog(
-                "Save As",
+                Component.translatable("ebe.editor.save_as").getString(),
                 currentName,
                 s -> !s.isBlank() && !s.matches(".*[\\\\/:*?\"<>|].*"),
                 onConfirm
@@ -39,7 +39,7 @@ public class EditorDialogs {
 
     public static Dialog overwriteConfirmDialog(UIElement parent, String filename, Runnable onConfirm) {
         var dialog = new Dialog();
-        dialog.setTitle("Confirm");
+        dialog.setTitle(Component.translatable("ebe.editor.dialog.confirm").getString());
         dialog.overlay.layout(l -> l.width(250));
 
         var msg = new Label();
@@ -57,11 +57,11 @@ public class EditorDialogs {
                     onConfirm.run();
                     dialog.close();
                 })
-                .setText(Component.literal("OK")));
+                .setText(Component.translatable("ebe.history.dialog.confirm")));
 
         dialog.addButton(new Button()
                 .setOnClick(e -> dialog.close())
-                .setText(Component.literal("Cancel")));
+                .setText(Component.translatable("ebe.history.dialog.cancel")));
 
         dialog.show(parent);
         return dialog;
@@ -69,7 +69,7 @@ public class EditorDialogs {
 
     public static Dialog confirmDialog(UIElement parent, Component message, Runnable onConfirm) {
         var dialog = new Dialog();
-        dialog.setTitle("Confirm");
+        dialog.setTitle(Component.translatable("ebe.editor.dialog.confirm").getString());
         dialog.overlay.layout(l -> l.width(280));
 
         var msg = new Label();
@@ -82,11 +82,11 @@ public class EditorDialogs {
                     onConfirm.run();
                     dialog.close();
                 })
-                .setText(Component.literal("OK")));
+                .setText(Component.translatable("ebe.history.dialog.confirm")));
 
         dialog.addButton(new Button()
                 .setOnClick(e -> dialog.close())
-                .setText(Component.literal("Cancel")));
+                .setText(Component.translatable("ebe.history.dialog.cancel")));
 
         dialog.show(parent);
         return dialog;

@@ -31,7 +31,11 @@ public class EBECommands {
                                                             var feature = PermissionFeature.parse(StringArgumentType.getString(context, "feature"));
                                                             var decision = PermissionDecision.parse(StringArgumentType.getString(context, "decision"));
                                                             PermissionManager.setGlobal(feature, decision);
-                                                            context.getSource().sendSuccess(() -> Component.literal("Set global " + feature.id() + " to " + decision.name().toLowerCase()), true);
+                                                            context.getSource().sendSuccess(() -> Component.translatable(
+                                                                    "ebe.command.permissions.set_global",
+                                                                    featureComponent(feature),
+                                                                    decisionComponent(decision)
+                                                            ), true);
                                                             return 1;
                                                         }))))
                                 .then(Commands.literal("player")
@@ -43,7 +47,12 @@ public class EBECommands {
                                                                     var feature = PermissionFeature.parse(StringArgumentType.getString(context, "feature"));
                                                                     var decision = PermissionDecision.parse(StringArgumentType.getString(context, "decision"));
                                                                     PermissionManager.setPlayer(player, feature, decision);
-                                                                    context.getSource().sendSuccess(() -> Component.literal("Set " + player + " " + feature.id() + " to " + decision.name().toLowerCase()), true);
+                                                                    context.getSource().sendSuccess(() -> Component.translatable(
+                                                                            "ebe.command.permissions.set_player",
+                                                                            player,
+                                                                            featureComponent(feature),
+                                                                            decisionComponent(decision)
+                                                                    ), true);
                                                                     return 1;
                                                                 }))))))
                         .then(Commands.literal("get")
@@ -52,7 +61,11 @@ public class EBECommands {
                                                 .executes(context -> {
                                                     var feature = PermissionFeature.parse(StringArgumentType.getString(context, "feature"));
                                                     var decision = PermissionManager.getGlobal(feature);
-                                                    context.getSource().sendSuccess(() -> Component.literal("Global " + feature.id() + " = " + decision.name().toLowerCase()), false);
+                                                    context.getSource().sendSuccess(() -> Component.translatable(
+                                                            "ebe.command.permissions.get_global",
+                                                            featureComponent(feature),
+                                                            decisionComponent(decision)
+                                                    ), false);
                                                     return 1;
                                                 })))
                                 .then(Commands.literal("player")
@@ -62,7 +75,12 @@ public class EBECommands {
                                                             var player = StringArgumentType.getString(context, "player");
                                                             var feature = PermissionFeature.parse(StringArgumentType.getString(context, "feature"));
                                                             var decision = PermissionManager.getPlayer(player, feature);
-                                                            context.getSource().sendSuccess(() -> Component.literal(player + " " + feature.id() + " = " + decision.name().toLowerCase()), false);
+                                                            context.getSource().sendSuccess(() -> Component.translatable(
+                                                                    "ebe.command.permissions.get_player",
+                                                                    player,
+                                                                    featureComponent(feature),
+                                                                    decisionComponent(decision)
+                                                            ), false);
                                                             return 1;
                                                         })))))
                 )
@@ -78,7 +96,9 @@ public class EBECommands {
                                                             player
                                                     );
                                                     if (group != null) syncWorkgroups(player);
-                                                    context.getSource().sendSuccess(() -> Component.literal(group == null ? "Failed to create workgroup" : "Created workgroup " + group.name), false);
+                                                    context.getSource().sendSuccess(() -> group == null
+                                                            ? Component.translatable("ebe.command.workgroup.create.failed")
+                                                            : Component.translatable("ebe.command.workgroup.create.success", group.name), false);
                                                     return group == null ? 0 : 1;
                                                 }))))
                         .then(Commands.literal("join")
@@ -92,7 +112,9 @@ public class EBECommands {
                                                             player
                                                     );
                                                     if (ok) syncWorkgroups(player);
-                                                    context.getSource().sendSuccess(() -> Component.literal(ok ? "Joined workgroup" : "Failed to join workgroup"), false);
+                                                    context.getSource().sendSuccess(() -> Component.translatable(ok
+                                                            ? "ebe.command.workgroup.join.success"
+                                                            : "ebe.command.workgroup.join.failed"), false);
                                                     return ok ? 1 : 0;
                                                 }))))
                         .then(Commands.literal("leave")
@@ -101,7 +123,9 @@ public class EBECommands {
                                             ServerPlayer player = context.getSource().getPlayerOrException();
                                             boolean ok = WorkgroupManager.leave(StringArgumentType.getString(context, "name"), player);
                                             if (ok) syncWorkgroups(player);
-                                            context.getSource().sendSuccess(() -> Component.literal(ok ? "Left workgroup" : "Failed to leave workgroup"), false);
+                                            context.getSource().sendSuccess(() -> Component.translatable(ok
+                                                    ? "ebe.command.workgroup.leave.success"
+                                                    : "ebe.command.workgroup.leave.failed"), false);
                                             return ok ? 1 : 0;
                                         })))
                         .then(Commands.literal("disband")
@@ -110,7 +134,9 @@ public class EBECommands {
                                             ServerPlayer player = context.getSource().getPlayerOrException();
                                             boolean ok = WorkgroupManager.disband(StringArgumentType.getString(context, "name"), player);
                                             if (ok) syncWorkgroups(player);
-                                            context.getSource().sendSuccess(() -> Component.literal(ok ? "Disbanded workgroup" : "Failed to disband workgroup"), true);
+                                            context.getSource().sendSuccess(() -> Component.translatable(ok
+                                                    ? "ebe.command.workgroup.disband.success"
+                                                    : "ebe.command.workgroup.disband.failed"), true);
                                             return ok ? 1 : 0;
                                         })))
                         .then(Commands.literal("list")
@@ -118,10 +144,10 @@ public class EBECommands {
                                     ServerPlayer player = context.getSource().getPlayerOrException();
                                     var groups = WorkgroupManager.groupsFor(player);
                                     syncWorkgroups(player);
-                                    String text = groups.isEmpty()
-                                            ? "No workgroups"
-                                            : groups.stream().map(g -> g.name + " (" + g.members.size() + ")").reduce((a, b) -> a + ", " + b).orElse("");
-                                    context.getSource().sendSuccess(() -> Component.literal(text), false);
+                                    String text = groups.stream().map(g -> g.name + " (" + g.members.size() + ")").reduce((a, b) -> a + ", " + b).orElse("");
+                                    context.getSource().sendSuccess(() -> groups.isEmpty()
+                                            ? Component.translatable("ebe.command.workgroup.list.empty")
+                                            : Component.translatable("ebe.command.workgroup.list", text), false);
                                     return groups.size();
                                 }))
                         .then(Commands.literal("kick")
@@ -134,7 +160,9 @@ public class EBECommands {
                                                             StringArgumentType.getString(context, "player"),
                                                             player);
                                                     if (ok) syncWorkgroups(player);
-                                                    context.getSource().sendSuccess(() -> Component.literal(ok ? "Kicked player" : "Failed to kick player"), false);
+                                                    context.getSource().sendSuccess(() -> Component.translatable(ok
+                                                            ? "ebe.command.workgroup.kick.success"
+                                                            : "ebe.command.workgroup.kick.failed"), false);
                                                     return ok ? 1 : 0;
                                                 }))))
                 )
@@ -143,5 +171,17 @@ public class EBECommands {
 
     private static void syncWorkgroups(ServerPlayer player) {
         PacketDistributor.sendToPlayer(player, new WorkgroupSyncPayload(WorkgroupManager.toClientJson(player)));
+    }
+
+    private static Component featureComponent(PermissionFeature feature) {
+        return Component.translatable("ebe.permission." + feature.id());
+    }
+
+    private static Component decisionComponent(PermissionDecision decision) {
+        return Component.translatable(switch (decision) {
+            case ALLOW -> "ebe.permission.allow";
+            case DENY -> "ebe.permission.deny";
+            case DEFAULT -> "ebe.permission.default";
+        });
     }
 }
