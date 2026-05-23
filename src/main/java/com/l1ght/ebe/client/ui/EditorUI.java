@@ -305,7 +305,9 @@ public class EditorUI {
         for (var child : tree.getChildren()) {
             var item = new Button();
             var key = child.getKey();
-            var text = Component.translatable(key);
+            var text = key.equals("ebe.help.about_entry")
+                    ? Component.translatable(key, HelpManualUI.version())
+                    : Component.translatable(key);
             boolean isChecked = false;
 
             var shortcut = getShortcutDisplay(key);
@@ -428,7 +430,8 @@ public class EditorUI {
 
     private static MenuTreeNode buildHelpMenu() {
         var root = new MenuTreeNode("help");
-        root.child("ebe.name");
+        root.child("ebe.help.about_entry", () -> HelpManualUI.showAbout(rootElement));
+        root.child("ebe.help.manual", () -> HelpManualUI.show(rootElement));
         return root;
     }
 
