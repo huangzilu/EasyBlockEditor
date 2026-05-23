@@ -4,6 +4,7 @@ out/
 
 # Gradle
 .gradle/
+.kotlin/
 gradle/wrapper/gradle-wrapper.jar
 
 # IDE
@@ -42,4 +43,3 @@ libs/
 docs/
 LDLib2源代码及参考项目/
 Litematica投影模组neoforge/
-

@@ -1,5 +1,6 @@
 plugins {
     id 'java-library'
+    id 'org.jetbrains.kotlin.jvm' version '2.1.21'
     id 'maven-publish'
     id 'net.neoforged.moddev' version '2.0.140'
     id 'idea'
@@ -18,13 +19,13 @@ version = mod_version
 group = mod_group_id
 
 repositories {
+    mavenCentral()
     maven {
         url = "https://neoforged.forgecdn.net/releases"
     }
     maven {
         url = "https://neoforged.forgecdn.net/mojang-meta"
     }
-    mavenCentral()
     maven { url = "https://maven.firstdark.dev/snapshots" }
 }
 
@@ -120,6 +121,10 @@ configurations {
 
 dependencies {
     implementation files("libs/ldlib2-neoforge-1.21.1-2.2.6-all.jar")
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.1.21'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
+    jarJar 'org.jetbrains.kotlin:kotlin-stdlib:2.1.21'
+    jarJar 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2'
     compileOnly files("libs/taffy-1.1.4.jar")
     compileOnly files("libs/yoga-1.0.0.jar")
     localRuntime files("libs/taffy-1.1.4.jar")
@@ -128,6 +133,7 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
     testImplementation 'com.google.code.gson:gson:2.11.0'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.13'
 }
 
 tasks.withType(Test).configureEach {
@@ -174,6 +180,10 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+kotlin {
+    jvmToolchain(21)
 }
 
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.

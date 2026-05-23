@@ -5,6 +5,8 @@ import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.io.EBEFormatIO;
 import com.l1ght.ebe.network.PlaceBlocksPayload;
 import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.projection.compute.ComputedProjection;
+import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Block;
@@ -22,6 +24,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProjectionManager {
 
@@ -40,22 +43,41 @@ public class ProjectionManager {
     private static boolean persistentStateLoaded = false;
     private static boolean restoringPersistentState = false;
     private static long lastMissingPersistLogMs = 0L;
+    private static final AtomicInteger PROJECTION_COMPUTE_SEQUENCE = new AtomicInteger();
 
     public static void setProjection(BuildingModel model) {
+        setProjection(model, null);
+    }
+
+    public static void setProjection(BuildingModel model, ComputedProjection computed) {
         if (model == null) {
             activeProjection = null;
             projectionLoaded = false;
             deletePersistentState();
             return;
         }
-        activeProjection = new ProjectionData(model, projectionOrigin);
+        if (computed != null) {
+            projectionOrigin = computed.getOrigin();
+            activeProjection = new ProjectionData(model, projectionOrigin, computed);
+        } else {
+            activeProjection = new ProjectionData(model, projectionOrigin);
+        }
         projectionLoaded = true;
         savePersistentState(true);
     }
 
     public static void selectProjection(BuildingModel model) {
+        selectProjection(model, null);
+    }
+
+    public static void selectProjection(BuildingModel model, ComputedProjection computed) {
         if (model == null) return;
-        activeProjection = new ProjectionData(model, projectionOrigin);
+        if (computed != null) {
+            projectionOrigin = computed.getOrigin();
+            activeProjection = new ProjectionData(model, projectionOrigin, computed);
+        } else {
+            activeProjection = new ProjectionData(model, projectionOrigin);
+        }
         projectionLoaded = false;
         savePersistentState(true);
     }
@@ -104,11 +126,13 @@ public class ProjectionManager {
     }
 
     public static void setProjectionOrigin(BlockPos origin) {
-        projectionOrigin = origin;
         if (activeProjection != null) {
-            activeProjection.setOrigin(origin);
+            recomputeProjectionAsync(origin, activeProjection.getRotation(), activeProjection.getMirror(),
+                    activeProjection.getCenterPoint(), activeProjection.getRotation() != Rotation.NONE || activeProjection.getMirror() != Mirror.NONE);
+        } else {
+            projectionOrigin = origin;
+            savePersistentState(false);
         }
-        savePersistentState(false);
     }
 
     public static void moveOrigin(int dx, int dy, int dz) {
@@ -117,45 +141,74 @@ public class ProjectionManager {
 
     public static void rotateCounterClockwise90() {
         if (activeProjection == null) return;
-        activeProjection.rotateCounterClockwise90();
-        savePersistentState(false);
+        Rotation target = switch (activeProjection.getRotation()) {
+            case NONE -> Rotation.COUNTERCLOCKWISE_90;
+            case COUNTERCLOCKWISE_90 -> Rotation.CLOCKWISE_180;
+            case CLOCKWISE_180 -> Rotation.CLOCKWISE_90;
+            case CLOCKWISE_90 -> Rotation.NONE;
+        };
+        recomputeProjectionAsync(projectionOrigin, target, activeProjection.getMirror(), activeProjection.getCenterPoint(), true);
     }
 
     public static void rotateClockwise90() {
         if (activeProjection == null) return;
-        activeProjection.rotateClockwise90();
-        savePersistentState(false);
+        Rotation target = switch (activeProjection.getRotation()) {
+            case NONE -> Rotation.CLOCKWISE_90;
+            case CLOCKWISE_90 -> Rotation.CLOCKWISE_180;
+            case CLOCKWISE_180 -> Rotation.COUNTERCLOCKWISE_90;
+            case COUNTERCLOCKWISE_90 -> Rotation.NONE;
+        };
+        recomputeProjectionAsync(projectionOrigin, target, activeProjection.getMirror(), activeProjection.getCenterPoint(), true);
     }
 
     public static void rotate180() {
         if (activeProjection == null) return;
-        activeProjection.rotate180();
-        savePersistentState(false);
+        Rotation target = activeProjection.getRotation() == Rotation.NONE ? Rotation.CLOCKWISE_180 :
+                activeProjection.getRotation() == Rotation.CLOCKWISE_180 ? Rotation.NONE : Rotation.CLOCKWISE_180;
+        recomputeProjectionAsync(projectionOrigin, target, activeProjection.getMirror(), activeProjection.getCenterPoint(), true);
     }
 
     public static void resetTransform() {
         if (activeProjection == null) return;
-        activeProjection.setRotation(Rotation.NONE);
-        activeProjection.setMirror(Mirror.NONE);
-        savePersistentState(false);
+        recomputeProjectionAsync(projectionOrigin, Rotation.NONE, Mirror.NONE, activeProjection.getCenterPoint(), true);
     }
 
     public static void toggleMirrorLeftRight() {
         if (activeProjection == null) return;
-        activeProjection.toggleMirrorLeftRight();
-        savePersistentState(false);
+        Mirror target = activeProjection.getMirror() == Mirror.LEFT_RIGHT ? Mirror.NONE : Mirror.LEFT_RIGHT;
+        recomputeProjectionAsync(projectionOrigin, activeProjection.getRotation(), target, activeProjection.getCenterPoint(), true);
     }
 
     public static void toggleMirrorFrontBack() {
         if (activeProjection == null) return;
-        activeProjection.toggleMirrorFrontBack();
-        savePersistentState(false);
+        Mirror target = activeProjection.getMirror() == Mirror.FRONT_BACK ? Mirror.NONE : Mirror.FRONT_BACK;
+        recomputeProjectionAsync(projectionOrigin, activeProjection.getRotation(), target, activeProjection.getCenterPoint(), true);
     }
 
     public static void setProjectionCenter(BlockPos center) {
         if (activeProjection == null) return;
-        activeProjection.setCenterPoint(center);
-        savePersistentState(false);
+        recomputeProjectionAsync(projectionOrigin, activeProjection.getRotation(), activeProjection.getMirror(), center, true);
+    }
+
+    private static void recomputeProjectionAsync(BlockPos origin, Rotation rotation, Mirror mirror, BlockPos center, boolean meshChanged) {
+        ProjectionData projection = activeProjection;
+        if (projection == null) return;
+        int sequence = PROJECTION_COMPUTE_SEQUENCE.incrementAndGet();
+        BuildingModel model = projection.getModel();
+        String cacheKey = "projection:" + System.identityHashCode(model) + ":" + projection.getMeshVersion() + ":" + projection.getRenderVersion();
+        ProjectionComputePlanner.computeAsync(cacheKey, model, origin, rotation, mirror, center, false)
+                .whenComplete((computed, error) -> Minecraft.getInstance().execute(() -> {
+                    if (sequence != PROJECTION_COMPUTE_SEQUENCE.get() || activeProjection != projection) {
+                        return;
+                    }
+                    if (error != null) {
+                        LOG.warn("Failed to recompute projection transform", error);
+                        return;
+                    }
+                    projectionOrigin = origin;
+                    projection.applyComputedTransform(computed, origin, rotation, mirror, center, meshChanged);
+                    savePersistentState(false);
+                }));
     }
 
     public static void loadPersistentStateIfNeeded() {

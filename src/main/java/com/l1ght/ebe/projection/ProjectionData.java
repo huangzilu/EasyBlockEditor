@@ -1,7 +1,8 @@
 package com.l1ght.ebe.projection;
 
+import com.l1ght.ebe.projection.compute.ComputedProjection;
+import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
 import com.l1ght.ebe.data.BuildingModel;
-import com.l1ght.ebe.data.Region;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
@@ -28,57 +29,58 @@ public class ProjectionData {
         this.model = model;
         this.origin = origin;
         this.blocks = new ArrayList<>();
-        computeBlocks(true);
         this.centerPoint = origin;
+        computeBlocks(true);
+    }
+
+    public ProjectionData(BuildingModel model, BlockPos origin, ComputedProjection computed) {
+        this.model = model;
+        this.origin = origin;
+        this.blocks = new ArrayList<>();
+        this.centerPoint = computed != null ? computed.getCenterPoint() : origin;
+        if (computed != null) {
+            applyComputed(computed, true);
+        } else {
+            computeBlocks(true);
+        }
     }
 
     private void computeBlocks(boolean meshChanged) {
+        var computed = ProjectionComputePlanner.compute(
+                model,
+                origin,
+                rotation,
+                mirror,
+                centerPoint == null ? origin : centerPoint,
+                false
+        );
+        applyComputed(computed, meshChanged);
+    }
+
+    public void applyComputed(ComputedProjection computed, boolean meshChanged) {
         blocks.clear();
-        minX = Integer.MAX_VALUE; minY = Integer.MAX_VALUE; minZ = Integer.MAX_VALUE;
-        maxX = Integer.MIN_VALUE; maxY = Integer.MIN_VALUE; maxZ = Integer.MIN_VALUE;
-
-        for (Region region : model.getRegions()) {
-            var container = region.getBlocks();
-            int ox = region.getOffsetX(), oy = region.getOffsetY(), oz = region.getOffsetZ();
-            int sx = region.getSizeX(), sy = region.getSizeY(), sz = region.getSizeZ();
-
-            for (int y = 0; y < sy; y++) {
-                for (int z = 0; z < sz; z++) {
-                    for (int x = 0; x < sx; x++) {
-                        Object obj = container.get(x, y, z);
-                        BlockState state = obj instanceof BlockState bs ? bs : null;
-                        if (state == null || state.isAir()) continue;
-
-                        int worldX = ox + x, worldY = oy + y, worldZ = oz + z;
-                        CompoundTag nbt = region.getBlockEntity(x, y, z);
-
-                        BlockPos localPos = new BlockPos(worldX, worldY, worldZ);
-                        BlockPos worldPos = origin.offset(localPos);
-
-                        if (rotation != Rotation.NONE || mirror != Mirror.NONE) {
-                            BlockPos relToCenter = localPos.subtract(centerPoint == null ? BlockPos.ZERO : centerPoint.subtract(origin));
-                            BlockPos rotated = rotatePos(relToCenter, rotation);
-                            BlockPos mirrored = mirrorPos(rotated, mirror);
-                            worldPos = (centerPoint != null ? centerPoint : origin).offset(mirrored);
-                            state = transformState(state, rotation, mirror);
-                        }
-
-                        blocks.add(new ProjectionBlock(worldPos, state, nbt));
-
-                        minX = Math.min(minX, worldPos.getX());
-                        minY = Math.min(minY, worldPos.getY());
-                        minZ = Math.min(minZ, worldPos.getZ());
-                        maxX = Math.max(maxX, worldPos.getX());
-                        maxY = Math.max(maxY, worldPos.getY());
-                        maxZ = Math.max(maxZ, worldPos.getZ());
-                    }
-                }
-            }
+        for (var entry : computed.getBlocks()) {
+            blocks.add(new ProjectionBlock(entry.getPos(), entry.getState(), entry.getNbt()));
         }
+        minX = computed.getMinX();
+        minY = computed.getMinY();
+        minZ = computed.getMinZ();
+        maxX = computed.getMaxX();
+        maxY = computed.getMaxY();
+        maxZ = computed.getMaxZ();
         renderVersion++;
         if (meshChanged) {
             meshVersion++;
         }
+    }
+
+    public void applyComputedTransform(ComputedProjection computed, BlockPos origin, Rotation rotation,
+                                       Mirror mirror, BlockPos centerPoint, boolean meshChanged) {
+        this.origin = origin;
+        this.rotation = rotation;
+        this.mirror = mirror;
+        this.centerPoint = centerPoint;
+        applyComputed(computed, meshChanged);
     }
 
     private static BlockPos rotatePos(BlockPos pos, Rotation rot) {

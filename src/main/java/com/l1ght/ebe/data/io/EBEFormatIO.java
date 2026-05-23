@@ -134,6 +134,12 @@ public class EBEFormatIO {
         }
         root.add("regions", regionsArray);
 
+        var entitiesArray = new JsonArray();
+        for (var entity : model.getEntities()) {
+            entitiesArray.add(entity.toString());
+        }
+        root.add("entities", entitiesArray);
+
         Files.createDirectories(file.getParent());
         OutputStream out = Files.newOutputStream(file);
         if (compact) {
@@ -229,6 +235,14 @@ public class EBEFormatIO {
                         region.setWorldBlockEntity(wx, wy, wz, tag);
                     } catch (Exception ignored) {
                     }
+                }
+            }
+        }
+        if (root.has("entities")) {
+            for (var elem : root.getAsJsonArray("entities")) {
+                try {
+                    model.addEntity(TagParser.parseTag(elem.getAsString()));
+                } catch (Exception ignored) {
                 }
             }
         }

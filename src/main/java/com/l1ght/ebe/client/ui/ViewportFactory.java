@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.compat.IrisCompat;
 import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
+import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.client.renderer.HeatmapRenderHook;
 import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
@@ -59,6 +60,9 @@ public class ViewportFactory {
     private static final int DELTA_OVERLAY_THRESHOLD = 256;
     private static final int DEFERRED_COMPILE_FRAMES = 60;
     private static final int DELTA_OVERLAY_FRAMES = 20;
+    private static final int AUTO_MATERIAL_REFRESH_BLOCK_LIMIT = 100_000;
+    private static final int PROGRESSIVE_LOAD_BLOCKS_PER_TICK = 4096;
+    private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -67,6 +71,9 @@ public class ViewportFactory {
     private static int framesSinceLastEdit = 0;
     private static boolean deferredCompileScheduled = false;
     private static int pendingDeltaOverlayFrames = 0;
+    private static ProgressiveModelLoad progressiveLoad;
+    private static ProgressiveComputedLoad progressiveComputedLoad;
+    private static int progressiveStatusCooldown = 0;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -74,6 +81,42 @@ public class ViewportFactory {
         PendingBlockDelta(BlockPos pos, BlockState state) {
             this.pos = pos;
             this.state = state;
+        }
+    }
+
+    private static class ProgressiveModelLoad {
+        final BuildingModel model;
+        final boolean autoCamera;
+        final int totalVolume;
+        int regionIndex;
+        int x;
+        int y;
+        int z;
+        int visited;
+        int added;
+
+        ProgressiveModelLoad(BuildingModel model, boolean autoCamera) {
+            this.model = model;
+            this.autoCamera = autoCamera;
+            int volume = 0;
+            for (var region : model.getRegions()) {
+                volume += region.getSizeX() * region.getSizeY() * region.getSizeZ();
+            }
+            this.totalVolume = Math.max(1, volume);
+        }
+    }
+
+    private static class ProgressiveComputedLoad {
+        final ComputedProjection computed;
+        final boolean autoCamera;
+        int batchIndex;
+        int entryIndex;
+        int visited;
+        int added;
+
+        ProgressiveComputedLoad(ComputedProjection computed, boolean autoCamera) {
+            this.computed = computed;
+            this.autoCamera = autoCamera;
         }
     }
 
@@ -347,12 +390,82 @@ public class ViewportFactory {
         loadFromModel(model, true);
     }
 
+    public static void loadFromModelProgressive(BuildingModel model) {
+        loadFromModelProgressive(model, true);
+    }
+
+    public static void loadFromModelProgressive(BuildingModel model, boolean autoCamera) {
+        if (currentScene == null) {
+            LOG.error("loadFromModelProgressive: currentScene is null");
+            return;
+        }
+
+        cancelProgressiveLoad();
+        releaseCachedSectionedRenderer("progressive-load-model");
+        currentWorld = new TrackedDummyWorld();
+        createSceneRenderer();
+        currentScene.useCacheBuffer(true);
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+
+        if (autoCamera) {
+            savedYaw = -135;
+            savedPitch = 25;
+        }
+
+        hasLoadedModel = false;
+        shaderProbeSceneActive = false;
+        progressiveLoad = new ProgressiveModelLoad(model, autoCamera);
+        progressiveStatusCooldown = 0;
+        LOG.info("Progressive model load started: {} regions, volume={}", model.getRegions().size(), progressiveLoad.totalVolume);
+    }
+
+    public static void loadFromComputedProgressive(ComputedProjection computed) {
+        loadFromComputedProgressive(computed, true);
+    }
+
+    public static void loadFromComputedProgressive(ComputedProjection computed, boolean autoCamera) {
+        if (currentScene == null) {
+            LOG.error("loadFromComputedProgressive: currentScene is null");
+            return;
+        }
+        if (computed == null) {
+            LOG.error("loadFromComputedProgressive: computed projection is null");
+            return;
+        }
+
+        cancelProgressiveLoad();
+        releaseCachedSectionedRenderer("progressive-load-computed");
+        currentWorld = new TrackedDummyWorld();
+        createSceneRenderer();
+        currentScene.useCacheBuffer(true);
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+
+        if (autoCamera) {
+            var fit = computed.getCameraFit();
+            savedYaw = fit.getYaw();
+            savedPitch = fit.getPitch();
+            savedZoom = fit.getZoom();
+            savedCenter = new Vector3f(fit.getCenterX(), fit.getCenterY(), fit.getCenterZ());
+            currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
+            currentScene.setZoom(savedZoom);
+            currentScene.setCenter(savedCenter);
+        }
+
+        hasLoadedModel = false;
+        shaderProbeSceneActive = false;
+        progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera);
+        progressiveStatusCooldown = 0;
+        LOG.info("Computed progressive load started: {} blocks, {} batches, volume={}",
+                computed.blockCount(), computed.getViewportBatches().size(), computed.getTotalVolume());
+    }
+
     public static void loadFromModel(BuildingModel model, boolean autoCamera) {
         if (currentScene == null) {
             LOG.error("loadFromModel: currentScene is null");
             return;
         }
 
+        cancelProgressiveLoad();
         releaseCachedSectionedRenderer("load-model");
         currentWorld = new TrackedDummyWorld();
 
@@ -413,8 +526,9 @@ public class ViewportFactory {
     }
 
     public static void tickCamera() {
-        tickIrisViewportFailsafe();
         if (currentScene == null) return;
+        tickProgressiveModelLoad();
+        tickIrisViewportFailsafe();
         ensureIrisViewportFboSize();
         if (EditorUI.isTextFieldFocused()) return;
 
@@ -499,6 +613,175 @@ public class ViewportFactory {
             }
         }
         return count;
+    }
+
+    public static boolean isProgressiveLoadActive() {
+        return progressiveLoad != null || progressiveComputedLoad != null;
+    }
+
+    private static void cancelProgressiveLoad() {
+        progressiveLoad = null;
+        progressiveComputedLoad = null;
+        progressiveStatusCooldown = 0;
+    }
+
+    private static void tickProgressiveModelLoad() {
+        if (progressiveComputedLoad != null) {
+            tickProgressiveComputedLoad();
+            return;
+        }
+
+        var load = progressiveLoad;
+        if (load == null || currentWorld == null || currentScene == null) return;
+
+        long deadline = System.nanoTime() + PROGRESSIVE_LOAD_NANOS_PER_TICK;
+        int blocksThisTick = 0;
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+        var core = getSceneCore();
+        var regions = load.model.getRegions();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+
+        while (load.regionIndex < regions.size()
+                && blocksThisTick < PROGRESSIVE_LOAD_BLOCKS_PER_TICK
+                && System.nanoTime() < deadline) {
+            var region = regions.get(load.regionIndex);
+            if (load.y >= region.getSizeY()) {
+                LOG.info("Progressive region loaded '{}' : visited={} added={}", region.getName(), load.visited, load.added);
+                load.regionIndex++;
+                load.x = 0;
+                load.y = 0;
+                load.z = 0;
+                continue;
+            }
+
+            var obj = region.getBlocks().get(load.x, load.y, load.z);
+            var blockState = resolveBlockState(obj);
+            int wx = load.x + region.getOffsetX();
+            int wy = load.y + region.getOffsetY();
+            int wz = load.z + region.getOffsetZ();
+            var layer = load.model.getLayer(region.getLayerId());
+            boolean layerVisible = layer == null || layer.isVisible();
+            load.visited++;
+
+            if (blockState != null && !blockState.isAir()
+                    && layerVisible
+                    && displayFilter.shouldDisplay(wx, wy, wz, obj)) {
+                var pos = new BlockPos(wx, wy, wz);
+                currentWorld.addBlock(pos, new BlockInfo(blockState));
+                if (core != null) core.add(pos.immutable());
+                changedBlocks.put(pos.immutable(), true);
+                blocksThisTick++;
+                load.added++;
+            }
+
+            load.x++;
+            if (load.x >= region.getSizeX()) {
+                load.x = 0;
+                load.z++;
+                if (load.z >= region.getSizeZ()) {
+                    load.z = 0;
+                    load.y++;
+                }
+            }
+        }
+
+        if (!changedBlocks.isEmpty()) {
+            scheduleIncrementalCompile(changedBlocks);
+        }
+
+        if (progressiveStatusCooldown-- <= 0) {
+            progressiveStatusCooldown = 5;
+            int percent = Math.min(99, (int) ((load.visited * 100L) / load.totalVolume));
+            EditorUI.setStatus(net.minecraft.network.chat.Component.translatable(
+                    "ebe.editor.loading.progress", percent, load.added));
+        }
+
+        if (load.regionIndex >= regions.size()) {
+            progressiveLoad = null;
+            currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
+            if (core == null) {
+                refreshRenderedCore(load.autoCamera);
+            } else if (sectionedRenderer != null && heatmapHook.isActive()) {
+                sectionedRenderer.needCompileCache();
+            }
+            currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+            hasLoadedModel = true;
+            shaderProbeSceneActive = false;
+            if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
+                EditorUI.refreshMaterialList();
+            } else {
+                EditorUI.markMaterialListStale();
+            }
+            EditorUI.updateStatusBar();
+            LOG.info("Progressive model load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+        }
+    }
+
+    private static void tickProgressiveComputedLoad() {
+        var load = progressiveComputedLoad;
+        if (load == null || currentWorld == null || currentScene == null) return;
+
+        long deadline = System.nanoTime() + PROGRESSIVE_LOAD_NANOS_PER_TICK;
+        int blocksThisTick = 0;
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+        var core = getSceneCore();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        var batches = load.computed.getViewportBatches();
+
+        while (load.batchIndex < batches.size()
+                && blocksThisTick < PROGRESSIVE_LOAD_BLOCKS_PER_TICK
+                && System.nanoTime() < deadline) {
+            var batch = batches.get(load.batchIndex);
+            var entries = batch.getEntries();
+            if (load.entryIndex >= entries.size()) {
+                load.batchIndex++;
+                load.entryIndex = 0;
+                continue;
+            }
+
+            var entry = entries.get(load.entryIndex++);
+            var pos = entry.getPos();
+            load.visited++;
+            if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
+                currentWorld.addBlock(pos, new BlockInfo(entry.getState()));
+                if (core != null) core.add(pos.immutable());
+                changedBlocks.put(pos.immutable(), true);
+                blocksThisTick++;
+                load.added++;
+            }
+        }
+
+        if (!changedBlocks.isEmpty()) {
+            scheduleIncrementalCompile(changedBlocks);
+        }
+
+        if (progressiveStatusCooldown-- <= 0) {
+            progressiveStatusCooldown = 5;
+            int total = Math.max(1, load.computed.blockCount());
+            int percent = Math.min(99, (int) ((load.visited * 100L) / total));
+            EditorUI.setStatus(net.minecraft.network.chat.Component.translatable(
+                    "ebe.editor.loading.progress", percent, load.added));
+        }
+
+        if (load.batchIndex >= batches.size()) {
+            progressiveComputedLoad = null;
+            currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
+            if (core == null) {
+                refreshRenderedCore(load.autoCamera);
+            } else if (sectionedRenderer != null && heatmapHook.isActive()) {
+                sectionedRenderer.needCompileCache();
+            }
+            currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+            hasLoadedModel = true;
+            shaderProbeSceneActive = false;
+            if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
+                EditorUI.refreshMaterialList();
+            } else {
+                EditorUI.markMaterialListStale();
+            }
+            EditorUI.updateStatusBar();
+            LOG.info("Computed progressive load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+        }
     }
 
     public static BlockState resolveBlockStatePublic(Object obj) {

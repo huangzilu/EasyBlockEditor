@@ -1,10 +1,16 @@
 package com.l1ght.ebe.client.ui;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
+import com.l1ght.ebe.network.WorkgroupActionPayload;
 import com.l1ght.ebe.client.projection.PrinterController;
 import com.l1ght.ebe.projection.PrinterMode;
 import com.l1ght.ebe.client.projection.ProjectionManager;
@@ -44,6 +50,7 @@ import net.minecraft.world.level.material.MapColor;
 import org.lwjgl.glfw.GLFW;
 
 import net.minecraft.world.level.block.state.BlockState;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -53,6 +60,10 @@ import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class EditorUI {
 
@@ -79,6 +90,7 @@ public class EditorUI {
     private static UIElement rightPanel;
     private static UIElement leftDivider;
     private static UIElement rightDivider;
+    private static UIElement fileListContainer;
     private static Button leftCollapseBtn;
     private static Button rightCollapseBtn;
     private static int activeDivider = 0;
@@ -106,6 +118,8 @@ public class EditorUI {
     private static float toolbarOffsetX = 4, toolbarOffsetY = 0;
     private static boolean toolbarDragging = false;
     private static float toolbarDragStartX, toolbarDragStartY, toolbarDragOriginX, toolbarDragOriginY;
+    private static long horizontalResizeCursor = 0L;
+    private static boolean resizeCursorActive = false;
 
     private static UIElement materialListContainer;
     private static UIElement propertiesContainer;
@@ -113,9 +127,17 @@ public class EditorUI {
     private static UIElement displayFilterContentContainer;
     private static String selectedHeatmapBtnId = "heatmapBtn_0";
     private static String selectedPrinterModeBtnId = "printerModeBtn_0";
+    private static long lastFileTreeSignature = Long.MIN_VALUE;
+    private static int fileRefreshCooldown = 0;
 
     private static UIElement openDropdown;
     private static UIElement openMenuAnchor;
+    private static final ExecutorService FILE_LOAD_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "EBE File Loader");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final AtomicInteger FILE_LOAD_SEQUENCE = new AtomicInteger();
 
     public static ModularUI createModularUI() {
         ProjectionManager.loadPersistentStateIfNeeded();
@@ -153,6 +175,7 @@ public class EditorUI {
                 leftDivider.style(s -> s.background(Sprites.RECT_DARK));
                 rightDivider.style(s -> s.background(Sprites.RECT_DARK));
                 activeDivider = 0;
+                resetMouseCursor();
             }
             if (e.button == 0 && draggingPanel != null) draggingPanel = null;
             if (e.button == 0) toolbarDragging = false;
@@ -224,6 +247,18 @@ public class EditorUI {
         var spacer = new UIElement();
         spacer.layout(l -> l.flex(1));
         bar.addChild(spacer);
+
+        var workgroupBtn = new UIElement();
+        workgroupBtn.layout(l -> l.width(22).height(22).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
+        var workgroupIcon = new UIElement();
+        workgroupIcon.layout(l -> l.width(18).height(18));
+        workgroupIcon.style(s -> s.backgroundTexture(EditorIcons.WORKGROUP));
+        workgroupBtn.addChild(workgroupIcon);
+        workgroupBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) toggleWorkgroupPanel();
+        });
+        registerTooltip(workgroupBtn, Component.translatable("ebe.workgroup.panel"));
+        bar.addChild(workgroupBtn);
 
         var settingsBtn = new UIElement();
         settingsBtn.layout(l -> l.width(22).height(22).alignItems(AlignItems.CENTER).justifyContent(dev.vfyjxf.taffy.style.AlignContent.CENTER));
@@ -322,14 +357,14 @@ public class EditorUI {
             ViewportFactory.clearModel();
         }));
         root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); refreshMaterialList(); updateStatusBar(); } catch (Exception e) { e.printStackTrace(); }
+            beginLoadFile(file);
         }));
         root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception e) { e.printStackTrace(); } });
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
         }));
         root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, file -> {
-            try { session.load(file); ViewportFactory.loadFromModel(session.getModel()); refreshMaterialList(); updateStatusBar(); } catch (Exception e) { e.printStackTrace(); }
+            beginLoadFile(file);
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
@@ -403,8 +438,306 @@ public class EditorUI {
         return root;
     }
 
+    private static void beginLoadFile(Path file) {
+        int sequence = FILE_LOAD_SEQUENCE.incrementAndGet();
+        setStatus(Component.translatable("ebe.editor.loading.reading", file.getFileName().toString()));
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return EditorSession.readFileWithComputed(file);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }, FILE_LOAD_EXECUTOR).whenComplete((loaded, error) -> Minecraft.getInstance().execute(() -> {
+            if (sequence != FILE_LOAD_SEQUENCE.get()) return;
+            if (error != null) {
+                setStatus(Component.translatable("ebe.editor.loading.failed", rootCauseMessage(error)));
+                error.printStackTrace();
+                return;
+            }
+            session.applyLoaded(loaded);
+            setStatus(Component.translatable("ebe.editor.loading.viewport", loaded.file().getFileName().toString()));
+            if (loaded.computed() != null) {
+                ViewportFactory.loadFromComputedProgressive(loaded.computed());
+            } else {
+                ViewportFactory.loadFromModelProgressive(session.getModel());
+            }
+        }));
+    }
+
+    private static String rootCauseMessage(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null) cause = cause.getCause();
+        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+    }
+
+    public static void setStatus(Component text) {
+        if (rootElement == null) return;
+        var status = findById(rootElement, "statusBar");
+        if (status instanceof Label label) {
+            label.setText(text);
+        }
+    }
+
     private static UIElement projectionPanel;
     private static boolean projectionPanelVisible = false;
+    private static UIElement workgroupPanel;
+    private static boolean workgroupPanelVisible = false;
+
+    private static void toggleWorkgroupPanel() {
+        if (workgroupPanelVisible && workgroupPanel != null) {
+            workgroupPanel.removeSelf();
+            workgroupPanel = null;
+            workgroupPanelVisible = false;
+            return;
+        }
+        showWorkgroupPanel();
+    }
+
+    private static void showWorkgroupPanel() {
+        if (workgroupPanel != null) workgroupPanel.removeSelf();
+        sendWorkgroupAction("sync", "", "", "");
+
+        var panel = new Dialog();
+        panel.setTitle("ebe.workgroup.panel");
+        panel.windowMode(12, 32, 320, 390);
+        panel.setAutoClose(false);
+        panel.setClickOutsideClose(false);
+
+        var content = new UIElement();
+        content.setId("workgroupPanelContent");
+        content.layout(l -> l.widthPercent(100).flex(1).flexDirection(FlexDirection.COLUMN).gapAll(4));
+        panel.addContent(content);
+        panel.addButton(new Button()
+                .setText(Component.translatable("ebe.editor.close"))
+                .setOnClick(e -> {
+                    panel.close();
+                    workgroupPanel = null;
+                    workgroupPanelVisible = false;
+                }));
+        panel.show(rootElement);
+
+        workgroupPanel = panel.overlay;
+        workgroupPanelVisible = true;
+        refreshWorkgroupPanel();
+    }
+
+    public static void refreshWorkgroupPanel() {
+        if (!workgroupPanelVisible || rootElement == null) return;
+        var content = findById(rootElement, "workgroupPanelContent");
+        if (content == null) return;
+        content.clearAllChildren();
+        content.addChild(createWorkgroupPanelContent());
+    }
+
+    private static UIElement createWorkgroupPanelContent() {
+        var wrapper = new UIElement();
+        wrapper.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
+
+        var top = new UIElement();
+        top.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+        var title = new Label();
+        title.setText(Component.translatable("ebe.workgroup.server_panel"));
+        title.layout(l -> l.flex(1));
+        title.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(11).textShadow(false));
+        top.addChild(title);
+        top.addChild(workgroupSmallButton("ebe.editor.refresh", 58, () -> sendWorkgroupAction("sync", "", "", "")));
+        wrapper.addChild(top);
+
+        JsonObject data = workgroupRootJson();
+        JsonObject group = obj(data.get("group"));
+        if (group.entrySet().isEmpty()) {
+            wrapper.addChild(createWorkgroupJoinContent());
+        } else {
+            wrapper.addChild(createCurrentWorkgroupContent(group));
+        }
+        return wrapper;
+    }
+
+    private static UIElement createWorkgroupJoinContent() {
+        var box = new UIElement();
+        box.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingAll(5));
+        box.style(s -> s.background(Sprites.RECT_RD));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.workgroup.unique_hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        box.addChild(hint);
+
+        var nameField = new TextField();
+        nameField.layout(l -> l.widthPercent(100).height(20));
+        nameField.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.workgroup.name")));
+        box.addChild(nameField);
+
+        var passwordField = new TextField();
+        passwordField.layout(l -> l.widthPercent(100).height(20));
+        passwordField.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.workgroup.password_optional")));
+        box.addChild(passwordField);
+
+        var actions = new UIElement();
+        actions.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+        var create = new Button();
+        create.setText(Component.translatable("ebe.workgroup.create"));
+        create.layout(l -> l.flex(1).height(20));
+        create.setOnClick(e -> {
+            String name = nameField.getText().trim();
+            if (!name.isEmpty()) sendWorkgroupAction("create", name, passwordField.getText(), "");
+        });
+        actions.addChild(create);
+
+        var join = new Button();
+        join.setText(Component.translatable("ebe.workgroup.join"));
+        join.layout(l -> l.flex(1).height(20));
+        join.setOnClick(e -> {
+            String name = nameField.getText().trim();
+            if (!name.isEmpty()) sendWorkgroupAction("join", name, passwordField.getText(), "");
+        });
+        actions.addChild(join);
+        box.addChild(actions);
+        return box;
+    }
+
+    private static UIElement createCurrentWorkgroupContent(JsonObject group) {
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+
+        var list = new UIElement();
+        list.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
+        String groupName = string(group.get("name"), "");
+        boolean isLeader = bool(group.get("isLeader"));
+
+        var summary = new UIElement();
+        summary.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(5));
+        summary.style(s -> s.background(Sprites.RECT_RD));
+        var name = new Label();
+        name.setText(Component.literal(groupName));
+        name.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(12).textShadow(false));
+        summary.addChild(name);
+        var leader = new Label();
+        leader.setText(Component.translatable("ebe.workgroup.leader_value", string(group.get("leader"), "-")));
+        leader.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false));
+        summary.addChild(leader);
+        list.addChild(summary);
+
+        var actions = new UIElement();
+        actions.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+        if (isLeader) {
+            var disband = new Button();
+            disband.setText(Component.translatable("ebe.workgroup.disband"));
+            disband.layout(l -> l.flex(1).height(20));
+            disband.setOnClick(e -> sendWorkgroupAction("disband", groupName, "", ""));
+            actions.addChild(disband);
+        } else {
+            var leave = new Button();
+            leave.setText(Component.translatable("ebe.workgroup.leave"));
+            leave.layout(l -> l.flex(1).height(20));
+            leave.setOnClick(e -> sendWorkgroupAction("leave", groupName, "", ""));
+            actions.addChild(leave);
+        }
+        list.addChild(actions);
+
+        list.addChild(workgroupSection("ebe.workgroup.members"));
+        JsonArray members = arr(group.get("members"));
+        for (JsonElement memberElem : members) {
+            list.addChild(workgroupMemberRow(groupName, memberElem.getAsJsonObject(), isLeader));
+        }
+
+        list.addChild(workgroupSection("ebe.workgroup.synced_projections"));
+        JsonArray projections = arr(group.get("projections"));
+        if (projections.size() == 0) {
+            var empty = new Label();
+            empty.setText(Component.translatable("ebe.workgroup.no_synced_projections"));
+            empty.textStyle(ts -> ts.textColor(0xFF888888).fontSize(8).textShadow(false));
+            list.addChild(empty);
+        } else {
+            for (JsonElement projectionElem : projections) {
+                JsonObject projection = projectionElem.getAsJsonObject();
+                var label = new Label();
+                label.setText(Component.translatable("ebe.workgroup.projection_row",
+                        string(projection.get("file"), "-"),
+                        integer(projection.get("x"), 0),
+                        integer(projection.get("y"), 0),
+                        integer(projection.get("z"), 0),
+                        string(projection.get("owner"), "-")));
+                label.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
+                        .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+                list.addChild(label);
+            }
+        }
+
+        scroller.addScrollViewChild(list);
+        return scroller;
+    }
+
+    private static UIElement workgroupMemberRow(String groupName, JsonObject member, boolean canManage) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4).paddingAll(3));
+        row.style(s -> s.background(Sprites.RECT_RD));
+        String memberName = string(member.get("name"), "-");
+        String role = string(member.get("role"), "member");
+        var label = new Label();
+        label.setText(Component.translatable("ebe.workgroup.member_row", memberName,
+                Component.translatable("ebe.workgroup.role." + role)));
+        label.layout(l -> l.flex(1));
+        label.textStyle(ts -> ts.textColor("leader".equals(role) ? 0xFFFFD166 : 0xFFDDDDDD).fontSize(8).textShadow(false));
+        row.addChild(label);
+        if (canManage && !"leader".equals(role)) {
+            row.addChild(workgroupSmallButton("ebe.workgroup.kick", 44, () -> sendWorkgroupAction("kick", groupName, "", memberName)));
+        }
+        return row;
+    }
+
+    private static Label workgroupSection(String key) {
+        var label = new Label();
+        label.setText(Component.translatable(key));
+        label.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(10).textShadow(false));
+        return label;
+    }
+
+    private static Button workgroupSmallButton(String key, int width, Runnable action) {
+        var btn = new Button();
+        btn.setText(Component.translatable(key));
+        btn.layout(l -> l.width(width).height(18));
+        btn.setOnClick(e -> action.run());
+        return btn;
+    }
+
+    private static void sendWorkgroupAction(String action, String groupName, String password, String target) {
+        PacketDistributor.sendToServer(new WorkgroupActionPayload(action, groupName, password, target));
+    }
+
+    private static JsonObject workgroupRootJson() {
+        try {
+            return JsonParser.parseString(com.l1ght.ebe.client.ClientOnlyHooks.getWorkgroupsJson()).getAsJsonObject();
+        } catch (Exception ignored) {
+            return new JsonObject();
+        }
+    }
+
+    private static JsonObject obj(JsonElement elem) {
+        return elem != null && elem.isJsonObject() ? elem.getAsJsonObject() : new JsonObject();
+    }
+
+    private static JsonArray arr(JsonElement elem) {
+        return elem != null && elem.isJsonArray() ? elem.getAsJsonArray() : new JsonArray();
+    }
+
+    private static String string(JsonElement elem, String fallback) {
+        return elem == null || elem.isJsonNull() ? fallback : elem.getAsString();
+    }
+
+    private static int integer(JsonElement elem, int fallback) {
+        try {
+            return elem == null || elem.isJsonNull() ? fallback : elem.getAsInt();
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static boolean bool(JsonElement elem) {
+        return elem != null && !elem.isJsonNull() && elem.getAsBoolean();
+    }
 
     private static void toggleProjectionPanel() {
         if (projectionPanelVisible && projectionPanel != null) {
@@ -519,7 +852,7 @@ public class EditorUI {
             selectBtn.layout(l -> l.widthPercent(100).height(18));
             selectBtn.setOnClick(e -> {
                 if (session != null && session.getModel() != null) {
-                    ProjectionManager.selectProjection(session.getModel());
+                    ProjectionManager.selectProjection(session.getModel(), session.getComputedProjection());
                     switchProjectionTab(0);
                 }
             });
@@ -551,7 +884,7 @@ public class EditorUI {
         selectBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
         selectBtn.setOnClick(e -> {
             if (session != null && session.getModel() != null) {
-                ProjectionManager.selectProjection(session.getModel());
+                ProjectionManager.selectProjection(session.getModel(), session.getComputedProjection());
                 switchProjectionTab(0);
             }
         });
@@ -731,7 +1064,7 @@ public class EditorUI {
         placeBtn.textStyle(ts -> ts.fontSize(10).textShadow(false));
         placeBtn.setOnClick(e -> {
             if (session != null && session.getModel() != null) {
-                ProjectionManager.selectProjection(session.getModel());
+                ProjectionManager.selectProjection(session.getModel(), session.getComputedProjection());
                 ProjectionManager.loadProjection();
                 switchProjectionTab(0);
             }
@@ -1480,6 +1813,10 @@ public class EditorUI {
         printerTab.setText(Component.translatable("ebe.editor.panel.printer"));
         tabView.addTab(printerTab, wrapInScroller(createPrinterContent()));
 
+        var nbtTemplatesTab = new Tab();
+        nbtTemplatesTab.setText(Component.translatable("ebe.nbt.templates"));
+        tabView.addTab(nbtTemplatesTab, wrapInScroller(createNbtTemplatesContent()));
+
         panel.addChild(tabView);
         return panel;
     }
@@ -1488,19 +1825,155 @@ public class EditorUI {
         var container = new UIElement();
         container.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
 
+        var actionRow = new UIElement();
+        actionRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+
         var openFolderBtn = new Button();
         openFolderBtn.setText(Component.translatable("ebe.editor.open_folder"));
-        openFolderBtn.layout(l -> l.widthPercent(100).height(18));
+        openFolderBtn.layout(l -> l.flex(1).height(18));
         openFolderBtn.setOnClick(e -> ImportDialog.openSchematicFolder());
-        container.addChild(openFolderBtn);
+        actionRow.addChild(openFolderBtn);
 
-        var treeList = createFileTree();
+        var importBtn = new Button();
+        importBtn.setText(Component.translatable("ebe.editor.import"));
+        importBtn.layout(l -> l.flex(1).height(18));
+        importBtn.setOnClick(e -> ImportDialog.showImport(rootElement, file -> {
+            onFileSelected(file);
+            refreshFileList();
+        }));
+        actionRow.addChild(importBtn);
+
+        var refreshBtn = new Button();
+        refreshBtn.setText(Component.translatable("ebe.editor.refresh_short"));
+        refreshBtn.layout(l -> l.width(22).height(18));
+        refreshBtn.setOnClick(e -> refreshFileList());
+        registerTooltip(refreshBtn, Component.translatable("ebe.editor.refresh"));
+        actionRow.addChild(refreshBtn);
+        container.addChild(actionRow);
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.editor.files.hot_reload_hint"));
+        hint.textStyle(ts -> ts.textColor(0xFF888888).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        container.addChild(hint);
+
+        fileListContainer = new UIElement();
+        fileListContainer.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
         var scroller = new ScrollerView();
         scroller.layout(l -> l.widthPercent(100).flex(1));
         scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
-        scroller.addScrollViewChild(treeList);
+        scroller.addScrollViewChild(fileListContainer);
         container.addChild(scroller);
+        refreshFileList();
         return container;
+    }
+
+    private static UIElement createNbtTemplatesContent() {
+        var container = new UIElement();
+        container.layout(l -> l.widthPercent(100).heightPercent(100).paddingAll(4).flexDirection(FlexDirection.COLUMN).gapAll(3));
+
+        var saveBtn = new Button();
+        saveBtn.setText(Component.translatable("ebe.nbt.template.save_current"));
+        saveBtn.layout(l -> l.widthPercent(100).height(20));
+        saveBtn.setOnClick(e -> {
+            var tag = session.getModel().getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ());
+            if (tag == null) return;
+            var dialog = Dialog.stringEditorDialog(Component.translatable("ebe.nbt.template.name").getString(), "template", s -> !s.isBlank(), name -> {
+                NbtTemplateManager.saveTemplate(name, tag);
+                rebuildRightPanel();
+            });
+            dialog.overlay.layout(l -> l.width(220));
+            dialog.show(rootElement);
+        });
+        container.addChild(saveBtn);
+
+        var diffBtn = new Button();
+        diffBtn.setText(Component.translatable("ebe.nbt.template.diff_selected"));
+        diffBtn.layout(l -> l.widthPercent(100).height(20));
+        diffBtn.setOnClick(e -> showNbtTemplateDiffDialog());
+        container.addChild(diffBtn);
+
+        for (var entry : NbtTemplateManager.all().entrySet()) {
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(2));
+            var name = new Label();
+            name.setText(Component.literal(entry.getKey()));
+            name.layout(l -> l.flex(1));
+            name.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(8).textShadow(false));
+            row.addChild(name);
+
+            var apply = new Button();
+            apply.setText(Component.literal("Apply"));
+            apply.layout(l -> l.width(48).height(16));
+            apply.setOnClick(e -> {
+                var tag = NbtTemplateManager.get(entry.getKey());
+                if (tag != null) {
+                    session.getModel().setBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ(), tag);
+                    session.markDirty();
+                    refreshPropertiesPanel();
+                }
+            });
+            row.addChild(apply);
+
+            var del = new Button();
+            del.setText(Component.literal("X"));
+            del.layout(l -> l.width(20).height(16));
+            del.setOnClick(e -> {
+                NbtTemplateManager.delete(entry.getKey());
+                rebuildRightPanel();
+            });
+            row.addChild(del);
+            container.addChild(row);
+        }
+        return container;
+    }
+
+    private static void showNbtTemplateDiffDialog() {
+        var current = session.getModel().getBlockEntityNbt(state.getCursorX(), state.getCursorY(), state.getCursorZ());
+        if (current == null) return;
+        var dialog = new Dialog();
+        dialog.setTitle("NBT field diff");
+        dialog.overlay.layout(l -> l.width(320));
+        for (var entry : NbtTemplateManager.all().entrySet()) {
+            var template = NbtTemplateManager.get(entry.getKey());
+            var btn = new Button();
+            btn.setText(Component.literal(entry.getKey()));
+            btn.setOnClick(e -> {
+                dialog.close();
+                var result = new Dialog();
+                result.setTitle("NBT field diff: " + entry.getKey());
+                result.overlay.layout(l -> l.width(320));
+                var label = new Label();
+                label.setText(Component.literal(diffNbtFields(template, current)));
+                label.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
+                        .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+                result.addContent(label);
+                result.addButton(new Button().setText(Component.translatable("ebe.editor.close")).setOnClick(ev -> result.close()));
+                result.show(rootElement);
+            });
+            dialog.addContent(btn);
+        }
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.close")).setOnClick(e -> dialog.close()));
+        dialog.show(rootElement);
+    }
+
+    private static String diffNbtFields(net.minecraft.nbt.CompoundTag base, net.minecraft.nbt.CompoundTag current) {
+        if (base == null) return "Template could not be parsed.";
+        var lines = new StringBuilder();
+        for (String key : current.getAllKeys()) {
+            if (!base.contains(key)) lines.append("+ ").append(key).append(" = ").append(current.get(key)).append('\n');
+            else if (!String.valueOf(base.get(key)).equals(String.valueOf(current.get(key)))) {
+                lines.append("~ ").append(key).append(": ").append(base.get(key)).append(" -> ").append(current.get(key)).append('\n');
+            }
+        }
+        for (String key : base.getAllKeys()) {
+            if (!current.contains(key)) lines.append("- ").append(key).append(" = ").append(base.get(key)).append('\n');
+        }
+        return lines.isEmpty() ? Component.translatable("ebe.nbt.template.no_diff").getString() : lines.toString();
+    }
+
+    private static void rebuildRightPanel() {
+        refreshPropertiesPanel();
     }
 
     private static UIElement createLayersContent() {
@@ -1733,6 +2206,13 @@ public class EditorUI {
         diffBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) showMaterialDiffDialog(); });
         registerTooltip(diffBtn, Component.translatable("ebe.materials.diff_calc"));
         header.addChild(diffBtn);
+
+        var refreshBtn = new UIElement();
+        refreshBtn.layout(l -> l.width(20).height(20));
+        refreshBtn.style(s -> s.backgroundTexture(EditorIcons.REFRESH));
+        refreshBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> { if (e.button == 0) refreshMaterialList(); });
+        registerTooltip(refreshBtn, Component.translatable("ebe.editor.refresh"));
+        header.addChild(refreshBtn);
 
         var totalLabel = new Label();
         totalLabel.setId("materialTotalLabel");
@@ -3149,6 +3629,184 @@ public class EditorUI {
 
     // ========== File Tree ==========
 
+    public static void pollFileTreeRefresh() {
+        if (fileListContainer == null) return;
+        if (fileRefreshCooldown-- > 0) return;
+        fileRefreshCooldown = 20;
+        long signature = computeFileTreeSignature();
+        if (signature != lastFileTreeSignature) {
+            refreshFileList();
+        }
+    }
+
+    private static void refreshFileList() {
+        if (fileListContainer == null) return;
+        fileListContainer.clearAllChildren();
+        lastFileTreeSignature = computeFileTreeSignature();
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
+        try {
+            Files.createDirectories(dir);
+            try (var stream = Files.list(dir)) {
+                var files = stream
+                        .filter(Files::isRegularFile)
+                        .filter(path -> FileManager.SUPPORTED_EXTENSIONS.contains(FileManager.getFileExtension(path).toLowerCase()))
+                        .sorted(Comparator.comparing(path -> path.getFileName().toString().toLowerCase()))
+                        .limit(500)
+                        .toList();
+                if (files.isEmpty()) {
+                    var empty = new Label();
+                    empty.setText(Component.translatable("ebe.editor.files.empty"));
+                    empty.textStyle(ts -> ts.textColor(0xFF888888).fontSize(9).textShadow(false));
+                    fileListContainer.addChild(empty);
+                    return;
+                }
+                for (Path file : files) {
+                    fileListContainer.addChild(createFileRow(file));
+                }
+            }
+        } catch (Exception e) {
+            var error = new Label();
+            error.setText(Component.translatable("ebe.editor.files.read_failed", e.getMessage()));
+            error.textStyle(ts -> ts.textColor(0xFFFF6666).fontSize(9).textShadow(false));
+            fileListContainer.addChild(error);
+        }
+    }
+
+    private static UIElement createFileRow(Path file) {
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(1).paddingAll(3));
+        row.style(s -> s.background(Sprites.RECT_RD));
+        row.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 1) {
+                showFileContextDialog(file);
+                e.stopPropagation();
+            }
+        });
+
+        var top = new UIElement();
+        top.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(3));
+
+        var ext = new Label();
+        ext.setText(Component.literal(FileManager.getFileExtension(file).replace(".", "").toUpperCase()));
+        ext.layout(l -> l.width(42));
+        ext.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(8).textShadow(false));
+        top.addChild(ext);
+
+        var name = new Label();
+        name.setText(Component.literal(file.getFileName().toString()));
+        name.layout(l -> l.flex(1));
+        name.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(9).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        top.addChild(name);
+
+        var open = new Button();
+        open.setText(Component.translatable("ebe.editor.open"));
+        open.layout(l -> l.width(42).height(16));
+        open.setOnClick(e -> onFileSelected(file));
+        top.addChild(open);
+
+        var more = new Button();
+        more.setText(Component.literal("..."));
+        more.layout(l -> l.width(24).height(16));
+        more.setOnClick(e -> showFileContextDialog(file));
+        top.addChild(more);
+
+        row.addChild(top);
+
+        var meta = new Label();
+        meta.setText(buildFileThumbnailText(file));
+        meta.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false));
+        row.addChild(meta);
+        return row;
+    }
+
+    private static Component buildFileThumbnailText(Path file) {
+        try {
+            long size = Files.size(file);
+            return Component.translatable("ebe.editor.files.thumbnail", fileTypeName(file), Math.max(1, size / 1024));
+        } catch (Exception ignored) {
+            return fileTypeName(file);
+        }
+    }
+
+    private static Component fileTypeName(Path file) {
+        return Component.translatable("ebe.editor.files.type." + FileManager.getFileType(file));
+    }
+
+    private static void showFileContextDialog(Path file) {
+        var dialog = new Dialog();
+        dialog.setTitle(file.getFileName().toString());
+        dialog.overlay.layout(l -> l.width(240));
+
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.open")).setOnClick(e -> {
+            onFileSelected(file);
+            dialog.close();
+        }));
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.rename")).setOnClick(e -> {
+            dialog.close();
+            renameFileDialog(file);
+        }));
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.export_as")).setOnClick(e -> {
+            dialog.close();
+            onFileSelected(file);
+            EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
+                try {
+                    session.saveAs(name);
+                    refreshFileList();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            });
+        }));
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.delete")).setOnClick(e -> {
+            dialog.close();
+            EditorDialogs.confirmDialog(rootElement, Component.translatable("ebe.editor.files.delete_confirm", file.getFileName().toString()), () -> {
+                try {
+                    Files.deleteIfExists(file);
+                    refreshFileList();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            });
+        }));
+        dialog.addButton(new Button().setText(Component.translatable("ebe.history.dialog.cancel")).setOnClick(e -> dialog.close()));
+        dialog.show(rootElement);
+    }
+
+    private static void renameFileDialog(Path file) {
+        var dialog = Dialog.stringEditorDialog(
+                Component.translatable("ebe.editor.files.rename").getString(),
+                file.getFileName().toString(),
+                s -> !s.isBlank() && !s.matches(".*[\\\\/:*?\"<>|].*"),
+                name -> {
+                    try {
+                        Files.move(file, file.resolveSibling(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        refreshFileList();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+        );
+        dialog.overlay.layout(l -> l.width(220));
+        dialog.show(rootElement);
+    }
+
+    private static long computeFileTreeSignature() {
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
+        if (!Files.exists(dir)) return 0L;
+        long hash = 1125899906842597L;
+        try (var stream = Files.list(dir)) {
+            for (Path path : stream.filter(Files::isRegularFile).toList()) {
+                if (!FileManager.SUPPORTED_EXTENSIONS.contains(FileManager.getFileExtension(path).toLowerCase())) continue;
+                hash = 31 * hash + path.getFileName().toString().hashCode();
+                hash = 31 * hash + Files.size(path);
+                hash = 31 * hash + Files.getLastModifiedTime(path).toMillis();
+            }
+        } catch (Exception ignored) {
+        }
+        return hash;
+    }
+
     private static TreeList<FileTreeNode> createFileTree() {
         var root = buildFileSystemTree();
         var treeList = new TreeList<FileTreeNode>(root, true);
@@ -3188,14 +3846,7 @@ public class EditorUI {
     }
 
     private static void onFileSelected(Path file) {
-        try {
-            session.load(file);
-            ViewportFactory.loadFromModel(session.getModel());
-            refreshMaterialList();
-            updateStatusBar();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        beginLoadFile(file);
     }
 
     private static Button buildCollapseButton(boolean isLeft) {
@@ -3221,20 +3872,44 @@ public class EditorUI {
             if (e.button == 0) {
                 activeDivider = isLeft ? 1 : 2;
                 dividerDragStartX = (int) e.x;
+                setHorizontalResizeCursor();
                 e.stopPropagation();
             }
         });
 
         divider.addEventListener(UIEvents.MOUSE_ENTER, e -> {
             divider.style(s -> s.background(Sprites.RECT_RD_DARK));
+            setHorizontalResizeCursor();
         });
         divider.addEventListener(UIEvents.MOUSE_LEAVE, e -> {
             if (activeDivider == 0 || (isLeft && activeDivider != 1) || (!isLeft && activeDivider != 2)) {
                 divider.style(s -> s.background(Sprites.RECT_DARK));
+                resetMouseCursor();
             }
         });
 
         return divider;
+    }
+
+    private static void setHorizontalResizeCursor() {
+        var mc = Minecraft.getInstance();
+        if (mc == null || mc.getWindow() == null) return;
+        if (horizontalResizeCursor == 0L) {
+            horizontalResizeCursor = GLFW.glfwCreateStandardCursor(GLFW.GLFW_HRESIZE_CURSOR);
+        }
+        if (horizontalResizeCursor != 0L) {
+            GLFW.glfwSetCursor(mc.getWindow().getWindow(), horizontalResizeCursor);
+            resizeCursorActive = true;
+        }
+    }
+
+    public static void resetMouseCursor() {
+        if (!resizeCursorActive) return;
+        var mc = Minecraft.getInstance();
+        if (mc != null && mc.getWindow() != null) {
+            GLFW.glfwSetCursor(mc.getWindow().getWindow(), 0L);
+        }
+        resizeCursorActive = false;
     }
 
     private static void toggleLeftPanel() {
@@ -4963,6 +5638,21 @@ public class EditorUI {
         updateMaterialList();
     }
 
+    public static void markMaterialListStale() {
+        if (materialListContainer != null) {
+            materialListContainer.clearAllChildren();
+            var label = new Label();
+            label.setText(Component.translatable("ebe.materials.large_refresh_hint"));
+            label.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                    .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+            materialListContainer.addChild(label);
+        }
+        var total = findById(rootElement, "materialTotalLabel");
+        if (total instanceof Label label) {
+            label.setText(Component.translatable("ebe.materials.needs_refresh"));
+        }
+    }
+
     private static boolean showInventoryCompare = false;
 
     private static void toggleInventoryCompare() {
@@ -5290,6 +5980,7 @@ public class EditorUI {
 
     public static void updateStatusBar() {
         if (rootElement == null) return;
+        if (ViewportFactory.isProgressiveLoadActive()) return;
         var status = findById(rootElement, "statusBar");
         if (status instanceof Label l) {
             l.setText(Component.literal(state.buildStatusText()));

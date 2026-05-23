@@ -3,6 +3,9 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
+import net.minecraft.client.resources.language.I18n;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.util.tinyfd.TinyFileDialogs;
 
 import java.io.File;
 import java.io.IOException;
@@ -12,6 +15,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.function.Consumer;
 
 public class ImportDialog {
+    private static final String[] PROJECTION_FILTERS = {"*.ebe", "*.litematic", "*.schem", "*.schematic", "*.nbt"};
 
     public static void showOpen(UIElement parent, Consumer<Path> onFileSelected) {
         var dir = Path.of(EBEClientConfig.schematicDir.get()).toFile();
@@ -26,25 +30,42 @@ public class ImportDialog {
     }
 
     public static void showImport(UIElement parent, Consumer<Path> onFileSelected) {
-        var dir = Path.of(EBEClientConfig.schematicDir.get()).toFile();
-        if (!dir.exists()) dir.mkdirs();
-        Dialog.showFileDialog("ebe.editor.import", dir, true,
-                Dialog.suffixFilter(".litematic", ".schem", ".nbt", ".schematic", ".ebe"),
-                file -> {
-                    if (file != null && file.isFile()) {
-                        try {
-                            var destDir = Path.of(EBEClientConfig.schematicDir.get());
-                            Files.createDirectories(destDir);
-                            var dest = destDir.resolve(file.getName());
-                            if (!file.toPath().equals(dest)) {
-                                Files.copy(file.toPath(), dest, StandardCopyOption.REPLACE_EXISTING);
-                            }
-                            onFileSelected.accept(dest);
-                        } catch (IOException e) {
-                            onFileSelected.accept(file.toPath());
-                        }
-                    }
-                }).show(parent);
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException ignored) {
+        }
+
+        String selected;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            var filters = stack.mallocPointer(PROJECTION_FILTERS.length);
+            for (String filter : PROJECTION_FILTERS) {
+                filters.put(stack.UTF8(filter));
+            }
+            filters.flip();
+            selected = TinyFileDialogs.tinyfd_openFileDialog(
+                    I18n.get("ebe.editor.import.file_picker"),
+                    dir.toAbsolutePath().toString(),
+                    filters,
+                    I18n.get("ebe.editor.import.supported_formats"),
+                    false
+            );
+        }
+        if (selected == null || selected.isBlank()) return;
+
+        File file = new File(selected);
+        if (!file.isFile()) return;
+        try {
+            var destDir = Path.of(EBEClientConfig.schematicDir.get());
+            Files.createDirectories(destDir);
+            var dest = destDir.resolve(file.getName());
+            if (!file.toPath().equals(dest)) {
+                Files.copy(file.toPath(), dest, StandardCopyOption.REPLACE_EXISTING);
+            }
+            onFileSelected.accept(dest);
+        } catch (IOException e) {
+            onFileSelected.accept(file.toPath());
+        }
     }
 
     public static void openSchematicFolder() {

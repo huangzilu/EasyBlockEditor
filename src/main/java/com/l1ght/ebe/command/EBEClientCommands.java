@@ -21,6 +21,13 @@ public class EBEClientCommands {
                                     }
                                     return 1;
                                 }))
+                        .then(net.minecraft.commands.Commands.literal("admin")
+                                .executes(ctx -> {
+                                    if (FMLEnvironment.dist == Dist.CLIENT) {
+                                        com.l1ght.ebe.client.ClientOnlyHooks.openAdminScreen();
+                                    }
+                                    return 1;
+                                }))
         );
     }
 }

@@ -1,8 +1,10 @@
 package com.l1ght.ebe.network;
 
 import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.server.permission.PermissionFeature;
+import com.l1ght.ebe.server.permission.PermissionManager;
+import com.l1ght.ebe.server.placement.PlaceAllQueue;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -10,7 +12,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
-import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,24 +56,10 @@ public class PlaceBlocksPayload implements CustomPacketPayload {
         context.enqueueWork(() -> {
             if (!(context.player().level() instanceof ServerLevel level)) return;
             var player = context.player();
-            boolean creative = player.isCreative();
-            boolean op = player.hasPermissions(2);
-            if (!creative && !op) return;
-
-            int placed = 0;
-            for (var entry : payload.entries) {
-                var state = Block.stateById(entry.stateId());
-                if (state != null && !state.isAir()) {
-                    if (level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
-                        placed++;
-                    } else if (level.getBlockState(entry.pos()).getBlock() == state.getBlock()) {
-                        placed++;
-                    }
-                }
-            }
-            if (player instanceof ServerPlayer serverPlayer) {
-                PacketDistributor.sendToPlayer(serverPlayer, new PlaceProgressPayload(placed, payload.entries.size()));
-            }
+            if (!(player instanceof ServerPlayer serverPlayer)) return;
+            if (!PermissionManager.canUse(serverPlayer, PermissionFeature.PLACE_ALL)) return;
+            if (!PlaceAllQueue.withinMaxEditSize(payload.entries)) return;
+            PlaceAllQueue.enqueue(level, serverPlayer, payload.entries);
         });
     }
 }

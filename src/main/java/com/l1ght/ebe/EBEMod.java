@@ -7,6 +7,14 @@ import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.item.ArchitectToolboxItem;
 import com.l1ght.ebe.item.RemoteItem;
 import com.l1ght.ebe.network.EBENetwork;
+import com.l1ght.ebe.network.AdminActionPayload;
+import com.l1ght.ebe.network.WorkgroupNetworkSync;
+import com.l1ght.ebe.network.WorkgroupSyncPayload;
+import com.l1ght.ebe.server.ServerSettingsManager;
+import com.l1ght.ebe.server.permission.PermissionManager;
+import com.l1ght.ebe.server.placement.PlaceAllQueue;
+import com.l1ght.ebe.server.workgroup.WorkgroupManager;
+import com.l1ght.ebe.server.workgroup.print.WorkgroupPrintSessionManager;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.CreativeModeTab;
@@ -22,6 +30,8 @@ import net.neoforged.fml.event.lifecycle.FMLLoadCompleteEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -81,7 +91,35 @@ public class EBEMod {
 
     @net.neoforged.bus.api.SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
+        PermissionManager.load();
+        ServerSettingsManager.load();
+        WorkgroupManager.load();
         LOGGER.info("EasyBlockEditor server starting");
+    }
+
+    @net.neoforged.bus.api.SubscribeEvent
+    public void onServerTick(ServerTickEvent.Post event) {
+        boolean permissionsChanged = PermissionManager.pollHotReload();
+        boolean settingsChanged = ServerSettingsManager.pollHotReload();
+        boolean workgroupsChanged = WorkgroupManager.pollHotReload();
+        boolean projectionExpired = WorkgroupManager.expireProjections(ServerSettingsManager.get().projectionTimeoutSeconds);
+        boolean printTickChanged = WorkgroupPrintSessionManager.tick(event.getServer().overworld().getGameTime());
+        PlaceAllQueue.tick();
+        var printChangedGroups = WorkgroupPrintSessionManager.consumeChangedGroupsForBroadcast();
+
+        if (permissionsChanged || settingsChanged || workgroupsChanged || projectionExpired || printTickChanged || !printChangedGroups.isEmpty()) {
+            for (var player : event.getServer().getPlayerList().getPlayers()) {
+                if (player.hasPermissions(2)) {
+                    AdminActionPayload.sendAdminSync(player);
+                }
+                if (workgroupsChanged || projectionExpired || printTickChanged) {
+                    PacketDistributor.sendToPlayer(player, new WorkgroupSyncPayload(WorkgroupManager.toClientJson(player)));
+                }
+            }
+            for (var groupId : printChangedGroups) {
+                WorkgroupNetworkSync.syncGroup(event.getServer(), groupId);
+            }
+        }
     }
 
     @net.neoforged.bus.api.SubscribeEvent

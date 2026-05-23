@@ -10,6 +10,7 @@ import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -21,6 +22,8 @@ import java.io.DataInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
@@ -231,6 +234,128 @@ public class SchematicReaders {
             }
         }
 
+        var entitiesList = root.getList("entities", 10);
+        for (int i = 0; i < entitiesList.size(); i++) {
+            model.addEntity(entitiesList.getCompound(i));
+        }
+
+        return model;
+    }
+
+    public static BuildingModel readSpongeSchem(Path file) throws Exception {
+        var root = readNbtAnyFormat(file);
+        if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
+
+        int width = root.getShort("Width");
+        int height = root.getShort("Height");
+        int length = root.getShort("Length");
+        if (width <= 0 || height <= 0 || length <= 0) {
+            throw new IllegalArgumentException("Invalid Sponge schematic dimensions");
+        }
+
+        int[] offset = root.getIntArray("Offset");
+        int ox = offset.length > 0 ? offset[0] : 0;
+        int oy = offset.length > 1 ? offset[1] : 0;
+        int oz = offset.length > 2 ? offset[2] : 0;
+
+        var model = new BuildingModel();
+        model.getMetadata().setName(file.getFileName().toString());
+        model.getMetadata().setSize(width, height, length);
+        var region = model.addRegion("schem", ox, oy, oz, width, height, length);
+
+        Map<Integer, BlockState> palette = new LinkedHashMap<>();
+        var paletteTag = root.getCompound("Palette");
+        for (var key : paletteTag.getAllKeys()) {
+            palette.put(paletteTag.getInt(key), parseStateString(key));
+        }
+
+        int[] indexes;
+        if (root.contains("BlockData", 7)) {
+            indexes = readVarInts(root.getByteArray("BlockData"), width * height * length);
+        } else if (root.contains("BlockData", 11)) {
+            indexes = root.getIntArray("BlockData");
+        } else {
+            throw new IllegalArgumentException("Sponge schematic has no BlockData");
+        }
+
+        int idx = 0;
+        for (int y = 0; y < height; y++) {
+            for (int z = 0; z < length; z++) {
+                for (int x = 0; x < width; x++) {
+                    BlockState state = palette.getOrDefault(idx < indexes.length ? indexes[idx] : 0, Blocks.AIR.defaultBlockState());
+                    if (!state.isAir()) {
+                        region.setWorldBlock(ox + x, oy + y, oz + z, state);
+                    }
+                    idx++;
+                }
+            }
+        }
+
+        var blockEntities = root.getList("BlockEntities", 10);
+        for (int i = 0; i < blockEntities.size(); i++) {
+            var tag = blockEntities.getCompound(i);
+            int[] pos = tag.getIntArray("Pos");
+            if (pos.length == 3) {
+                region.setWorldBlockEntity(ox + pos[0], oy + pos[1], oz + pos[2], tag);
+            }
+        }
+
+        var entities = root.getList("Entities", 10);
+        for (int i = 0; i < entities.size(); i++) {
+            model.addEntity(entities.getCompound(i));
+        }
+
+        return model;
+    }
+
+    public static BuildingModel readSchematica(Path file) throws Exception {
+        var root = readNbtAnyFormat(file);
+        if (root == null) throw new IllegalArgumentException("Failed to read NBT from " + file);
+
+        int width = root.getShort("Width");
+        int height = root.getShort("Height");
+        int length = root.getShort("Length");
+        if (width <= 0 || height <= 0 || length <= 0) {
+            throw new IllegalArgumentException("Invalid Schematica dimensions");
+        }
+
+        var model = new BuildingModel();
+        model.getMetadata().setName(file.getFileName().toString());
+        model.getMetadata().setSize(width, height, length);
+        var region = model.addRegion("schematic", 0, 0, 0, width, height, length);
+
+        byte[] blocks = root.getByteArray("Blocks");
+        byte[] data = root.getByteArray("Data");
+        byte[] addBlocks = root.contains("AddBlocks", 7) ? root.getByteArray("AddBlocks") : new byte[0];
+        int volume = width * height * length;
+        for (int i = 0; i < Math.min(volume, blocks.length); i++) {
+            int id = blocks[i] & 0xFF;
+            if (addBlocks.length > i >> 1) {
+                int add = addBlocks[i >> 1] & 0xFF;
+                id |= ((i & 1) == 0 ? add & 0x0F : (add >> 4) & 0x0F) << 8;
+            }
+            int meta = data.length > i ? data[i] & 0x0F : 0;
+            BlockState state = Block.stateById((id << 4) | meta);
+            if (state == null) state = Blocks.AIR.defaultBlockState();
+            if (!state.isAir()) {
+                int x = i % width;
+                int z = (i / width) % length;
+                int y = i / (width * length);
+                region.setWorldBlock(x, y, z, state);
+            }
+        }
+
+        var tileEntities = root.getList("TileEntities", 10);
+        for (int i = 0; i < tileEntities.size(); i++) {
+            var tag = tileEntities.getCompound(i);
+            region.setWorldBlockEntity(tag.getInt("x"), tag.getInt("y"), tag.getInt("z"), tag);
+        }
+
+        var entities = root.getList("Entities", 10);
+        for (int i = 0; i < entities.size(); i++) {
+            model.addEntity(entities.getCompound(i));
+        }
+
         return model;
     }
 
@@ -266,6 +391,56 @@ public class SchematicReaders {
             LOG.warn("Failed to resolve block state from JSON: {}", id, e);
             return Blocks.STONE.defaultBlockState();
         }
+    }
+
+    private static BlockState parseStateString(String raw) {
+        if (raw == null || raw.isBlank()) return Blocks.AIR.defaultBlockState();
+        String id = raw;
+        Map<String, String> props = new LinkedHashMap<>();
+        int propStart = raw.indexOf('[');
+        if (propStart >= 0 && raw.endsWith("]")) {
+            id = raw.substring(0, propStart);
+            String body = raw.substring(propStart + 1, raw.length() - 1);
+            for (String part : body.split(",")) {
+                int eq = part.indexOf('=');
+                if (eq > 0) props.put(part.substring(0, eq), part.substring(eq + 1));
+            }
+        }
+        try {
+            var block = BuiltInRegistries.BLOCK.getOptional(ResourceLocation.parse(id));
+            if (block.isEmpty()) return Blocks.STONE.defaultBlockState();
+            BlockState state = block.get().defaultBlockState();
+            for (var entry : props.entrySet()) {
+                for (Property<?> prop : state.getProperties()) {
+                    if (prop.getName().equals(entry.getKey())) {
+                        state = setProperty(state, prop, entry.getValue());
+                        break;
+                    }
+                }
+            }
+            return state;
+        } catch (Exception e) {
+            LOG.warn("Failed to parse block state string: {}", raw, e);
+            return Blocks.STONE.defaultBlockState();
+        }
+    }
+
+    private static int[] readVarInts(byte[] bytes, int expected) {
+        int[] values = new int[expected];
+        int valueIndex = 0;
+        int value = 0;
+        int shift = 0;
+        for (byte b : bytes) {
+            value |= (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) {
+                if (valueIndex < values.length) values[valueIndex++] = value;
+                value = 0;
+                shift = 0;
+            } else {
+                shift += 7;
+            }
+        }
+        return values;
     }
 
     private static CompoundTag readNbtAnyFormat(Path file) {

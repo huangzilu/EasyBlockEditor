@@ -8,6 +8,7 @@ public class BuildingModel {
     private final BuildingMetadata metadata;
     private final List<Region> regions = new ArrayList<>();
     private final List<Layer> layers = new ArrayList<>();
+    private final List<CompoundTag> entities = new ArrayList<>();
     private int nextRegionId = 1;
     private int nextLayerId = 1;
 
@@ -43,6 +44,16 @@ public class BuildingModel {
     }
 
     public List<Region> getRegions() { return Collections.unmodifiableList(regions); }
+
+    public List<CompoundTag> getEntities() { return Collections.unmodifiableList(entities); }
+
+    public void addEntity(CompoundTag entity) {
+        if (entity != null) entities.add(entity.copy());
+    }
+
+    public void clearEntities() {
+        entities.clear();
+    }
 
     public List<Region> getRegionsForLayer(String layerId) {
         var result = new ArrayList<Region>();
