@@ -21,6 +21,8 @@ import kotlin.math.sqrt
 object ProjectionComputePlanner {
     private const val VIEWPORT_BATCH_SIZE = 2048
     private const val CACHE_LIMIT = 8
+    private const val CACHE_MAX_BLOCKS = 50_000
+    private const val CACHE_MAX_VOLUME = 250_000
 
     private val cache = Collections.synchronizedMap(
         object : LinkedHashMap<String, ComputedProjection>(CACHE_LIMIT, 0.75f, true) {
@@ -45,7 +47,9 @@ object ProjectionComputePlanner {
 
         return EbeScopes.submitCompute {
             val computed = compute(model, origin, rotation, mirror, centerPoint, includeViewportPlan)
-            cache[key] = computed
+            if (shouldCache(computed, includeViewportPlan)) {
+                cache[key] = computed
+            }
             computed
         }
     }
@@ -162,6 +166,11 @@ object ProjectionComputePlanner {
     @JvmStatic
     fun clearCache() {
         cache.clear()
+    }
+
+    private fun shouldCache(computed: ComputedProjection, includeViewportPlan: Boolean): Boolean {
+        if (includeViewportPlan) return false
+        return computed.blockCount() <= CACHE_MAX_BLOCKS && computed.totalVolume <= CACHE_MAX_VOLUME
     }
 
     private fun buildKey(

@@ -81,7 +81,12 @@ object WorkgroupPrintSessionManager {
     ): Boolean {
         val session = activeByGroup[groupId] ?: return false
         if (session.sessionId != sessionId) return false
-        return session.complete(token, playerId, status)
+        val changed = session.complete(token, playerId, status)
+        if (changed && session.isComplete()) {
+            activeByGroup.remove(groupId)
+            lastBroadcastVersion.remove(groupId)
+        }
+        return changed
     }
 
     @JvmStatic

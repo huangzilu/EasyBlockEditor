@@ -508,6 +508,7 @@
   "ebe.projection.coordinates": "Coordinates",
   "ebe.projection.completion": "Completion",
   "ebe.projection.blocks_placed": "%d / %d blocks placed",
+  "ebe.projection.placement_complete": "Projection placement complete. Projection unloaded and printer stopped.",
   "ebe.projection.place_tab": "Placement",
   "ebe.projection.place_at_player": "Place at Player Feet",
   "ebe.projection.place_custom": "Custom Coordinates",

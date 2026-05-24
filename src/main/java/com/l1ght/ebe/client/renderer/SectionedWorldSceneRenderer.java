@@ -6,9 +6,11 @@ import com.lowdragmc.lowdraglib2.client.scene.ISceneEntityRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ImmediateWorldSceneRenderer;
 import com.lowdragmc.lowdraglib2.client.scene.WorldSceneRenderer;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -44,8 +46,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/SectionedRenderer");
     private static final int SECTION_SIZE = 16;
-    private static final int SECTION_COMPILE_BATCH_SIZE = 3;
+    private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 6;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
+    private static final int BALANCED_MOVING_SECTION_LIMIT = 384;
+    private static final int PERFORMANCE_MOVING_SECTION_LIMIT = 192;
     private static final double CAMERA_EPSILON_SQR = 0.0001D;
     private static final List<RenderType> LAYERS = RenderType.chunkBufferLayers();
     private static final Map<RenderType, Integer> LAYER_INDICES = createLayerIndices();
@@ -82,7 +86,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private final Map<SectionPos, SectionData> sections = new LinkedHashMap<>();
-    private final Map<SectionPos, Set<BlockPos>> sectionBlocks = new LinkedHashMap<>();
+    private final Map<SectionPos, LongArrayList> sectionBlocks = new LinkedHashMap<>();
     private final Set<SectionPos> dirtySections = new LinkedHashSet<>();
     private final Set<BlockPos> tileEntities = new LinkedHashSet<>();
 
@@ -111,15 +115,21 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         public SectionData() {
             vertexBuffers = new VertexBuffer[LAYERS.size()];
             hasData = new boolean[LAYERS.size()];
-            for (int i = 0; i < LAYERS.size(); i++) {
-                vertexBuffers[i] = new VertexBuffer(VertexBuffer.Usage.STATIC);
-            }
         }
 
         public void close() {
             for (var vb : vertexBuffers) {
                 if (vb != null) vb.close();
             }
+        }
+
+        public VertexBuffer vertexBuffer(int layerIndex) {
+            VertexBuffer vb = vertexBuffers[layerIndex];
+            if (vb == null) {
+                vb = new VertexBuffer(VertexBuffer.Usage.STATIC);
+                vertexBuffers[layerIndex] = vb;
+            }
+            return vb;
         }
     }
 
@@ -179,7 +189,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var pos : loadedBlocks) {
             var immutable = pos.immutable();
             var sp = SectionPos.fromBlock(immutable);
-            sectionBlocks.computeIfAbsent(sp, ignored -> newSectionBlockSet()).add(immutable);
+            addBlockToSection(sp, immutable);
             sections.computeIfAbsent(sp, ignored -> new SectionData());
             touchedSections.add(sp);
         }
@@ -233,12 +243,12 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private void updateSectionBlock(BlockPos pos, boolean added) {
         var sp = SectionPos.fromBlock(pos);
         if (added) {
-            sectionBlocks.computeIfAbsent(sp, k -> newSectionBlockSet()).add(pos.immutable());
+            addBlockToSection(sp, pos.immutable());
             sections.computeIfAbsent(sp, k -> new SectionData());
         } else {
             var blocks = sectionBlocks.get(sp);
             if (blocks != null) {
-                blocks.remove(pos);
+                blocks.rem(pos.asLong());
                 if (blocks.isEmpty()) {
                     sectionBlocks.remove(sp);
                     var data = sections.remove(sp);
@@ -294,7 +304,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (blocks != null && !blocks.isEmpty()) {
             for (var pos : blocks) {
                 var sp = SectionPos.fromBlock(pos);
-                sectionBlocks.computeIfAbsent(sp, k -> newSectionBlockSet()).add(pos.immutable());
+                addBlockToSection(sp, pos.immutable());
                 sections.computeIfAbsent(sp, k -> new SectionData());
                 markSectionDirty(sp);
             }
@@ -308,10 +318,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (blocks != null && !blocks.isEmpty()) {
             for (var pos : blocks) {
                 var sp = SectionPos.fromBlock(pos);
-                var sectionSet = sectionBlocks.get(sp);
-                if (sectionSet != null) {
-                    sectionSet.remove(pos);
-                    if (sectionSet.isEmpty()) {
+                var sectionList = sectionBlocks.get(sp);
+                if (sectionList != null) {
+                    sectionList.rem(pos.asLong());
+                    if (sectionList.isEmpty()) {
                         sectionBlocks.remove(sp);
                         var data = sections.remove(sp);
                         if (data != null) data.close();
@@ -347,7 +357,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var entry : renderedBlocksMap.entrySet()) {
             for (var pos : entry.getKey()) {
                 var sp = SectionPos.fromBlock(pos);
-                sectionBlocks.computeIfAbsent(sp, k -> newSectionBlockSet()).add(pos.immutable());
+                addBlockToSection(sp, pos.immutable());
             }
         }
 
@@ -372,8 +382,16 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         needsFullRebuild = false;
     }
 
-    private Set<BlockPos> newSectionBlockSet() {
-        return new LinkedHashSet<>();
+    private LongArrayList newSectionBlockList() {
+        return new LongArrayList();
+    }
+
+    private void addBlockToSection(SectionPos sp, BlockPos pos) {
+        var blocks = sectionBlocks.computeIfAbsent(sp, ignored -> newSectionBlockList());
+        long packed = pos.asLong();
+        if (blocks.isEmpty() || !blocks.contains(packed)) {
+            blocks.add(packed);
+        }
     }
 
     private void compileDirtySections(Vector3f eyePos, Vector3f focusPos, boolean cameraMoving) {
@@ -389,7 +407,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
         long deadline = System.nanoTime() + budgetNanos;
 
-        List<SectionPos> toCompile = selectDirtySectionsForCompile(eyePos, focusPos, deadline);
+        List<SectionPos> toCompile = selectDirtySectionsForCompile(eyePos, focusPos, deadline, cameraMoving);
         if (toCompile.isEmpty()) return;
 
         dirtySections.removeAll(toCompile);
@@ -433,23 +451,16 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
 
         BufferBuilder[] builders = new BufferBuilder[LAYERS.size()];
+        ByteBufferBuilder[] byteBuilders = new ByteBufferBuilder[LAYERS.size()];
         VertexConsumerWrapper[] wrappers = new VertexConsumerWrapper[LAYERS.size()];
-        for (int i = 0; i < LAYERS.size(); i++) {
-            RenderType layer = LAYERS.get(i);
-            builders[i] = new BufferBuilder(
-                    new ByteBufferBuilder(layer.bufferSize()),
-                    VertexFormat.Mode.QUADS,
-                    DefaultVertexFormat.BLOCK
-            );
-            wrappers[i] = new VertexConsumerWrapper(builders[i]);
-        }
 
         boolean compileFailed = false;
         try {
             PoseStack poseStack = new PoseStack();
             ISceneBlockRenderHook renderHook = currentRenderHook();
-            for (var pos : blocks) {
+            for (long packed : blocks) {
                 if (Thread.interrupted()) return;
+                var pos = BlockPos.of(packed);
                 var state = world.getBlockState(pos);
                 if (state == null || state.isAir()) continue;
 
@@ -470,16 +481,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                         if (!renderTypes.contains(layer)) {
                             continue;
                         }
+                        var wrapper = wrapperForLayer(i, builders, byteBuilders, wrappers);
                         randomSource.setSeed(seed);
                         poseStack.pushPose();
                         poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
                         if (renderHook != null) {
-                            renderHook.applyVertexConsumerWrapper(world, pos, state, wrappers[i], layer, 0);
+                            renderHook.applyVertexConsumerWrapper(world, pos, state, wrapper, layer, 0);
                         }
-                        brd.renderBatched(state, pos, world, poseStack, wrappers[i], false, randomSource, modelData, layer);
+                        brd.renderBatched(state, pos, world, poseStack, wrapper, false, randomSource, modelData, layer);
                         poseStack.popPose();
-                        wrappers[i].clearOffset();
-                        wrappers[i].clearColor();
+                        wrapper.clearOffset();
+                        wrapper.clearColor();
                     }
                 }
 
@@ -487,7 +499,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                     RenderType fluidLayer = ItemBlockRenderTypes.getRenderLayer(fluidState);
                     Integer layerIndex = LAYER_INDICES.get(fluidLayer);
                     if (layerIndex != null) {
-                        var wrapper = wrappers[layerIndex];
+                        var wrapper = wrapperForLayer(layerIndex, builders, byteBuilders, wrappers);
                         wrapper.addOffset(pos.getX() - (pos.getX() & 15), pos.getY() - (pos.getY() & 15), pos.getZ() - (pos.getZ() & 15));
                         if (renderHook != null) {
                             renderHook.applyVertexConsumerWrapper(world, pos, state, wrapper, fluidLayer, 0);
@@ -508,12 +520,16 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
         for (int i = 0; i < LAYERS.size(); i++) {
             try {
+                if (builders[i] == null) {
+                    data.hasData[i] = false;
+                    continue;
+                }
                 MeshData meshData = builders[i].build();
                 if (compileFailed) {
                     data.hasData[i] = false;
                 } else if (meshData != null) {
                     data.hasData[i] = true;
-                    var vertexBuffer = data.vertexBuffers[i];
+                    var vertexBuffer = data.vertexBuffer(i);
                     if (!vertexBuffer.isInvalid()) {
                         vertexBuffer.bind();
                         vertexBuffer.upload(meshData);
@@ -531,6 +547,24 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         data.compiled = true;
     }
 
+    private VertexConsumerWrapper wrapperForLayer(int layerIndex, BufferBuilder[] builders,
+                                                  ByteBufferBuilder[] byteBuilders,
+                                                  VertexConsumerWrapper[] wrappers) {
+        var wrapper = wrappers[layerIndex];
+        if (wrapper != null) return wrapper;
+
+        RenderType layer = LAYERS.get(layerIndex);
+        byteBuilders[layerIndex] = new ByteBufferBuilder(layer.bufferSize());
+        builders[layerIndex] = new BufferBuilder(
+                byteBuilders[layerIndex],
+                VertexFormat.Mode.QUADS,
+                DefaultVertexFormat.BLOCK
+        );
+        wrapper = new VertexConsumerWrapper(builders[layerIndex]);
+        wrappers[layerIndex] = wrapper;
+        return wrapper;
+    }
+
     private ISceneBlockRenderHook currentRenderHook() {
         if (renderedBlocksMap.isEmpty()) {
             return null;
@@ -538,8 +572,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return renderedBlocksMap.values().iterator().next();
     }
 
-    private List<SectionPos> selectDirtySectionsForCompile(Vector3f eyePos, Vector3f focusPos, long deadline) {
-        int max = Math.min(SECTION_COMPILE_BATCH_SIZE, dirtySections.size());
+    private List<SectionPos> selectDirtySectionsForCompile(Vector3f eyePos, Vector3f focusPos, long deadline, boolean cameraMoving) {
+        int max = Math.min(sectionCompileBatchSize(cameraMoving), dirtySections.size());
         var selected = new ArrayList<SectionPos>(max);
         for (var sp : dirtySections) {
             if (System.nanoTime() > deadline) {
@@ -558,6 +592,18 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
         }
         return selected;
+    }
+
+    private int sectionCompileBatchSize(boolean cameraMoving) {
+        String mode = performanceMode();
+        if (cameraMoving) {
+            if ("quality".equals(mode)) return Math.max(2, DEFAULT_SECTION_COMPILE_BATCH_SIZE / 2);
+            if ("performance".equals(mode)) return 1;
+            return 2;
+        }
+        if ("quality".equals(mode)) return 10;
+        if ("performance".equals(mode)) return 4;
+        return DEFAULT_SECTION_COMPILE_BATCH_SIZE;
     }
 
     private int compareCompilePriority(SectionPos a, SectionPos b, Vector3f eyePos, Vector3f focusPos) {
@@ -580,8 +626,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (blocks == null) {
                 continue;
             }
-            for (var pos : blocks) {
+            for (long packed : blocks) {
                 if (Thread.interrupted()) return;
+                var pos = BlockPos.of(packed);
                 BlockEntity tile = world.getBlockEntity(pos);
                 if (tile != null && mc.getBlockEntityRenderDispatcher().getRenderer(tile) != null) {
                     tileEntities.add(pos.immutable());
@@ -622,8 +669,11 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         boolean cameraMoving = updateCameraMoving(eyePos);
         boolean sortVisibleSections = !cameraMoving || "quality".equals(performanceMode());
         List<SectionPos> visibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
+        visibleSections = limitVisibleSectionsWhileMoving(visibleSections, cameraMoving, eyePos);
+        Set<BlockPos> visibleTileEntities = collectVisibleTileEntities(visibleSections);
 
         compileDirtySections(eyePos, focusPos, cameraMoving);
+        renderSectionPlaceholders(visibleSections, cameraMoving);
 
         int fallbackLimit = fallbackBlockLimit(cameraMoving);
         List<BlockPos> uncompiledBlocks = collectUncompiledBlocks(fallbackLimit, visibleSections);
@@ -637,7 +687,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
             if (layer == RenderType.translucent()) {
                 setDefaultRenderLayerState(null);
-                renderTESRInternal(tileEntities, poseStack, buffers, particleTicks);
+                renderTESRInternal(visibleTileEntities, poseStack, buffers, particleTicks);
 
                 if (!endBatchLastVal) {
                     buffers.endBatch();
@@ -700,7 +750,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (data == null || !data.compiled) {
                 var blocks = sectionBlocks.get(sp);
                 if (blocks == null) continue;
-                for (var pos : blocks) {
+                for (long packed : blocks) {
+                    var pos = BlockPos.of(packed);
                     uncompiled.add(pos);
                     if (uncompiled.size() >= limit) {
                         return uncompiled;
@@ -709,6 +760,20 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
         }
         return uncompiled;
+    }
+
+    private Set<BlockPos> collectVisibleTileEntities(List<SectionPos> visibleSections) {
+        if (tileEntities.isEmpty() || visibleSections.isEmpty()) {
+            return Set.of();
+        }
+        Set<SectionPos> visibleSet = new HashSet<>(visibleSections);
+        Set<BlockPos> visible = new LinkedHashSet<>();
+        for (var pos : tileEntities) {
+            if (visibleSet.contains(SectionPos.fromBlock(pos))) {
+                visible.add(pos);
+            }
+        }
+        return visible;
     }
 
     private void drawCompiledSectionVBOs(int layerIndex, List<SectionPos> visibleSections) {
@@ -733,6 +798,71 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (shader != null) shader.clear();
             VertexBuffer.unbind();
         }
+    }
+
+    private void renderSectionPlaceholders(List<SectionPos> visibleSections, boolean cameraMoving) {
+        if (visibleSections.isEmpty()) return;
+
+        int maxPlaceholders = cameraMoving ? 192 : 512;
+        int drawn = 0;
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+
+        BufferBuilder buffer = null;
+        for (var sp : visibleSections) {
+            if (drawn >= maxPlaceholders) break;
+            var data = sections.get(sp);
+            if (data != null && data.compiled) continue;
+            var blocks = sectionBlocks.get(sp);
+            if (blocks == null || blocks.isEmpty()) continue;
+            if (buffer == null) {
+                buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            }
+            addSectionBox(buffer, sp, Math.min(90, 28 + blocks.size() / 12));
+            drawn++;
+        }
+
+        if (buffer != null && drawn > 0) {
+            BufferUploader.drawWithShader(buffer.buildOrThrow());
+        }
+        RenderSystem.enableCull();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+    }
+
+    private void addSectionBox(BufferBuilder buffer, SectionPos sp, int alpha) {
+        float x0 = sp.x() * SECTION_SIZE + 0.035F;
+        float y0 = sp.y() * SECTION_SIZE + 0.035F;
+        float z0 = sp.z() * SECTION_SIZE + 0.035F;
+        float x1 = (sp.x() + 1) * SECTION_SIZE - 0.035F;
+        float y1 = (sp.y() + 1) * SECTION_SIZE - 0.035F;
+        float z1 = (sp.z() + 1) * SECTION_SIZE - 0.035F;
+        int r = 60;
+        int g = 172;
+        int b = 235;
+
+        addQuad(buffer, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, r, g, b, alpha);
+        addQuad(buffer, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, r, g, b, alpha);
+        addQuad(buffer, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, r, g, b, alpha);
+        addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, alpha);
+        addQuad(buffer, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, r, g, b, alpha);
+        addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, r, g, b, Math.max(18, alpha / 2));
+    }
+
+    private void addQuad(BufferBuilder buffer,
+                         float x0, float y0, float z0,
+                         float x1, float y1, float z1,
+                         float x2, float y2, float z2,
+                         float x3, float y3, float z3,
+                         int r, int g, int b, int a) {
+        buffer.addVertex(x0, y0, z0).setColor(r, g, b, a);
+        buffer.addVertex(x1, y1, z1).setColor(r, g, b, a);
+        buffer.addVertex(x2, y2, z2).setColor(r, g, b, a);
+        buffer.addVertex(x3, y3, z3).setColor(r, g, b, a);
     }
 
     private Vector3f safeEyePos() {
@@ -787,6 +917,22 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             visible.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
         }
         return visible;
+    }
+
+    private List<SectionPos> limitVisibleSectionsWhileMoving(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
+        if (!cameraMoving || visibleSections.isEmpty()) return visibleSections;
+        int limit = movingSectionLimit();
+        if (limit <= 0 || visibleSections.size() <= limit) return visibleSections;
+        var nearest = new ArrayList<>(visibleSections);
+        nearest.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
+        return new ArrayList<>(nearest.subList(0, limit));
+    }
+
+    private int movingSectionLimit() {
+        String mode = performanceMode();
+        if ("quality".equals(mode)) return 0;
+        if ("performance".equals(mode)) return PERFORMANCE_MOVING_SECTION_LIMIT;
+        return BALANCED_MOVING_SECTION_LIMIT;
     }
 
     private boolean isSectionVisible(SectionPos sp, Vector3f focusPos) {

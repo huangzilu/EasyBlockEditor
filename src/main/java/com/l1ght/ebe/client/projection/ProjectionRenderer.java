@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.projection;
 
+import com.l1ght.ebe.client.projection.mega.MegaProjectionRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.projection.ProjectionData;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -76,6 +77,10 @@ public class ProjectionRenderer {
         float opacity = ProjectionManager.getOpacity();
         List<ProjectionData.ProjectionBlock> blocks = projection.getBlocks();
         if (blocks.isEmpty()) return;
+        if (MegaProjectionRenderer.shouldUse(projection)
+                && MegaProjectionRenderer.renderProjection(poseStack, projectionMatrix, frustum, projection)) {
+            return;
+        }
         ProjectionRenderCache renderCache = getRenderCache(projection);
 
         var camera = mc.gameRenderer.getMainCamera();

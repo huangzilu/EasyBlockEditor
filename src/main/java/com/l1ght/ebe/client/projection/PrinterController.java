@@ -47,6 +47,7 @@ public class PrinterController {
     private static final int PENDING_TIMEOUT_TICKS = 40;
     private static final int AUTO_SCAN_INTERVAL_TICKS = 1;
     private static final int MAX_CANDIDATE_SCAN_PER_TICK = 4096;
+    private static final int COMPLETION_CHECK_INTERVAL_TICKS = 10;
     private static final int WORKGROUP_UPLOAD_BATCH_SIZE = 512;
     private static final int WORKGROUP_UPLOAD_MAX_NBT_CHARS_PER_BATCH = 64_000;
     private static final int WORKGROUP_UPLOAD_MAX_SINGLE_NBT_CHARS = 32_000;
@@ -65,6 +66,7 @@ public class PrinterController {
     private static int awaitingWorkgroupSessionTicks = 0;
     private static String workgroupUploadReplacesSessionId = "";
     private static int lastWorkgroupReservationRequestTick = 0;
+    private static int completionCheckCooldown = 0;
 
     public static void setMode(PrinterMode m) { mode = m; active = false; }
     public static PrinterMode getMode() { return mode; }
@@ -74,6 +76,23 @@ public class PrinterController {
     public static BlockPos getMaterialSourcePos() { return materialSourcePos; }
     public static boolean isSelectingMaterialSource() { return selectingMaterialSource; }
     public static void clearMaterialSource() { materialSourcePos = null; selectingMaterialSource = false; }
+
+    public static void stopAfterProjectionCompleted() {
+        active = false;
+        pendingPlacements.clear();
+        candidatePlanner.reset();
+        resetWorkgroupUpload("");
+        completionCheckCooldown = 0;
+    }
+
+    public static void handleWorkgroupPrintSessionEnded() {
+        if (!active || mode != PrinterMode.AUTO) return;
+        if (ProjectionManager.isPlacementComplete()) {
+            ProjectionManager.finishPlacementAndUnload();
+            return;
+        }
+        stopAfterProjectionCompleted();
+    }
 
     public static void requestMaterialSourceSelection() {
         selectingMaterialSource = true;
@@ -111,10 +130,16 @@ public class PrinterController {
         if (player == null || level == null) return;
 
         var projection = ProjectionManager.getProjection();
-        if (projection == null) return;
+        if (projection == null || !ProjectionManager.isProjectionLoaded()) {
+            stopAfterProjectionCompleted();
+            return;
+        }
 
         tickCounter++;
         cleanupPendingPlacements();
+        if (finishIfProjectionComplete(false)) {
+            return;
+        }
 
         if (mode == PrinterMode.AUTO) {
             if (tickCounter % AUTO_SCAN_INTERVAL_TICKS != 0) {
@@ -144,7 +169,10 @@ public class PrinterController {
                                 && PlacementStateOrder.isWaterlogged(pb.state()));
                     }
             );
-            if (candidates.isEmpty()) return;
+            if (candidates.isEmpty()) {
+                finishIfProjectionComplete(true);
+                return;
+            }
 
             int placed = 0;
             List<PrinterPlaceBatchPayload.Entry> batch = new ArrayList<>(blocksPerTick);
@@ -438,6 +466,24 @@ public class PrinterController {
                 entry.setValue(ttl);
             }
         }
+    }
+
+    private static boolean finishIfProjectionComplete(boolean force) {
+        if (!pendingPlacements.isEmpty()) return false;
+        if (!force) {
+            if (completionCheckCooldown > 0) {
+                completionCheckCooldown--;
+                return false;
+            }
+            completionCheckCooldown = COMPLETION_CHECK_INTERVAL_TICKS;
+        }
+
+        if (!ProjectionManager.isPlacementComplete()) {
+            return false;
+        }
+
+        ProjectionManager.finishPlacementAndUnload();
+        return true;
     }
 
     private static boolean nbtMatchesForPlacement(net.minecraft.world.item.ItemStack stack, CompoundTag targetNbt, RegistryAccess registryAccess) {

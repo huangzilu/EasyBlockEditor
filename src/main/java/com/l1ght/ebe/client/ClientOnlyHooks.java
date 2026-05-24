@@ -131,11 +131,14 @@ public final class ClientOnlyHooks {
     }
 
     public static void updateWorkgroupPrintState(boolean active, int placed, int total, String snapshotJson) {
+        boolean wasActive = workgroupPrintActive;
         workgroupPrintActive = active;
         workgroupPrintJson = snapshotJson == null ? "{}" : snapshotJson;
         workgroupPrintSessionId = active ? extractSessionId(workgroupPrintJson) : "";
         if (active) {
             ProjectionManager.setProgress(placed, total);
+        } else if (wasActive) {
+            PrinterController.handleWorkgroupPrintSessionEnded();
         }
         EditorUI.refreshWorkgroupPanel();
     }

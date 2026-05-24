@@ -123,8 +123,7 @@ class WorkgroupPrintSession(
     @Synchronized
     fun snapshot(): Map<String, Any> {
         val total = targetsByIndex.size
-        val pending = (total - placedCount - reservedCount - failedMissingMaterialCount - failedBlockedCount - cancelledCount)
-            .coerceAtLeast(0)
+        val pending = pendingCount(total)
         return linkedMapOf(
             "active" to true,
             "sessionId" to sessionId.toString(),
@@ -145,6 +144,9 @@ class WorkgroupPrintSession(
             "version" to version
         )
     }
+
+    @Synchronized
+    fun isComplete(): Boolean = pendingCount(targetsByIndex.size) == 0 && reservedCount == 0
 
     @Synchronized
     fun progressPlaced(): Int = placedCount
@@ -279,6 +281,11 @@ class WorkgroupPrintSession(
     private fun touch() {
         version++
         lastUpdatedAt = System.currentTimeMillis()
+    }
+
+    private fun pendingCount(total: Int): Int {
+        return (total - placedCount - reservedCount - failedMissingMaterialCount - failedBlockedCount - cancelledCount)
+            .coerceAtLeast(0)
     }
 
     private fun isWithinBlockRange(pos: BlockPos, center: BlockPos, range: Int): Boolean {

@@ -508,6 +508,7 @@
   "ebe.projection.coordinates": "坐标",
   "ebe.projection.completion": "完成度",
   "ebe.projection.blocks_placed": "已放置 %d / %d 个方块",
+  "ebe.projection.placement_complete": "投影已完整放置，已自动卸载投影并停止打印机。",
   "ebe.projection.place_tab": "放置投影",
   "ebe.projection.place_at_player": "在玩家脚部放置",
   "ebe.projection.place_custom": "自定义坐标",

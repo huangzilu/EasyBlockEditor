@@ -67,6 +67,8 @@ public class ViewportFactory {
     private static final int AUTO_MATERIAL_REFRESH_BLOCK_LIMIT = 100_000;
     private static final int SYNC_MODEL_LOAD_VOLUME_LIMIT = 250_000;
     private static final int SYNC_COMPUTED_LOAD_BLOCK_LIMIT = 80_000;
+    private static final int SECTIONED_RENDERER_BLOCK_THRESHOLD = 50_000;
+    private static final int SECTIONED_RENDERER_VOLUME_THRESHOLD = 250_000;
     private static final int PROGRESSIVE_LOAD_BLOCKS_PER_TICK = 4096;
     private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
     private static final int PROGRESSIVE_OUTLINE_SAMPLE_CAP = 768;
@@ -86,6 +88,7 @@ public class ViewportFactory {
     private static boolean progressiveCoreAttached = false;
     private static List<BlockPos> progressiveOutlineSamples = List.of();
     private static ProjectionLoadProfile activeLoadProfile;
+    private static boolean preferSectionedRendererForCurrentLoad = false;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -242,12 +245,12 @@ public class ViewportFactory {
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
         } else if (!hasContent || session == null) {
-            currentWorld = newViewportWorld();
+            currentWorld = newViewportWorld(false);
             createSceneRenderer();
         }
 
         if (hasContent && session != null && !attachedCachedRenderer) {
-            loadFromModel(session.getModel(), false);
+            loadFromModel(session.getModel(), false, profileForCurrentSession(session));
             currentScene.setCameraYawAndPitch(savedYaw, savedPitch);
             currentScene.setZoom(savedZoom);
             currentScene.setCenter(savedCenter);
@@ -371,6 +374,7 @@ public class ViewportFactory {
 
     private static void renderProgressiveOutlineOverlay() {
         if (progressiveOutlineSamples.isEmpty()) return;
+        if (sectionedRenderer != null) return;
 
         int maxSamples = viewportInteractionFrames > 0 ? PROGRESSIVE_OUTLINE_MOVING_CAP : PROGRESSIVE_OUTLINE_SAMPLE_CAP;
         int stride = Math.max(1, progressiveOutlineSamples.size() / Math.max(1, maxSamples));
@@ -481,8 +485,9 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         activeLoadProfile = profile;
+        preferSectionedRendererForCurrentLoad = true;
         releaseCachedSectionedRenderer("progressive-load-model");
-        currentWorld = newViewportWorld();
+        currentWorld = newViewportWorld(true);
         progressiveCoreAttached = false;
         createSceneRenderer();
         currentScene.useCacheBuffer(true);
@@ -526,8 +531,9 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         activeLoadProfile = profile;
+        preferSectionedRendererForCurrentLoad = true;
         releaseCachedSectionedRenderer("progressive-load-computed");
-        currentWorld = newViewportWorld();
+        currentWorld = newViewportWorld(true);
         progressiveCoreAttached = false;
         createSceneRenderer();
         currentScene.useCacheBuffer(true);
@@ -566,8 +572,9 @@ public class ViewportFactory {
 
         cancelProgressiveLoad();
         activeLoadProfile = profile;
+        preferSectionedRendererForCurrentLoad = shouldUseSectionedRendererForSyncLoad(model, profile);
         releaseCachedSectionedRenderer("load-model");
-        currentWorld = newViewportWorld();
+        currentWorld = newViewportWorld(preferSectionedRendererForCurrentLoad);
 
         int totalBlocksAdded = 0;
         for (var region : model.getRegions()) {
@@ -715,7 +722,15 @@ public class ViewportFactory {
     }
 
     private static TrackedDummyWorld newViewportWorld() {
-        return new FastTrackedDummyWorld();
+        return newViewportWorld(shouldUseSparseViewportStorage());
+    }
+
+    private static TrackedDummyWorld newViewportWorld(boolean sparseStorage) {
+        return new FastTrackedDummyWorld(sparseStorage);
+    }
+
+    private static boolean shouldUseSparseViewportStorage() {
+        return preferSectionedRendererForCurrentLoad && !shouldUseIrisOffscreenRenderer();
     }
 
     private static void addBlockToViewportWorld(BlockPos pos, BlockState state) {
@@ -732,6 +747,46 @@ public class ViewportFactory {
 
     public static boolean isProgressiveLoadActive() {
         return progressiveLoad != null || progressiveComputedLoad != null;
+    }
+
+    private static boolean shouldUseSectionedRendererForSyncLoad(BuildingModel model, ProjectionLoadProfile profile) {
+        if (profile != null) {
+            if (isUnderUserSyncThreshold(profile)) return false;
+            if (profile.shouldPreferProgressiveViewport() || profile.isHugeOrAbove()) return true;
+            return profile.nonAirBlocks() >= SECTIONED_RENDERER_BLOCK_THRESHOLD
+                    || profile.totalVolume() >= SECTIONED_RENDERER_VOLUME_THRESHOLD;
+        }
+        if (model == null) return false;
+        long volume = 0L;
+        for (var region : model.getRegions()) {
+            volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
+            if (volume >= SECTIONED_RENDERER_VOLUME_THRESHOLD) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ProjectionLoadProfile profileForCurrentSession(EditorSession session) {
+        if (session == null || session.getCurrentFile() == null || session.getModel() == null) {
+            return null;
+        }
+        try {
+            return ProjectionLoadProfile.fromModel(session.getCurrentFile(), session.getModel());
+        } catch (Exception e) {
+            LOG.warn("Failed to rebuild viewport load profile for {}", session.getCurrentFile().getFileName(), e);
+            return null;
+        }
+    }
+
+    private static boolean isUnderUserSyncThreshold(ProjectionLoadProfile profile) {
+        if (profile == null) return false;
+        double thresholdMb = EBEClientConfig.viewportSynchronousLoadBelowMb.get();
+        if (thresholdMb <= 0.0D) return true;
+        long fileSize = profile.fileSizeBytes();
+        if (fileSize < 0L) return false;
+        long thresholdBytes = Math.max(1L, Math.round(thresholdMb * 1024D * 1024D));
+        return fileSize <= thresholdBytes;
     }
 
     private static List<BlockPos> createModelOutlineSamples(BuildingModel model) {
@@ -806,6 +861,7 @@ public class ViewportFactory {
         progressiveCoreAttached = false;
         progressiveOutlineSamples = List.of();
         activeLoadProfile = null;
+        preferSectionedRendererForCurrentLoad = false;
     }
 
     private static void tickProgressiveModelLoad() {
@@ -1706,8 +1762,11 @@ public class ViewportFactory {
         if (createIrisFbo) {
             sectionedRenderer = null;
             installCachedIrisRenderer(fboSize);
-        } else {
+        } else if (preferSectionedRendererForCurrentLoad) {
             installSectionedRenderer();
+        } else {
+            releaseCachedSectionedRenderer("use-immediate-renderer");
+            sectionedRenderer = null;
         }
         if (createIrisFbo) {
             irisFboWidth = fboSize.width;

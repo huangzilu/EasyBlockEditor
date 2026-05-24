@@ -4,6 +4,8 @@ import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import dev.vfyjxf.taffy.style.FlexDirection;
@@ -95,7 +97,7 @@ public class EditorDialogs {
     public static Dialog largeProjectionWarningDialog(UIElement parent, String filename, String sizeText, Runnable onConfirm) {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.editor.large_projection.title").getString());
-        dialog.overlay.layout(l -> l.width(460));
+        dialog.overlay.layout(l -> l.width(460).maxHeight(260));
 
         var content = new UIElement();
         content.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(430));
@@ -111,7 +113,11 @@ public class EditorDialogs {
         content.addChild(largeProjectionLine("ebe.editor.large_projection.body.wait"));
         content.addChild(largeProjectionLine("ebe.editor.large_projection.body.warning"));
         content.addChild(largeProjectionLine("ebe.editor.large_projection.body.tip"));
-        dialog.addContent(content);
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.width(430).height(148));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(content);
+        dialog.addContent(scroller);
 
         dialog.addButton(new Button()
                 .setOnClick(e -> {

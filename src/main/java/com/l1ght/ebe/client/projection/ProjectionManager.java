@@ -11,6 +11,7 @@ import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.state.BlockState;
@@ -42,6 +43,7 @@ public class ProjectionManager {
     private static int progressPlaced = 0;
     private static int progressTotal = 0;
     private static boolean progressAuthoritative = false;
+    private static boolean placeAllInProgress = false;
     private static boolean persistentStateLoaded = false;
     private static boolean restoringPersistentState = false;
     private static long lastMissingPersistLogMs = 0L;
@@ -55,9 +57,11 @@ public class ProjectionManager {
         if (model == null) {
             activeProjection = null;
             projectionLoaded = false;
+            placeAllInProgress = false;
             deletePersistentState();
             return;
         }
+        placeAllInProgress = false;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -74,6 +78,7 @@ public class ProjectionManager {
 
     public static void selectProjection(BuildingModel model, ComputedProjection computed) {
         if (model == null) return;
+        placeAllInProgress = false;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -93,12 +98,14 @@ public class ProjectionManager {
 
     public static void unloadProjection() {
         projectionLoaded = false;
+        placeAllInProgress = false;
         savePersistentState(false);
     }
 
     public static void removeProjection() {
         activeProjection = null;
         projectionLoaded = false;
+        placeAllInProgress = false;
         deletePersistentState();
     }
 
@@ -382,6 +389,9 @@ public class ProjectionManager {
         progressPlaced = placed;
         progressTotal = total;
         progressAuthoritative = true;
+        if (total > 0 && placed >= total && placeAllInProgress) {
+            finishPlacementAndUnload();
+        }
     }
 
     public static int getProgressPlaced() { return progressPlaced; }
@@ -403,6 +413,7 @@ public class ProjectionManager {
         if (sparseIndex.isEmpty()) return;
 
         setProgress(0, sparseIndex.size());
+        placeAllInProgress = true;
         for (var byChunk : sparseIndex.entriesByPhaseAndChunk().values()) {
             for (var chunkEntries : byChunk.values()) {
                 sendPlaceAllPacketsFromSparse(chunkEntries);
@@ -460,6 +471,47 @@ public class ProjectionManager {
         progressPlaced = placed;
         progressTotal = total;
         progressAuthoritative = false;
+    }
+
+    public static boolean isPlacementComplete() {
+        if (activeProjection == null || !projectionLoaded || activeProjection.getBlockCount() <= 0) {
+            return false;
+        }
+
+        var mc = Minecraft.getInstance();
+        var level = mc.level;
+        if (level == null) return false;
+
+        for (var pb : activeProjection.getSparseIndex().blocks()) {
+            if (!targetBlockPlaced(pb)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static void finishPlacementAndUnload() {
+        if (activeProjection == null) return;
+        progressPlaced = activeProjection.getBlockCount();
+        progressTotal = activeProjection.getBlockCount();
+        progressAuthoritative = true;
+        placeAllInProgress = false;
+        unloadProjection();
+        PrinterController.stopAfterProjectionCompleted();
+        ProjectionController.exitControlMode();
+
+        var mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.displayClientMessage(Component.translatable("ebe.projection.placement_complete"), false);
+        }
+        com.l1ght.ebe.client.ui.EditorUI.refreshPlacementState();
+    }
+
+    private static boolean targetBlockPlaced(ProjectionData.ProjectionBlock block) {
+        var mc = Minecraft.getInstance();
+        if (mc.level == null) return false;
+        var existing = mc.level.getBlockState(block.pos());
+        return !existing.isAir() && existing.equals(block.state()) && blockEntityMatches(block);
     }
 
     private static boolean blockEntityMatches(ProjectionData.ProjectionBlock block) {

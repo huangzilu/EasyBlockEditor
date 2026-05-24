@@ -14,8 +14,11 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 public class EditorSession {
     private static final long BYTES_PER_MEGABYTE = 1024L * 1024L;
@@ -149,13 +152,19 @@ public class EditorSession {
 
     public void applyLoaded(LoadedFile loaded) {
         this.model = loaded.model();
-        this.computedProjection = loaded.computed();
+        this.computedProjection = shouldRetainComputedProjection(loaded.profile(), loaded.computed()) ? loaded.computed() : null;
         Path file = loaded.file();
         this.currentFile = file;
         this.dirty = false;
         EditorUI.getHistory().clear(this.model);
         loadHistory();
         EditorUI.refreshHistoryList();
+    }
+
+    private static boolean shouldRetainComputedProjection(ProjectionLoadProfile profile, ComputedProjection computed) {
+        if (computed == null) return false;
+        if (profile != null && profile.isLargeOrAbove()) return false;
+        return computed.blockCount() <= 50_000;
     }
 
     public record LoadedFile(Path file, BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
@@ -172,9 +181,59 @@ public class EditorSession {
     }
 
     private Path getHistoryPath() {
+        return Path.of("config", "ebe", "client", "history", getHistoryFileName());
+    }
+
+    private String getHistoryFileName() {
+        if (currentFile != null) {
+            Path identityPath = resolveHistoryIdentityPath(currentFile);
+            String fileName = identityPath.getFileName() != null ? identityPath.getFileName().toString() : currentFile.getFileName().toString();
+            String readableName = sanitizeHistoryName(stripSupportedExtension(fileName));
+            return readableName + "-" + shortHash(identityPath.toString()) + ".json";
+        }
+
         String name = model.getMetadata().getName();
-        if (name == null || name.isEmpty()) name = "untitled";
-        return Path.of("config", "ebe", "client", "history", name + ".json");
+        if (name == null || name.isBlank()) name = "untitled";
+        return sanitizeHistoryName(name) + "-unsaved.json";
+    }
+
+    private static Path resolveHistoryIdentityPath(Path file) {
+        try {
+            return file.toRealPath().normalize();
+        } catch (Exception ignored) {
+            return file.toAbsolutePath().normalize();
+        }
+    }
+
+    private static String sanitizeHistoryName(String name) {
+        String source = name == null || name.isBlank() ? "untitled" : name.strip();
+        StringBuilder clean = new StringBuilder(source.length());
+        boolean previousSeparator = false;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            boolean allowed = Character.isLetterOrDigit(c) || c == '.' || c == '_' || c == '-';
+            if (allowed) {
+                clean.append(c);
+                previousSeparator = false;
+            } else if (!previousSeparator) {
+                clean.append('_');
+                previousSeparator = true;
+            }
+        }
+        String result = clean.toString();
+        while (result.startsWith(".") || result.startsWith("_")) result = result.substring(1);
+        while (result.endsWith(".") || result.endsWith("_")) result = result.substring(0, result.length() - 1);
+        if (result.isBlank()) result = "untitled";
+        return result.length() > 64 ? result.substring(0, 64) : result;
+    }
+
+    private static String shortHash(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 6);
+        } catch (Exception ignored) {
+            return Integer.toUnsignedString(value.hashCode(), 16);
+        }
     }
 
     void saveHistory() {

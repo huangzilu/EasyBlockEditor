@@ -504,8 +504,7 @@ public class EditorUI {
             } else {
                 setStatus(Component.translatable("ebe.editor.loading.viewport", loaded.file().getFileName().toString()));
             }
-            boolean preferSyncViewport = EditorSession.shouldPreferSynchronousViewportLoad(loaded.file())
-                    && (loaded.profile() == null || !loaded.profile().shouldPreferProgressiveViewport());
+            boolean preferSyncViewport = EditorSession.shouldPreferSynchronousViewportLoad(loaded.file());
             if (loaded.computed() != null) {
                 if (!preferSyncViewport && ViewportFactory.shouldLoadComputedProgressively(loaded.computed(), loaded.profile())) {
                     ViewportFactory.loadFromComputedProgressive(loaded.computed(), loaded.profile());
@@ -585,6 +584,25 @@ public class EditorUI {
         if (content == null) return;
         content.clearAllChildren();
         content.addChild(createWorkgroupPanelContent());
+    }
+
+    public static void refreshPlacementState() {
+        if (rootElement == null) return;
+        if (projectionPanelVisible && projectionPanel != null) {
+            switchProjectionTab(currentProjectionTab);
+        }
+        updatePrinterToggleBtn();
+
+        if (rightPanel != null) {
+            var rangeLabel = UIUtils.findById(rightPanel, "printerRangeLabel");
+            if (rangeLabel instanceof Label l) {
+                l.setText(Component.translatable("ebe.projection.no_projection"));
+            }
+            var missingLabel = UIUtils.findById(rightPanel, "printerMissingLabel");
+            if (missingLabel instanceof Label l) {
+                l.setText(Component.literal(""));
+            }
+        }
     }
 
     private static UIElement createWorkgroupPanelContent() {
@@ -2079,26 +2097,39 @@ public class EditorUI {
         if (current == null) return;
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.nbt.template.diff_title").getString());
-        dialog.overlay.layout(l -> l.width(320));
+        dialog.overlay.layout(l -> l.width(320).maxHeight(250));
+        var templateList = new UIElement();
+        templateList.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
         for (var entry : NbtTemplateManager.all().entrySet()) {
             var template = NbtTemplateManager.get(entry.getKey());
             var btn = new Button();
             btn.setText(Component.literal(entry.getKey()));
+            btn.layout(l -> l.widthPercent(100).height(18));
             btn.setOnClick(e -> {
                 dialog.close();
                 var result = new Dialog();
                 result.setTitle(Component.translatable("ebe.nbt.template.diff_title_named", entry.getKey()).getString());
-                result.overlay.layout(l -> l.width(320));
+                result.overlay.layout(l -> l.width(340).maxHeight(270));
                 var label = new Label();
                 label.setText(Component.literal(diffNbtFields(template, current)));
+                label.layout(l -> l.width(310));
                 label.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
                         .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
-                result.addContent(label);
+                var resultScroller = new ScrollerView();
+                resultScroller.layout(l -> l.width(315).height(180));
+                resultScroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+                resultScroller.addScrollViewChild(label);
+                result.addContent(resultScroller);
                 result.addButton(new Button().setText(Component.translatable("ebe.editor.close")).setOnClick(ev -> result.close()));
                 result.show(rootElement);
             });
-            dialog.addContent(btn);
+            templateList.addChild(btn);
         }
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).height(150));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(templateList);
+        dialog.addContent(scroller);
         dialog.addButton(new Button().setText(Component.translatable("ebe.editor.close")).setOnClick(e -> dialog.close()));
         dialog.show(rootElement);
     }
@@ -2366,14 +2397,18 @@ public class EditorUI {
         if (session == null || sourceLayer == null || session.getModel().getLayers().size() <= 1) return;
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.layer.merge_into_title", sourceLayer.getName()).getString());
+        dialog.overlay.layout(l -> l.width(300).maxHeight(260));
         dialog.darkenBackground();
 
         var hint = new Label();
         hint.setText(Component.translatable("ebe.layer.merge_into_hint"));
+        hint.layout(l -> l.width(270));
         hint.textStyle(ts -> ts.fontSize(9).textColor(0xFFDDDDDD).textShadow(false)
                 .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
         dialog.addContent(hint);
 
+        var targetList = new UIElement();
+        targetList.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
         for (var target : session.getModel().getLayers()) {
             if (target.getId().equals(sourceLayer.getId())) continue;
             var btn = new Button();
@@ -2388,8 +2423,13 @@ public class EditorUI {
                         session.getModel().countBlocksInLayer(target.getId()), true);
                 dialog.close();
             });
-            dialog.addContent(btn);
+            targetList.addChild(btn);
         }
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.width(270).height(140));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(targetList);
+        dialog.addContent(scroller);
 
         dialog.addButton(new Button()
                 .setOnClick(e -> dialog.close())
@@ -3279,6 +3319,7 @@ public class EditorUI {
     private static void showCreateVersionTagDialog() {
         var dialog = new Dialog();
         dialog.setTitle("ebe.history.dialog.tag_title");
+        dialog.overlay.layout(l -> l.width(260).maxHeight(220));
         dialog.darkenBackground();
 
         var labelField = new TextField().setText("v" + (history.getVersionTags().size() + 1), false);
@@ -3319,6 +3360,7 @@ public class EditorUI {
     private static void showCreateBranchDialog() {
         var dialog = new Dialog();
         dialog.setTitle("ebe.history.dialog.branch_title");
+        dialog.overlay.layout(l -> l.width(260).maxHeight(180));
         dialog.darkenBackground();
 
         var nameField = new TextField().setText("branch-" + history.getBranches().size(), false);
@@ -3357,8 +3399,11 @@ public class EditorUI {
 
         var dialog = new Dialog();
         dialog.setTitle("ebe.history.dialog.branch_title");
+        dialog.overlay.layout(l -> l.width(280).maxHeight(260));
         dialog.darkenBackground();
 
+        var branchList = new UIElement();
+        branchList.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(2));
         for (var branch : branches) {
             var btn = new Button();
             boolean isCurrent = branch.name().equals(history.getCurrentBranch());
@@ -3374,12 +3419,12 @@ public class EditorUI {
                     refreshHistoryList();
                 });
             }
-            dialog.addContent(btn);
+            branchList.addChild(btn);
         }
 
         var sep = new UIElement();
         sep.layout(l -> l.widthPercent(100).height(4));
-        dialog.addContent(sep);
+        branchList.addChild(sep);
 
         var createBtn = new Button();
         createBtn.setText(Component.translatable("ebe.history.create_branch"));
@@ -3389,7 +3434,13 @@ public class EditorUI {
             dialog.close();
             showCreateBranchDialog();
         });
-        dialog.addContent(createBtn);
+        branchList.addChild(createBtn);
+
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.width(250).height(155));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        scroller.addScrollViewChild(branchList);
+        dialog.addContent(scroller);
 
         dialog.addButton(new Button()
                 .setOnClick(e -> dialog.close())
@@ -6017,6 +6068,7 @@ public class EditorUI {
 
         var dialog = new Dialog();
         dialog.setTitle("ebe.materials.diff_calc");
+        dialog.overlay.layout(l -> l.width(300).maxHeight(245));
         dialog.darkenBackground();
 
         var fromLabel = new Label();
@@ -6059,6 +6111,7 @@ public class EditorUI {
 
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable("ebe.materials.diff_calc").getString() + ": " + tag.label());
+        dialog.overlay.layout(l -> l.width(360).maxHeight(300));
         dialog.darkenBackground();
 
         var listContainer = new UIElement();
@@ -6116,7 +6169,7 @@ public class EditorUI {
         }
 
         var scroller = new ScrollerView();
-        scroller.layout(l -> l.widthPercent(100).height(200));
+        scroller.layout(l -> l.width(330).height(200));
         scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
         scroller.addScrollViewChild(listContainer);
         dialog.addContent(scroller);
