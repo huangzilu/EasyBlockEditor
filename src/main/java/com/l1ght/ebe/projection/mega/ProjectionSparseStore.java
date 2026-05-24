@@ -53,14 +53,21 @@ public final class ProjectionSparseStore {
         if (projection == null || projection.getBlocks().isEmpty()) {
             return EMPTY;
         }
+        return fromBlocks(projection.getBlocks(), projection.getRenderVersion(), projection.getMeshVersion());
+    }
 
-        var entries = new ArrayList<Entry>(projection.getBlocks().size());
+    public static ProjectionSparseStore fromBlocks(List<ProjectionData.ProjectionBlock> sourceBlocks, int renderVersion, int meshVersion) {
+        if (sourceBlocks == null || sourceBlocks.isEmpty()) {
+            return EMPTY;
+        }
+
+        var entries = new ArrayList<Entry>(sourceBlocks.size());
         var palette = new ArrayList<BlockState>();
         var paletteIds = new LinkedHashMap<BlockState, Integer>();
         var bySection = new LinkedHashMap<Long, List<Entry>>();
-        var byPos = new Long2ObjectOpenHashMap<Entry>(projection.getBlocks().size());
+        var byPos = new Long2ObjectOpenHashMap<Entry>(sourceBlocks.size());
 
-        for (var block : projection.getBlocks()) {
+        for (var block : sourceBlocks) {
             if (block == null || block.state() == null || block.state().isAir()) {
                 continue;
             }
@@ -81,8 +88,8 @@ public final class ProjectionSparseStore {
                 Collections.unmodifiableList(palette),
                 freezeSectionMap(bySection),
                 byPos,
-                projection.getRenderVersion(),
-                projection.getMeshVersion()
+                renderVersion,
+                meshVersion
         );
     }
 

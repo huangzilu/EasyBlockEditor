@@ -2845,7 +2845,7 @@ public class EditorUI {
         } else if (displayFilterMode == 4) {
             filter.setSelectedPositions(selection.getAllPacked());
         }
-        ViewportFactory.refreshFromModel(session.getModel());
+        ViewportFactory.applyDisplayFilterChange(session.getModel());
     }
 
     private static UIElement createHeatmapContent() {

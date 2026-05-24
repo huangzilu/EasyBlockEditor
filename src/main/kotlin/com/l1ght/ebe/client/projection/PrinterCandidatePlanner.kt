@@ -1,16 +1,18 @@
 package com.l1ght.ebe.client.projection
 
 import com.l1ght.ebe.projection.ProjectionData
+import com.l1ght.ebe.server.placement.PlacementStateOrder
 import net.minecraft.core.BlockPos
-import net.minecraft.world.level.ChunkPos
+import net.minecraft.core.SectionPos
 import java.util.LinkedHashMap
-import java.util.LinkedHashSet
 import java.util.function.Predicate
 
 class PrinterCandidatePlanner {
-    private val buckets = LinkedHashMap<Long, MutableList<ProjectionData.ProjectionBlock>>()
+    private val sectionBuckets = LinkedHashMap<Long, MutableList<ProjectionData.ProjectionBlock>>()
+    private val sectionPhase = LinkedHashMap<Long, Int>()
     private val allTargets = ArrayList<ProjectionData.ProjectionBlock>()
     private val finiteStates = LinkedHashMap<SearchKey, Cursor>()
+    private val finiteSectionCache = LinkedHashMap<SearchKey, List<Long>>()
     private var projectionIdentity: ProjectionData? = null
     private var projectionVersion: Int = -1
     private var unlimitedCursor: Int = 0
@@ -38,9 +40,11 @@ class PrinterCandidatePlanner {
     fun reset() {
         projectionIdentity = null
         projectionVersion = -1
-        buckets.clear()
+        sectionBuckets.clear()
+        sectionPhase.clear()
         allTargets.clear()
         finiteStates.clear()
+        finiteSectionCache.clear()
         unlimitedCursor = 0
     }
 
@@ -51,16 +55,26 @@ class PrinterCandidatePlanner {
 
         projectionIdentity = projection
         projectionVersion = projection.renderVersion
-        buckets.clear()
+        sectionBuckets.clear()
+        sectionPhase.clear()
         allTargets.clear()
         finiteStates.clear()
+        finiteSectionCache.clear()
         unlimitedCursor = 0
 
-        val index = projection.sparseIndex
-        for ((key, chunkBlocks) in index.blocksByChunk()) {
-            buckets[key] = ArrayList(chunkBlocks)
+        val ordered = projection.sparseIndex.blocks().sortedWith(
+            compareBy<ProjectionData.ProjectionBlock> { PlacementStateOrder.phase(it.state()) }
+                .thenBy { it.pos().y }
+                .thenBy { it.pos().z }
+                .thenBy { it.pos().x }
+        )
+        for (block in ordered) {
+            val key = sectionKey(block.pos())
+            val phase = PlacementStateOrder.phase(block.state())
+            allTargets.add(block)
+            sectionBuckets.computeIfAbsent(key) { ArrayList() }.add(block)
+            sectionPhase[key] = minOf(sectionPhase[key] ?: phase, phase)
         }
-        allTargets.addAll(index.phaseOrderedBlocks())
     }
 
     private fun nextUnlimited(
@@ -94,33 +108,33 @@ class PrinterCandidatePlanner {
         pending: Set<BlockPos>,
         eligible: Predicate<ProjectionData.ProjectionBlock>
     ): List<ProjectionData.ProjectionBlock> {
-        val chunkKeys = chunkKeysNear(center, range)
-        if (chunkKeys.isEmpty()) return emptyList()
+        val key = SearchKey(center.x shr 4, center.y shr 4, center.z shr 4, range)
+        val sectionKeys = sectionKeysNear(key, center, range)
+        if (sectionKeys.isEmpty()) return emptyList()
 
-        val key = SearchKey(center.x shr 4, center.z shr 4, range)
         val cursor = finiteStates.computeIfAbsent(key) { Cursor() }
         pruneFiniteStates()
-        if (cursor.chunkIndex >= chunkKeys.size) {
-            cursor.chunkIndex = 0
+        if (cursor.sectionIndex >= sectionKeys.size) {
+            cursor.sectionIndex = 0
             cursor.blockIndex = 0
         }
 
         val result = ArrayList<ProjectionData.ProjectionBlock>(maxCandidates)
         var scanned = 0
-        var advancedChunks = 0
-        while (scanned < scanBudget && result.size < maxCandidates && advancedChunks <= chunkKeys.size) {
-            val chunkKey = chunkKeys[cursor.chunkIndex]
-            val blocks = buckets[chunkKey]
+        var advancedSections = 0
+        while (scanned < scanBudget && result.size < maxCandidates && advancedSections <= sectionKeys.size) {
+            val sectionKey = sectionKeys[cursor.sectionIndex]
+            val blocks = sectionBuckets[sectionKey]
             if (blocks.isNullOrEmpty()) {
-                advanceChunk(cursor, chunkKeys.size)
-                advancedChunks++
+                advanceSection(cursor, sectionKeys.size)
+                advancedSections++
                 continue
             }
 
             if (cursor.blockIndex >= blocks.size) {
                 cursor.blockIndex = 0
-                advanceChunk(cursor, chunkKeys.size)
-                advancedChunks++
+                advanceSection(cursor, sectionKeys.size)
+                advancedSections++
                 continue
             }
 
@@ -128,8 +142,8 @@ class PrinterCandidatePlanner {
             scanned++
             if (cursor.blockIndex >= blocks.size) {
                 cursor.blockIndex = 0
-                advanceChunk(cursor, chunkKeys.size)
-                advancedChunks++
+                advanceSection(cursor, sectionKeys.size)
+                advancedSections++
             }
 
             if (pending.contains(block.pos())) continue
@@ -141,35 +155,40 @@ class PrinterCandidatePlanner {
         return result
     }
 
-    private fun chunkKeysNear(center: BlockPos, range: Int): List<Long> {
-        val radius = (range shr 4).coerceAtLeast(1) + 1
-        val centerChunkX = center.x shr 4
-        val centerChunkZ = center.z shr 4
-        val keys = LinkedHashSet<Long>()
+    private fun sectionKeysNear(key: SearchKey, center: BlockPos, range: Int): List<Long> {
+        finiteSectionCache[key]?.let { return it }
+        pruneSectionCache()
 
-        keys.add(ChunkPos.asLong(centerChunkX, centerChunkZ))
-        for (ring in 1..radius) {
-            for (dx in -ring..ring) {
-                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ - ring))
-                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ + ring))
-            }
-            for (dz in (-ring + 1)..(ring - 1)) {
-                keys.add(ChunkPos.asLong(centerChunkX - ring, centerChunkZ + dz))
-                keys.add(ChunkPos.asLong(centerChunkX + ring, centerChunkZ + dz))
-            }
-        }
+        val radius = range.toDouble() + 24.0
+        val radiusSqr = radius * radius
+        val keys = sectionBuckets.keys
+            .asSequence()
+            .filter { distanceToSectionSqr(it, center) <= radiusSqr }
+            .sortedWith(
+                compareBy<Long> { sectionPhase[it] ?: PlacementStateOrder.NORMAL }
+                    .thenBy { distanceToSectionSqr(it, center) }
+            )
+            .toList()
 
-        return keys.filter { buckets.containsKey(it) }
+        finiteSectionCache[key] = keys
+        return keys
     }
 
-    private fun advanceChunk(cursor: Cursor, chunkCount: Int) {
-        cursor.chunkIndex = (cursor.chunkIndex + 1) % chunkCount
+    private fun advanceSection(cursor: Cursor, sectionCount: Int) {
+        cursor.sectionIndex = (cursor.sectionIndex + 1) % sectionCount
     }
 
     private fun pruneFiniteStates() {
         while (finiteStates.size > 64) {
             val first = finiteStates.keys.firstOrNull() ?: return
             finiteStates.remove(first)
+        }
+    }
+
+    private fun pruneSectionCache() {
+        while (finiteSectionCache.size > 64) {
+            val first = finiteSectionCache.keys.firstOrNull() ?: return
+            finiteSectionCache.remove(first)
         }
     }
 
@@ -180,15 +199,27 @@ class PrinterCandidatePlanner {
         return dx * dx + dy * dy + dz * dz <= range.toDouble() * range.toDouble()
     }
 
+    private fun sectionKey(pos: BlockPos): Long = SectionPos.asLong(pos.x shr 4, pos.y shr 4, pos.z shr 4)
+
+    private fun distanceToSectionSqr(key: Long, center: BlockPos): Double {
+        val cx = (SectionPos.x(key) shl 4) + 8.0
+        val cy = (SectionPos.y(key) shl 4) + 8.0
+        val cz = (SectionPos.z(key) shl 4) + 8.0
+        val dx = cx - center.x.toDouble()
+        val dy = cy - center.y.toDouble()
+        val dz = cz - center.z.toDouble()
+        return dx * dx + dy * dy + dz * dz
+    }
+
     private fun floorMod(value: Int, divisor: Int): Int {
         val mod = value % divisor
         return if (mod < 0) mod + divisor else mod
     }
 
-    private data class SearchKey(val centerChunkX: Int, val centerChunkZ: Int, val range: Int)
+    private data class SearchKey(val centerSectionX: Int, val centerSectionY: Int, val centerSectionZ: Int, val range: Int)
 
     private class Cursor {
-        var chunkIndex: Int = 0
+        var sectionIndex: Int = 0
         var blockIndex: Int = 0
     }
 }

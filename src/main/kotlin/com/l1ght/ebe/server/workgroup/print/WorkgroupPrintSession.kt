@@ -1,7 +1,8 @@
 package com.l1ght.ebe.server.workgroup.print
 
+import com.l1ght.ebe.server.placement.PlacementStateOrder
 import net.minecraft.core.BlockPos
-import net.minecraft.world.level.ChunkPos
+import net.minecraft.core.SectionPos
 import java.util.UUID
 
 class WorkgroupPrintSession(
@@ -17,8 +18,9 @@ class WorkgroupPrintSession(
 ) {
     private val targetsByIndex: List<PrintBlockTarget> = targets.sortedBy { it.id }
     private val pendingQueue = ArrayDeque<Long>(targetsByIndex.size)
-    private val pendingByChunk = LinkedHashMap<Long, ArrayDeque<Long>>()
-    private val rangeCursors = LinkedHashMap<RangeKey, ChunkCursor>()
+    private val pendingBySection = LinkedHashMap<Long, ArrayDeque<Long>>()
+    private val sectionPhase = LinkedHashMap<Long, Int>()
+    private val rangeCursors = LinkedHashMap<RangeKey, SectionCursor>()
     private val statusCodes = IntArray(targetsByIndex.size) { PrintBlockStatus.PENDING.ordinal }
     private val missingMaterialFailures = IntArray(targetsByIndex.size)
     private val reservationsByToken = LinkedHashMap<UUID, BlockReservation>()
@@ -53,7 +55,7 @@ class WorkgroupPrintSession(
         val result = if (unlimitedRange) {
             reserveFromQueue(pendingQueue, playerId, playerName, nowTick, limit)
         } else {
-            reserveFromChunks(playerId, playerName, nowTick, limit, center, range)
+            reserveFromSections(playerId, playerName, nowTick, limit, center, range)
         }
 
         if (result.isNotEmpty()) touch()
@@ -181,7 +183,7 @@ class WorkgroupPrintSession(
         return result
     }
 
-    private fun reserveFromChunks(
+    private fun reserveFromSections(
         playerId: UUID,
         playerName: String,
         nowTick: Long,
@@ -189,23 +191,23 @@ class WorkgroupPrintSession(
         center: BlockPos,
         range: Int
     ): List<BlockReservation> {
-        val chunkKeys = chunkKeysNear(center, range)
-        if (chunkKeys.isEmpty()) return emptyList()
+        val sectionKeys = sectionKeysNear(center, range)
+        if (sectionKeys.isEmpty()) return emptyList()
 
-        val key = RangeKey(center.x shr 4, center.z shr 4, range)
-        val cursor = rangeCursors.computeIfAbsent(key) { ChunkCursor() }
+        val key = RangeKey(center.x shr 4, center.y shr 4, center.z shr 4, range)
+        val cursor = rangeCursors.computeIfAbsent(key) { SectionCursor() }
         pruneRangeCursors()
-        if (cursor.chunkIndex >= chunkKeys.size) cursor.chunkIndex = 0
+        if (cursor.sectionIndex >= sectionKeys.size) cursor.sectionIndex = 0
 
         val result = ArrayList<BlockReservation>(limit)
         val scanBudget = (limit * 256).coerceAtLeast(1024)
         var scanned = 0
-        var advancedChunks = 0
-        while (result.size < limit && scanned < scanBudget && advancedChunks <= chunkKeys.size) {
-            val queue = pendingByChunk[chunkKeys[cursor.chunkIndex]]
+        var advancedSections = 0
+        while (result.size < limit && scanned < scanBudget && advancedSections <= sectionKeys.size) {
+            val queue = pendingBySection[sectionKeys[cursor.sectionIndex]]
             if (queue.isNullOrEmpty()) {
-                advanceChunk(cursor, chunkKeys.size)
-                advancedChunks++
+                advanceSection(cursor, sectionKeys.size)
+                advancedSections++
                 continue
             }
 
@@ -217,8 +219,8 @@ class WorkgroupPrintSession(
             }
             if (!isWithinBlockRange(target.pos, center, range)) {
                 queue.addLast(id)
-                advanceChunk(cursor, chunkKeys.size)
-                advancedChunks++
+                advanceSection(cursor, sectionKeys.size)
+                advancedSections++
                 continue
             }
 
@@ -256,7 +258,9 @@ class WorkgroupPrintSession(
     private fun enqueuePending(id: Long) {
         val target = targetFor(id) ?: return
         pendingQueue.addLast(id)
-        pendingByChunk.computeIfAbsent(chunkKey(target.pos)) { ArrayDeque() }.addLast(id)
+        val key = sectionKey(target.pos)
+        sectionPhase[key] = minOf(sectionPhase[key] ?: PlacementStateOrder.phaseFromStateId(target.stateId), PlacementStateOrder.phaseFromStateId(target.stateId))
+        pendingBySection.computeIfAbsent(key) { ArrayDeque() }.addLast(id)
     }
 
     private fun status(id: Long): PrintBlockStatus {
@@ -295,29 +299,24 @@ class WorkgroupPrintSession(
         return dx * dx + dy * dy + dz * dz <= range.toDouble() * range.toDouble()
     }
 
-    private fun chunkKeysNear(center: BlockPos, range: Int): List<Long> {
-        val radius = (range shr 4).coerceAtLeast(1) + 1
-        val centerChunkX = center.x shr 4
-        val centerChunkZ = center.z shr 4
-        val keys = LinkedHashSet<Long>()
-        keys.add(ChunkPos.asLong(centerChunkX, centerChunkZ))
-        for (ring in 1..radius) {
-            for (dx in -ring..ring) {
-                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ - ring))
-                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ + ring))
-            }
-            for (dz in (-ring + 1)..(ring - 1)) {
-                keys.add(ChunkPos.asLong(centerChunkX - ring, centerChunkZ + dz))
-                keys.add(ChunkPos.asLong(centerChunkX + ring, centerChunkZ + dz))
-            }
-        }
-        return keys.filter { pendingByChunk[it]?.isNotEmpty() == true }
+    private fun sectionKeysNear(center: BlockPos, range: Int): List<Long> {
+        val radius = range.toDouble() + 24.0
+        val radiusSqr = radius * radius
+        return pendingBySection.keys
+            .asSequence()
+            .filter { pendingBySection[it]?.isNotEmpty() == true }
+            .filter { distanceToSectionSqr(it, center) <= radiusSqr }
+            .sortedWith(
+                compareBy<Long> { sectionPhase[it] ?: PlacementStateOrder.NORMAL }
+                    .thenBy { distanceToSectionSqr(it, center) }
+            )
+            .toList()
     }
 
-    private fun chunkKey(pos: BlockPos): Long = ChunkPos.asLong(pos.x shr 4, pos.z shr 4)
+    private fun sectionKey(pos: BlockPos): Long = SectionPos.asLong(pos.x shr 4, pos.y shr 4, pos.z shr 4)
 
-    private fun advanceChunk(cursor: ChunkCursor, chunkCount: Int) {
-        cursor.chunkIndex = (cursor.chunkIndex + 1) % chunkCount
+    private fun advanceSection(cursor: SectionCursor, sectionCount: Int) {
+        cursor.sectionIndex = (cursor.sectionIndex + 1) % sectionCount
     }
 
     private fun pruneRangeCursors() {
@@ -327,9 +326,19 @@ class WorkgroupPrintSession(
         }
     }
 
-    private data class RangeKey(val centerChunkX: Int, val centerChunkZ: Int, val range: Int)
+    private fun distanceToSectionSqr(key: Long, center: BlockPos): Double {
+        val cx = (SectionPos.x(key) shl 4) + 8.0
+        val cy = (SectionPos.y(key) shl 4) + 8.0
+        val cz = (SectionPos.z(key) shl 4) + 8.0
+        val dx = cx - center.x.toDouble()
+        val dy = cy - center.y.toDouble()
+        val dz = cz - center.z.toDouble()
+        return dx * dx + dy * dy + dz * dz
+    }
 
-    private class ChunkCursor {
-        var chunkIndex: Int = 0
+    private data class RangeKey(val centerSectionX: Int, val centerSectionY: Int, val centerSectionZ: Int, val range: Int)
+
+    private class SectionCursor {
+        var sectionIndex: Int = 0
     }
 }

@@ -403,7 +403,7 @@ public final class PrinterPlacementService {
 
     private static boolean consumePrinterBudget(ServerPlayer player, ServerLevel level) {
         long tick = level.getGameTime();
-        int limit = ServerSettingsManager.get().printerBlocksPerTick;
+        int limit = ServerPlacementBudget.scaledInt(ServerSettingsManager.get().printerBlocksPerTick, 1);
         TickCounter counter = PRINTER_RATE.computeIfAbsent(player.getUUID(), ignored -> new TickCounter(tick));
         if (counter.tick != tick) {
             counter.tick = tick;

@@ -12,6 +12,10 @@ import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
+import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
+import com.l1ght.ebe.projection.mega.ProjectionLodPyramidBuilder;
+import com.l1ght.ebe.projection.mega.ProjectionSparseStore;
 import com.l1ght.ebe.util.PosKey;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
@@ -55,6 +59,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @OnlyIn(Dist.CLIENT)
 public class ViewportFactory {
@@ -89,6 +95,8 @@ public class ViewportFactory {
     private static List<BlockPos> progressiveOutlineSamples = List.of();
     private static ProjectionLoadProfile activeLoadProfile;
     private static boolean preferSectionedRendererForCurrentLoad = false;
+    private static final AtomicInteger viewportLodBuildSequence = new AtomicInteger();
+    private static CompletableFuture<?> viewportLodBuild;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -502,6 +510,7 @@ public class ViewportFactory {
         shaderProbeSceneActive = false;
         progressiveLoad = new ProgressiveModelLoad(model, autoCamera);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createModelOutlineSamples(model) : List.of();
+        startViewportLodBuild(model, null, profile);
         progressiveStatusCooldown = 0;
         LOG.info("Progressive model load started: {} regions, volume={}, profile={}",
                 model.getRegions().size(), progressiveLoad.totalVolume, profile == null ? "none" : profile.risk());
@@ -554,6 +563,7 @@ public class ViewportFactory {
         shaderProbeSceneActive = false;
         progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createComputedOutlineSamples(computed) : List.of();
+        startViewportLodBuild(null, computed, profile);
         progressiveStatusCooldown = 0;
         LOG.info("Computed progressive load started: {} blocks, {} batches, volume={}, profile={}",
                 computed.blockCount(), computed.getViewportBatches().size(), computed.getTotalVolume(),
@@ -587,6 +597,7 @@ public class ViewportFactory {
 
         createSceneRenderer();
         currentScene.useCacheBuffer(totalBlocksAdded > FBO_THRESHOLD);
+        clearViewportLod();
 
         refreshRenderedCore(autoCamera);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
@@ -845,6 +856,90 @@ public class ViewportFactory {
         return List.copyOf(samples.values());
     }
 
+    private static void startViewportLodBuild(BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
+        clearViewportLod();
+        if (sectionedRenderer == null || profile == null || profile.risk().ordinal() < ProjectionLoadProfile.Risk.HUGE.ordinal()) {
+            return;
+        }
+
+        int sequence = viewportLodBuildSequence.incrementAndGet();
+        viewportLodBuild = CompletableFuture.supplyAsync(() -> {
+            ProjectionSparseStore store = computed != null
+                    ? buildViewportSparseStore(computed)
+                    : buildViewportSparseStore(model);
+            ProjectionLodPyramid pyramid = ProjectionLodPyramidBuilder.build(store);
+            return new ViewportLodBuildResult(store, pyramid);
+        }).whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
+            if (sequence != viewportLodBuildSequence.get()) return;
+            if (error != null) {
+                LOG.warn("Failed to build viewport LOD overlay", error);
+                clearViewportLod();
+                return;
+            }
+            if (sectionedRenderer != null && result != null && !result.pyramid().isEmpty()) {
+                sectionedRenderer.setViewportLod(result.pyramid(), result.store().palette());
+                LOG.info("Viewport LOD ready: {} blocks, {} sections, {} levels",
+                        result.store().size(), result.store().sectionCount(), result.pyramid().levels().size());
+            }
+        }));
+    }
+
+    private static ProjectionSparseStore buildViewportSparseStore(BuildingModel model) {
+        if (model == null || model.getRegions().isEmpty()) return ProjectionSparseStore.empty();
+
+        var blocks = new ArrayList<ProjectionData.ProjectionBlock>();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        for (var region : model.getRegions()) {
+            var container = region.getBlocks();
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        Object obj = container.get(x, y, z);
+                        BlockState state = resolveBlockState(obj);
+                        if (state == null || state.isAir()) continue;
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+                        if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
+                        if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
+                        blocks.add(new ProjectionData.ProjectionBlock(new BlockPos(wx, wy, wz), state, null));
+                    }
+                }
+            }
+        }
+        return ProjectionSparseStore.fromBlocks(blocks, 0, 0);
+    }
+
+    private static ProjectionSparseStore buildViewportSparseStore(ComputedProjection computed) {
+        if (computed == null || computed.isEmpty()) return ProjectionSparseStore.empty();
+        var blocks = new ArrayList<ProjectionData.ProjectionBlock>(computed.blockCount());
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        if (!computed.getViewportBatches().isEmpty()) {
+            for (var batch : computed.getViewportBatches()) {
+                for (var entry : batch.getEntries()) {
+                    var pos = entry.getPos();
+                    if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
+                        blocks.add(new ProjectionData.ProjectionBlock(pos, entry.getState(), null));
+                    }
+                }
+            }
+        } else {
+            for (var entry : computed.getBlocks()) {
+                blocks.add(new ProjectionData.ProjectionBlock(entry.getPos(), entry.getState(), null));
+            }
+        }
+        return ProjectionSparseStore.fromBlocks(blocks, 0, 0);
+    }
+
+    private static void clearViewportLod() {
+        if (sectionedRenderer != null) {
+            sectionedRenderer.clearViewportLod();
+        }
+    }
+
+    private record ViewportLodBuildResult(ProjectionSparseStore store, ProjectionLodPyramid pyramid) {
+    }
+
     private static void addSectionOutlineSample(Map<Long, BlockPos> samples, BlockPos pos) {
         addSectionOutlineSample(samples, pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
     }
@@ -862,6 +957,9 @@ public class ViewportFactory {
         progressiveOutlineSamples = List.of();
         activeLoadProfile = null;
         preferSectionedRendererForCurrentLoad = false;
+        viewportLodBuildSequence.incrementAndGet();
+        viewportLodBuild = null;
+        clearViewportLod();
     }
 
     private static void tickProgressiveModelLoad() {
@@ -1628,8 +1726,72 @@ public class ViewportFactory {
 
         if (!changedBlocks.isEmpty()) {
             scheduleIncrementalCompile(changedBlocks);
+            refreshViewportLodFromCurrentModel();
         } else if (sectionedRenderer != null) {
-            sectionedRenderer.updateRenderHook(createCombinedHook(), false);
+            sectionedRenderer.updateRenderHook(createSectionedRenderHook(), false);
+        }
+    }
+
+    public static void applyDisplayFilterChange(BuildingModel model) {
+        if (currentScene == null || currentWorld == null || model == null) {
+            if (model != null) {
+                refreshFromModel(model);
+            }
+            return;
+        }
+
+        var core = getSceneCore();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        Object obj = region.getBlocks().get(x, y, z);
+                        BlockState blockState = resolveBlockState(obj);
+                        if (blockState == null || blockState.isAir()) continue;
+
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+                        var pos = new BlockPos(wx, wy, wz);
+                        boolean shouldDisplay = model.isLayerVisibleAt(region, wx, wy, wz)
+                                && displayFilter.shouldDisplay(wx, wy, wz, obj);
+                        boolean currentlyDisplayed = !currentWorld.getBlockState(pos).isAir();
+                        if (shouldDisplay == currentlyDisplayed) continue;
+
+                        if (shouldDisplay) {
+                            addBlockToViewportWorld(pos, blockState);
+                            if (core != null) core.add(pos.immutable());
+                            changedBlocks.put(pos.immutable(), true);
+                        } else {
+                            currentWorld.removeBlock(pos);
+                            if (core != null) core.remove(pos);
+                            changedBlocks.put(pos.immutable(), false);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!changedBlocks.isEmpty()) {
+            scheduleIncrementalCompile(changedBlocks);
+            refreshViewportLodFromCurrentModel();
+        } else if (sectionedRenderer != null) {
+            sectionedRenderer.updateRenderHook(createSectionedRenderHook(), false);
+        } else {
+            currentScene.needCompileCache();
+        }
+    }
+
+    private static void refreshViewportLodFromCurrentModel() {
+        var session = EditorUI.getSession();
+        ProjectionLoadProfile profile = profileForCurrentSession(session);
+        if (profile != null && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()) {
+            startViewportLodBuild(session.getModel(), null, profile);
+        } else {
+            clearViewportLod();
         }
     }
 
@@ -1659,9 +1821,9 @@ public class ViewportFactory {
         if (currentScene == null || currentWorld == null) return;
         List<BlockPos> positions = new ArrayList<>();
         currentWorld.getFilledBlocks().forEach(packed -> positions.add(BlockPos.of(packed)));
-        ISceneBlockRenderHook hook = createCombinedHook();
+        ISceneBlockRenderHook hook = sectionedRenderer != null ? createSectionedRenderHook() : createCombinedHook();
         currentScene.setRenderedCore(positions, hook, autoCamera);
-        if (sectionedRenderer != null && heatmapHook.isActive()) {
+        if (sectionedRenderer != null && heatmapHook.isActive() && !shouldUseFastHeatmapOverlay(heatmapHook.getMode())) {
             sectionedRenderer.needCompileCache();
         }
     }
@@ -1673,16 +1835,44 @@ public class ViewportFactory {
         return createIrisRenderHookIfNeeded();
     }
 
+    private static ISceneBlockRenderHook createSectionedRenderHook() {
+        if (sectionedRenderer != null && shouldUseFastHeatmapOverlay(heatmapHook.getMode())) {
+            sectionedRenderer.setFastHeatmapMode(heatmapHook.getMode());
+            return createIrisRenderHookIfNeeded();
+        }
+        if (sectionedRenderer != null) {
+            sectionedRenderer.setFastHeatmapMode(HeatmapMode.OFF);
+        }
+        return createCombinedHook();
+    }
+
     public static void setHeatmapMode(HeatmapMode mode) {
         heatmapHook.setMode(mode);
         if (currentScene != null) {
-            ISceneBlockRenderHook hook = createCombinedHook();
             if (sectionedRenderer != null) {
-                sectionedRenderer.updateRenderHook(hook, true);
+                if (shouldUseFastHeatmapOverlay(mode)) {
+                    sectionedRenderer.setFastHeatmapMode(mode);
+                    sectionedRenderer.updateRenderHook(createSectionedRenderHook(), false);
+                } else {
+                    sectionedRenderer.setFastHeatmapMode(HeatmapMode.OFF);
+                    sectionedRenderer.updateRenderHook(createCombinedHook(), true);
+                }
             } else {
                 refreshRenderedCore(false);
             }
         }
+    }
+
+    private static boolean shouldUseFastHeatmapOverlay(HeatmapMode mode) {
+        if (sectionedRenderer == null) return false;
+        if (mode == HeatmapMode.OFF) {
+            return sectionedRenderer.sectionCount() >= 256 || preferSectionedRendererForCurrentLoad;
+        }
+        if (preferSectionedRendererForCurrentLoad || sectionedRenderer.sectionCount() >= 256) {
+            return true;
+        }
+        ProjectionLoadProfile profile = profileForCurrentSession(EditorUI.getSession());
+        return profile != null && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
     }
 
     public static HeatmapMode getHeatmapMode() {

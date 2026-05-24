@@ -1,6 +1,7 @@
 package com.l1ght.ebe.client.renderer;
 
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneEntityRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ImmediateWorldSceneRenderer;
@@ -26,6 +27,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.DirectionProperty;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.client.model.data.ModelData;
@@ -89,6 +92,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private final Map<SectionPos, LongArrayList> sectionBlocks = new LinkedHashMap<>();
     private final Set<SectionPos> dirtySections = new LinkedHashSet<>();
     private final Set<BlockPos> tileEntities = new LinkedHashSet<>();
+    private ProjectionLodPyramid viewportLodPyramid = ProjectionLodPyramid.empty();
+    private List<BlockState> viewportLodPalette = List.of();
+    private HeatmapMode fastHeatmapMode = HeatmapMode.OFF;
 
     private volatile Thread compileThread;
     private final AtomicBoolean compiling = new AtomicBoolean(false);
@@ -210,6 +216,24 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     public void rebuildTileEntities() {
         rebuildAllTileEntities();
+    }
+
+    public void setViewportLod(ProjectionLodPyramid pyramid, List<BlockState> palette) {
+        this.viewportLodPyramid = pyramid == null ? ProjectionLodPyramid.empty() : pyramid;
+        this.viewportLodPalette = palette == null ? List.of() : List.copyOf(palette);
+    }
+
+    public void clearViewportLod() {
+        this.viewportLodPyramid = ProjectionLodPyramid.empty();
+        this.viewportLodPalette = List.of();
+    }
+
+    public void setFastHeatmapMode(HeatmapMode mode) {
+        this.fastHeatmapMode = mode == null ? HeatmapMode.OFF : mode;
+    }
+
+    public int sectionCount() {
+        return sectionBlocks.size();
     }
 
     public boolean isRenderingWorld(Level targetWorld) {
@@ -673,6 +697,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         Set<BlockPos> visibleTileEntities = collectVisibleTileEntities(visibleSections);
 
         compileDirtySections(eyePos, focusPos, cameraMoving);
+        renderViewportLod(eyePos, cameraMoving);
         renderSectionPlaceholders(visibleSections, cameraMoving);
 
         int fallbackLimit = fallbackBlockLimit(cameraMoving);
@@ -717,6 +742,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             layer.clearRenderState();
         }
 
+        renderHeatmapSectionOverlay(visibleSections, cameraMoving);
+
         if (world instanceof TrackedDummyWorld level) {
             renderEntitiesInternal(level, poseStack, buffers, entityHook, particleTicks);
         }
@@ -738,6 +765,212 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (afterWR != null) {
             afterWR.accept(this);
         }
+    }
+
+    private void renderViewportLod(Vector3f eyePos, boolean cameraMoving) {
+        if (viewportLodPyramid == null || viewportLodPyramid.isEmpty()) return;
+        ProjectionLodPyramid.LodLevel level = chooseViewportLodLevel(cameraMoving);
+        if (level == null || level.isEmpty()) return;
+
+        int maxBoxes = cameraMoving ? 3072 : 8192;
+        var boxes = level.boxes();
+        int stride = Math.max(1, boxes.size() / Math.max(1, maxBoxes));
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+
+        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        int drawn = 0;
+        int renderDistance = viewportRenderDistance();
+        for (int i = 0; i < boxes.size() && drawn < maxBoxes; i += stride) {
+            var box = boxes.get(i);
+            if (renderDistance > 0 && boxDistanceSqr(box, eyePos) > (double) renderDistance * renderDistance) {
+                continue;
+            }
+            addLodBox(buffer, box);
+            drawn++;
+        }
+
+        if (drawn > 0) {
+            BufferUploader.drawWithShader(buffer.buildOrThrow());
+        }
+        RenderSystem.enableCull();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+    }
+
+    private ProjectionLodPyramid.LodLevel chooseViewportLodLevel(boolean cameraMoving) {
+        var levels = viewportLodPyramid.levels();
+        if (levels == null || levels.isEmpty()) return null;
+        if (cameraMoving || levels.size() == 1) return levels.get(0);
+        return levels.get(Math.min(1, levels.size() - 1));
+    }
+
+    private double boxDistanceSqr(ProjectionLodPyramid.LodBox box, Vector3f eyePos) {
+        double cx = (box.minX() + box.maxX()) * 0.5D;
+        double cy = (box.minY() + box.maxY()) * 0.5D;
+        double cz = (box.minZ() + box.maxZ()) * 0.5D;
+        double dx = cx - eyePos.x();
+        double dy = cy - eyePos.y();
+        double dz = cz - eyePos.z();
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private void addLodBox(BufferBuilder buffer, ProjectionLodPyramid.LodBox box) {
+        float inset = 0.025F;
+        float x0 = box.minX() + inset;
+        float y0 = box.minY() + inset;
+        float z0 = box.minZ() + inset;
+        float x1 = box.maxX() - inset;
+        float y1 = box.maxY() - inset;
+        float z1 = box.maxZ() - inset;
+        int[] rgb = lodColor(box.stateId());
+        int alpha = Mth.clamp((int) (36 + box.density() * 92), 34, 128);
+
+        addQuad(buffer, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, rgb[0], rgb[1], rgb[2], alpha);
+        addQuad(buffer, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, rgb[0], rgb[1], rgb[2], alpha);
+        addQuad(buffer, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, rgb[0], rgb[1], rgb[2], alpha);
+        addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, rgb[0], rgb[1], rgb[2], alpha);
+        addQuad(buffer, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, rgb[0], rgb[1], rgb[2], Math.min(150, alpha + 18));
+        addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, rgb[0], rgb[1], rgb[2], Math.max(18, alpha / 2));
+    }
+
+    private int[] lodColor(int stateId) {
+        BlockState state = stateId >= 0 && stateId < viewportLodPalette.size() ? viewportLodPalette.get(stateId) : null;
+        int hash = state == null ? stateId * 1103515245 : Objects.hash(
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()),
+                state.getValues());
+        int r = 76 + Math.floorMod(hash, 120);
+        int g = 92 + Math.floorMod(hash >> 8, 112);
+        int b = 104 + Math.floorMod(hash >> 16, 104);
+        return new int[]{Math.min(220, r), Math.min(220, g), Math.min(220, b)};
+    }
+
+    private void renderHeatmapSectionOverlay(List<SectionPos> visibleSections, boolean cameraMoving) {
+        if (fastHeatmapMode == null || fastHeatmapMode == HeatmapMode.OFF || visibleSections.isEmpty()) {
+            return;
+        }
+
+        int maxOverlays = cameraMoving ? 384 : 1024;
+        int drawn = 0;
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+
+        BufferBuilder buffer = null;
+        for (var sp : visibleSections) {
+            if (drawn >= maxOverlays) break;
+            var blocks = sectionBlocks.get(sp);
+            if (blocks == null || blocks.isEmpty()) continue;
+            if (buffer == null) {
+                buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            }
+            int[] rgb = heatmapSectionColor(sp, blocks);
+            int alpha = cameraMoving ? 52 : 72;
+            addSectionBox(buffer, sp, rgb[0], rgb[1], rgb[2], alpha);
+            drawn++;
+        }
+
+        if (buffer != null && drawn > 0) {
+            BufferUploader.drawWithShader(buffer.buildOrThrow());
+        }
+        RenderSystem.enableCull();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+    }
+
+    private int[] heatmapSectionColor(SectionPos sp, LongArrayList blocks) {
+        if (fastHeatmapMode == HeatmapMode.BY_HEIGHT) {
+            return heightHeatmapColor(sp.y() * SECTION_SIZE + 8);
+        }
+
+        int maxSamples = Math.min(96, blocks.size());
+        int stride = Math.max(1, blocks.size() / Math.max(1, maxSamples));
+        int r = 0;
+        int g = 0;
+        int b = 0;
+        int samples = 0;
+        for (int i = 0; i < blocks.size() && samples < maxSamples; i += stride) {
+            BlockState state = world.getBlockState(BlockPos.of(blocks.getLong(i)));
+            if (state == null || state.isAir()) continue;
+            int[] color = switch (fastHeatmapMode) {
+                case BY_TYPE -> typeHeatmapColor(state);
+                case BY_RARITY -> rarityHeatmapColor(state);
+                case BY_FACING -> facingHeatmapColor(state);
+                case BY_HEIGHT -> heightHeatmapColor(sp.y() * SECTION_SIZE + 8);
+                default -> new int[]{70, 160, 220};
+            };
+            r += color[0];
+            g += color[1];
+            b += color[2];
+            samples++;
+        }
+        if (samples <= 0) {
+            return new int[]{70, 160, 220};
+        }
+        return new int[]{r / samples, g / samples, b / samples};
+    }
+
+    private int[] typeHeatmapColor(BlockState state) {
+        int hash = Objects.hash(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()));
+        return new int[]{
+                72 + Math.floorMod(hash, 160),
+                72 + Math.floorMod(hash >> 8, 160),
+                72 + Math.floorMod(hash >> 16, 160)
+        };
+    }
+
+    private int[] rarityHeatmapColor(BlockState state) {
+        float speed = state.getBlock().defaultBlockState().getDestroySpeed(null, BlockPos.ZERO);
+        if (speed < 0 || speed > 15.0F) return new int[]{180, 60, 230};
+        if (speed > 5.0F) return new int[]{40, 110, 255};
+        if (speed > 1.5F) return new int[]{70, 190, 80};
+        if (speed > 0.0F) return new int[]{220, 220, 220};
+        return new int[]{255, 210, 40};
+    }
+
+    private int[] heightHeatmapColor(int y) {
+        float t = Mth.clamp(y / 255.0F, 0.0F, 1.0F);
+        float r;
+        float g;
+        float b;
+        if (t < 0.25F) {
+            float s = t / 0.25F;
+            r = 0.0F; g = s; b = 1.0F;
+        } else if (t < 0.5F) {
+            float s = (t - 0.25F) / 0.25F;
+            r = 0.0F; g = 1.0F; b = 1.0F - s;
+        } else if (t < 0.75F) {
+            float s = (t - 0.5F) / 0.25F;
+            r = s; g = 1.0F; b = 0.0F;
+        } else {
+            float s = (t - 0.75F) / 0.25F;
+            r = 1.0F; g = 1.0F - s; b = 0.0F;
+        }
+        return new int[]{(int) (r * 255.0F), (int) (g * 255.0F), (int) (b * 255.0F)};
+    }
+
+    private int[] facingHeatmapColor(BlockState state) {
+        for (Property<?> prop : state.getProperties()) {
+            if (prop instanceof DirectionProperty dirProp && "facing".equals(prop.getName())) {
+                return switch (state.getValue(dirProp)) {
+                    case NORTH -> new int[]{255, 70, 70};
+                    case SOUTH -> new int[]{70, 255, 70};
+                    case WEST -> new int[]{70, 70, 255};
+                    case EAST -> new int[]{255, 255, 70};
+                    case UP -> new int[]{255, 70, 255};
+                    case DOWN -> new int[]{70, 255, 255};
+                };
+            }
+        }
+        return new int[]{128, 128, 128};
     }
 
     private List<BlockPos> collectUncompiledBlocks(int limit, List<SectionPos> visibleSections) {
@@ -851,6 +1084,22 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, alpha);
         addQuad(buffer, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, r, g, b, alpha);
         addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, r, g, b, Math.max(18, alpha / 2));
+    }
+
+    private void addSectionBox(BufferBuilder buffer, SectionPos sp, int r, int g, int b, int alpha) {
+        float x0 = sp.x() * SECTION_SIZE + 0.045F;
+        float y0 = sp.y() * SECTION_SIZE + 0.045F;
+        float z0 = sp.z() * SECTION_SIZE + 0.045F;
+        float x1 = (sp.x() + 1) * SECTION_SIZE - 0.045F;
+        float y1 = (sp.y() + 1) * SECTION_SIZE - 0.045F;
+        float z1 = (sp.z() + 1) * SECTION_SIZE - 0.045F;
+
+        addQuad(buffer, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, r, g, b, alpha);
+        addQuad(buffer, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, r, g, b, alpha);
+        addQuad(buffer, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, r, g, b, alpha);
+        addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, alpha);
+        addQuad(buffer, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, r, g, b, Math.min(130, alpha + 20));
+        addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, r, g, b, Math.max(16, alpha / 2));
     }
 
     private void addQuad(BufferBuilder buffer,

@@ -53,52 +53,57 @@ public class PlaceAllQueue {
     }
 
     public static synchronized void tick() {
-        int chunkBudget = ServerSettingsManager.get().placeChunksPerTick;
-        int blockBudget = ServerSettingsManager.get().placeBlocksPerTick;
+        if (JOBS.isEmpty()) return;
+        long started = System.nanoTime();
+        int chunkBudget = ServerPlacementBudget.scaledInt(ServerSettingsManager.get().placeChunksPerTick, 1);
+        int blockBudget = ServerPlacementBudget.scaledInt(ServerSettingsManager.get().placeBlocksPerTick, 128);
         int processedChunks = 0;
         int processedBlocks = 0;
-        while (processedChunks < chunkBudget && processedBlocks < blockBudget && !JOBS.isEmpty()) {
-            Job job = JOBS.peek();
-            if (job.player.isRemoved() || job.player.connection == null) {
-                JOBS.remove();
-                continue;
-            }
-            Queue<PlaceBlocksPayload.Entry> chunkEntries = job.chunks.poll();
-            if (chunkEntries == null) {
-                PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
-                JOBS.remove();
-                continue;
-            }
-            while (!chunkEntries.isEmpty() && processedBlocks < blockBudget) {
-                var entry = chunkEntries.poll();
-                processedBlocks++;
-                var state = Block.stateById(entry.stateId());
-                if (state != null && !state.isAir()) {
-                    boolean placed = false;
-                    if (job.level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
-                        job.placed++;
-                        placed = true;
-                    } else if (job.level.getBlockState(entry.pos()).equals(state) && blockEntityMatches(job.level, entry.pos(), entry.nbt())) {
-                        job.placed++;
-                        placed = true;
-                    }
-                    if (placed) {
-                        applyBlockEntityNbt(job.level, entry.pos(), state, entry.nbt());
+        try {
+            while (processedChunks < chunkBudget && processedBlocks < blockBudget && !JOBS.isEmpty()) {
+                Job job = JOBS.poll();
+                if (job.player.isRemoved() || job.player.connection == null || job.player.level() != job.level) {
+                    continue;
+                }
+                Queue<PlaceBlocksPayload.Entry> chunkEntries = job.chunks.poll();
+                if (chunkEntries == null) {
+                    PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
+                    continue;
+                }
+                while (!chunkEntries.isEmpty() && processedBlocks < blockBudget) {
+                    var entry = chunkEntries.poll();
+                    processedBlocks++;
+                    var state = Block.stateById(entry.stateId());
+                    if (state != null && !state.isAir()) {
+                        boolean placed = false;
+                        if (job.level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
+                            job.placed++;
+                            placed = true;
+                        } else if (job.level.getBlockState(entry.pos()).equals(state) && blockEntityMatches(job.level, entry.pos(), entry.nbt())) {
+                            job.placed++;
+                            placed = true;
+                        }
+                        if (placed) {
+                            applyBlockEntityNbt(job.level, entry.pos(), state, entry.nbt());
+                        }
                     }
                 }
+                if (!chunkEntries.isEmpty()) {
+                    job.chunks.add(chunkEntries);
+                }
+                processedChunks++;
+                if (job.progressCooldown-- <= 0) {
+                    job.progressCooldown = 5;
+                    PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
+                }
+                if (job.chunks.isEmpty()) {
+                    PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
+                } else {
+                    JOBS.add(job);
+                }
             }
-            if (!chunkEntries.isEmpty()) {
-                job.chunks.add(chunkEntries);
-            }
-            processedChunks++;
-            if (job.progressCooldown-- <= 0) {
-                job.progressCooldown = 5;
-                PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
-            }
-            if (job.chunks.isEmpty()) {
-                PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
-                JOBS.remove();
-            }
+        } finally {
+            ServerPlacementBudget.recordWork(System.nanoTime() - started);
         }
     }
 
