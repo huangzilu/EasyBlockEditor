@@ -47,7 +47,9 @@ public class SchematicReaders {
                         var state = block.get().defaultBlockState();
                         return applyProperties(state, tag);
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception parseError) {
+                    LOG.warn("Failed to parse fallback block state name {}", name, parseError);
+                }
             }
             return Blocks.STONE.defaultBlockState();
         }
@@ -318,6 +320,9 @@ public class SchematicReaders {
         if (width <= 0 || height <= 0 || length <= 0) {
             throw new IllegalArgumentException("Invalid Schematica dimensions");
         }
+        if (root.contains("Materials") && !"Alpha".equalsIgnoreCase(root.getString("Materials"))) {
+            throw new IllegalArgumentException("Unsupported Schematica materials format: " + root.getString("Materials"));
+        }
 
         var model = new BuildingModel();
         model.getMetadata().setName(file.getFileName().toString());
@@ -326,16 +331,16 @@ public class SchematicReaders {
 
         byte[] blocks = root.getByteArray("Blocks");
         byte[] data = root.getByteArray("Data");
-        byte[] addBlocks = root.contains("AddBlocks", 7) ? root.getByteArray("AddBlocks") : new byte[0];
+        byte[] addBlocks = readSchematicaExtraBlocks(root, width * height * length);
+        Map<Integer, ResourceLocation> mapping = readSchematicaMapping(root);
         int volume = width * height * length;
         for (int i = 0; i < Math.min(volume, blocks.length); i++) {
             int id = blocks[i] & 0xFF;
-            if (addBlocks.length > i >> 1) {
-                int add = addBlocks[i >> 1] & 0xFF;
-                id |= ((i & 1) == 0 ? add & 0x0F : (add >> 4) & 0x0F) << 8;
+            if (addBlocks.length > i) {
+                id |= (addBlocks[i] & 0x0F) << 8;
             }
             int meta = data.length > i ? data[i] & 0x0F : 0;
-            BlockState state = Block.stateById((id << 4) | meta);
+            BlockState state = readLegacySchematicaState(id, meta, mapping);
             if (state == null) state = Blocks.AIR.defaultBlockState();
             if (!state.isAir()) {
                 int x = i % width;
@@ -357,6 +362,57 @@ public class SchematicReaders {
         }
 
         return model;
+    }
+
+    private static byte[] readSchematicaExtraBlocks(CompoundTag root, int volume) {
+        if (root.contains("AddBlocksSchematica", 7)) {
+            byte[] raw = root.getByteArray("AddBlocksSchematica");
+            if (raw.length >= volume) return raw;
+            byte[] expanded = new byte[volume];
+            System.arraycopy(raw, 0, expanded, 0, raw.length);
+            return expanded;
+        }
+        if (!root.contains("AddBlocks", 7)) return new byte[0];
+        byte[] nibble = root.getByteArray("AddBlocks");
+        byte[] expanded = new byte[volume];
+        for (int i = 0; i < nibble.length; i++) {
+            int value = nibble[i] & 0xFF;
+            int even = i * 2;
+            int odd = even + 1;
+            if (even < expanded.length) expanded[even] = (byte) ((value >> 4) & 0x0F);
+            if (odd < expanded.length) expanded[odd] = (byte) (value & 0x0F);
+        }
+        return expanded;
+    }
+
+    private static Map<Integer, ResourceLocation> readSchematicaMapping(CompoundTag root) {
+        Map<Integer, ResourceLocation> mapping = new LinkedHashMap<>();
+        if (!root.contains("SchematicaMapping", 10)) return mapping;
+        var tag = root.getCompound("SchematicaMapping");
+        for (String name : tag.getAllKeys()) {
+            try {
+                mapping.put((int) tag.getShort(name), ResourceLocation.parse(name));
+            } catch (Exception e) {
+                LOG.warn("Ignoring invalid SchematicaMapping entry {}", name, e);
+            }
+        }
+        return mapping;
+    }
+
+    private static BlockState readLegacySchematicaState(int id, int meta, Map<Integer, ResourceLocation> mapping) {
+        ResourceLocation mapped = mapping.get(id);
+        if (mapped != null) {
+            var block = BuiltInRegistries.BLOCK.getOptional(mapped);
+            if (block.isPresent()) {
+                if (meta != 0) {
+                    LOG.debug("Schematica metadata {} for {} cannot be losslessly migrated on Minecraft 1.21; using default state", meta, mapped);
+                }
+                return block.get().defaultBlockState();
+            }
+            LOG.warn("Unknown block in SchematicaMapping: {}, falling back to stone", mapped);
+            return Blocks.STONE.defaultBlockState();
+        }
+        return Block.stateById((id << 4) | meta);
     }
 
     public static BlockState resolveBlockStateFromJson(JsonObject obj) {
@@ -517,7 +573,9 @@ public class SchematicReaders {
             var hex = new StringBuilder();
             for (byte b : header) hex.append(String.format("%02X ", b & 0xFF));
             LOG.error("Failed to read NBT from {}: all formats failed. File header bytes: [{}]", file.getFileName(), hex.toString().trim());
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOG.warn("Failed to inspect unreadable NBT header for {}", file.getFileName(), e);
+        }
 
         return null;
     }

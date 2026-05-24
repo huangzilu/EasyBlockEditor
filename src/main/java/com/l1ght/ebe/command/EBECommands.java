@@ -4,6 +4,7 @@ import com.l1ght.ebe.network.WorkgroupSyncPayload;
 import com.l1ght.ebe.server.permission.PermissionDecision;
 import com.l1ght.ebe.server.permission.PermissionFeature;
 import com.l1ght.ebe.server.permission.PermissionManager;
+import com.l1ght.ebe.server.library.ServerFileLibraryManager;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -12,6 +13,8 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.nio.file.Path;
 
 public class EBECommands {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -83,6 +86,53 @@ public class EBECommands {
                                                             ), false);
                                                             return 1;
                                                         })))))
+                )
+                .then(Commands.literal("library")
+                        .then(Commands.literal("list")
+                                .executes(context -> {
+                                    ServerPlayer player = context.getSource().getPlayerOrException();
+                                    if (!PermissionManager.canUse(player, PermissionFeature.FILE_LIBRARY)) {
+                                        context.getSource().sendFailure(Component.translatable("ebe.error.no_permission"));
+                                        return 0;
+                                    }
+                                    var entries = ServerFileLibraryManager.list();
+                                    String text = entries.stream()
+                                            .map(e -> e.name + " [" + e.format + ", " + e.size + "B]")
+                                            .reduce((a, b) -> a + ", " + b)
+                                            .orElse("");
+                                    context.getSource().sendSuccess(() -> entries.isEmpty()
+                                            ? Component.translatable("ebe.command.library.list.empty")
+                                            : Component.translatable("ebe.command.library.list", text), false);
+                                    return entries.size();
+                                }))
+                        .then(Commands.literal("import")
+                                .requires(source -> source.hasPermission(2))
+                                .then(Commands.argument("path", StringArgumentType.greedyString())
+                                        .executes(context -> {
+                                            ServerPlayer player = context.getSource().getPlayerOrException();
+                                            try {
+                                                var entry = ServerFileLibraryManager.importLocal(
+                                                        Path.of(StringArgumentType.getString(context, "path")),
+                                                        player.getGameProfile().getName());
+                                                context.getSource().sendSuccess(() -> Component.translatable(
+                                                        "ebe.command.library.import.success", entry.name), true);
+                                                return 1;
+                                            } catch (Exception e) {
+                                                context.getSource().sendFailure(Component.translatable(
+                                                        "ebe.command.library.import.failed", e.getMessage()));
+                                                return 0;
+                                            }
+                                        })))
+                        .then(Commands.literal("delete")
+                                .requires(source -> source.hasPermission(2))
+                                .then(Commands.argument("id", StringArgumentType.word())
+                                        .executes(context -> {
+                                            boolean ok = ServerFileLibraryManager.delete(StringArgumentType.getString(context, "id"));
+                                            context.getSource().sendSuccess(() -> Component.translatable(ok
+                                                    ? "ebe.command.library.delete.success"
+                                                    : "ebe.command.library.delete.failed"), true);
+                                            return ok ? 1 : 0;
+                                        })))
                 )
                 .then(Commands.literal("group")
                         .then(Commands.literal("create")

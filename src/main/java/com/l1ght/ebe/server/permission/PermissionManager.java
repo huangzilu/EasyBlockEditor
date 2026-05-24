@@ -3,6 +3,7 @@ package com.l1ght.ebe.server.permission;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import com.l1ght.ebe.EBEMod;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.io.IOException;
@@ -90,7 +91,8 @@ public class PermissionManager {
                 load();
                 return true;
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to hot-reload EBE permissions", e);
         }
         return false;
     }

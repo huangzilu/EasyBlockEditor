@@ -17,8 +17,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class PlaceBlocksPayload implements CustomPacketPayload {
-    private static final int MAX_ENTRIES = 1_000_000;
-
     public static final ResourceLocation ID = ResourceLocation.fromNamespaceAndPath(EBEMod.MOD_ID, "place_blocks");
     public static final Type<PlaceBlocksPayload> TYPE = new Type<>(ID);
     public static final StreamCodec<RegistryFriendlyByteBuf, PlaceBlocksPayload> STREAM_CODEC = StreamCodec.ofMember(PlaceBlocksPayload::write, PlaceBlocksPayload::decode);
@@ -45,18 +43,26 @@ public class PlaceBlocksPayload implements CustomPacketPayload {
         for (var e : entries) {
             buf.writeBlockPos(e.pos());
             buf.writeVarInt(e.stateId());
-            buf.writeUtf(e.nbt(), 32767);
+            buf.writeUtf(NetworkLimits.bounded(e.nbt(), NetworkLimits.MAX_BLOCK_NBT_CHARS), NetworkLimits.MAX_BLOCK_NBT_CHARS);
         }
     }
 
     public static PlaceBlocksPayload decode(RegistryFriendlyByteBuf buf) {
         int size = buf.readVarInt();
-        if (size < 0 || size > MAX_ENTRIES) {
+        if (size < 0 || size > NetworkLimits.MAX_PLACE_BLOCKS) {
             throw new IllegalArgumentException("Invalid place-all entry count: " + size);
         }
         List<Entry> entries = new ArrayList<>(size);
+        long nbtChars = 0L;
         for (int i = 0; i < size; i++) {
-            entries.add(new Entry(buf.readBlockPos(), buf.readVarInt(), buf.readUtf(32767)));
+            var pos = buf.readBlockPos();
+            var stateId = buf.readVarInt();
+            var nbt = buf.readUtf(NetworkLimits.MAX_BLOCK_NBT_CHARS);
+            nbtChars += nbt.length();
+            if (nbtChars > NetworkLimits.MAX_BATCH_NBT_CHARS) {
+                throw new IllegalArgumentException("Place-all NBT payload is too large");
+            }
+            entries.add(new Entry(pos, stateId, nbt));
         }
         return new PlaceBlocksPayload(entries);
     }

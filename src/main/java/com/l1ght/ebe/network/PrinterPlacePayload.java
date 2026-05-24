@@ -45,7 +45,7 @@ public class PrinterPlacePayload implements CustomPacketPayload {
     public void write(RegistryFriendlyByteBuf buf) {
         buf.writeBlockPos(pos);
         buf.writeVarInt(stateId);
-        buf.writeUtf(nbtStr);
+        buf.writeUtf(NetworkLimits.bounded(nbtStr, NetworkLimits.MAX_BLOCK_NBT_CHARS), NetworkLimits.MAX_BLOCK_NBT_CHARS);
         buf.writeBoolean(materialSourcePos != null);
         if (materialSourcePos != null) {
             buf.writeBlockPos(materialSourcePos);
@@ -57,7 +57,7 @@ public class PrinterPlacePayload implements CustomPacketPayload {
     public static PrinterPlacePayload decode(RegistryFriendlyByteBuf buf) {
         BlockPos pos = buf.readBlockPos();
         int stateId = buf.readVarInt();
-        String nbt = buf.readUtf();
+        String nbt = buf.readUtf(NetworkLimits.MAX_BLOCK_NBT_CHARS);
         BlockPos source = buf.readBoolean() ? buf.readBlockPos() : null;
         boolean requireHeldItem = buf.readBoolean();
         int materialSourceRange = buf.readVarInt();

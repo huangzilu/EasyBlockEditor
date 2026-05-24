@@ -1,5 +1,7 @@
 package com.l1ght.ebe.server.placement;
 
+import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.nbt.NbtPathRules;
 import com.l1ght.ebe.server.ServerSettingsManager;
 import com.l1ght.ebe.server.permission.PermissionFeature;
 import com.l1ght.ebe.server.permission.PermissionManager;
@@ -87,7 +89,8 @@ public final class PrinterPlacementService {
                 be.setChanged();
                 level.sendBlockUpdated(pos, state, state, Block.UPDATE_ALL);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to apply printer block entity NBT at {}", pos, e);
         }
     }
 
@@ -160,19 +163,20 @@ public final class PrinterPlacementService {
             targetNbt.remove("z");
             targetNbt.remove("id");
             return targetNbt;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to parse target printer NBT", e);
             return null;
         }
     }
 
     private static boolean nbtMatches(ServerLevel level, ItemStack stack, CompoundTag targetNbt) {
         if (!ServerSettingsManager.get().strictNbtMatching) return true;
-        CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : cleanPlacementNbt(targetNbt);
+        CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : filteredPlacementNbt(targetNbt);
         CompoundTag stackBlockEntityTag = extractStackBlockEntityTag(level, stack);
         if (cleanedTarget.isEmpty()) {
-            return stackBlockEntityTag == null || cleanPlacementNbt(stackBlockEntityTag).isEmpty();
+            return stackBlockEntityTag == null || filteredPlacementNbt(stackBlockEntityTag).isEmpty();
         }
-        return stackBlockEntityTag != null && cleanPlacementNbt(stackBlockEntityTag).equals(cleanedTarget);
+        return stackBlockEntityTag != null && filteredPlacementNbt(stackBlockEntityTag).equals(cleanedTarget);
     }
 
     private static CompoundTag extractStackBlockEntityTag(ServerLevel level, ItemStack stack) {
@@ -196,24 +200,29 @@ public final class PrinterPlacementService {
         return cleaned;
     }
 
+    private static CompoundTag filteredPlacementNbt(CompoundTag tag) {
+        return NbtPathRules.filteredCopy(cleanPlacementNbt(tag), ServerSettingsManager.nbtIgnoreRules());
+    }
+
     private static boolean existingMatchesTarget(ServerLevel level, BlockPos pos, BlockState existing,
                                                  BlockState target, CompoundTag targetNbt) {
         if (!existing.equals(target)) return false;
         if (!ServerSettingsManager.get().strictNbtMatching) return true;
-        CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : cleanPlacementNbt(targetNbt);
+        CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : filteredPlacementNbt(targetNbt);
         var be = level.getBlockEntity(pos);
         CompoundTag existingNbt = null;
         if (be != null) {
             try {
                 existingNbt = be.saveWithId(level.registryAccess());
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                EBEMod.LOGGER.warn("Failed to read existing block entity NBT at {}", pos, e);
                 existingNbt = null;
             }
         }
         if (cleanedTarget.isEmpty()) {
-            return existingNbt == null || cleanPlacementNbt(existingNbt).isEmpty();
+            return existingNbt == null || filteredPlacementNbt(existingNbt).isEmpty();
         }
-        return existingNbt != null && cleanPlacementNbt(existingNbt).equals(cleanedTarget);
+        return existingNbt != null && filteredPlacementNbt(existingNbt).equals(cleanedTarget);
     }
 
     private static boolean consumePrinterBudget(ServerPlayer player, ServerLevel level) {

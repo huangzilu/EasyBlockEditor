@@ -164,16 +164,40 @@ public class SchematicWriters {
         int volume = bounds.sizeX() * bounds.sizeY() * bounds.sizeZ();
         byte[] blocks = new byte[volume];
         byte[] data = new byte[volume];
+        byte[] extraBlocks = new byte[volume];
+        boolean[] hasExtraBlocks = new boolean[]{false};
+        Map<String, Integer> schematicaIds = new LinkedHashMap<>();
+        schematicaIds.put(schematicaBlockName(Blocks.AIR.defaultBlockState()), 0);
         forEachBlock(model, (region, lx, ly, lz, wx, wy, wz, state) -> {
             int index = (wy - bounds.minY()) * bounds.sizeX() * bounds.sizeZ()
                     + (wz - bounds.minZ()) * bounds.sizeX()
                     + (wx - bounds.minX());
-            int stateId = net.minecraft.world.level.block.Block.getId(state);
-            blocks[index] = (byte) ((stateId >> 4) & 0xFF);
-            data[index] = (byte) (stateId & 0x0F);
+            String key = schematicaBlockName(state);
+            int blockId = schematicaIds.computeIfAbsent(key, ignored -> schematicaIds.size());
+            blocks[index] = (byte) (blockId & 0xFF);
+            extraBlocks[index] = (byte) ((blockId >> 8) & 0x0F);
+            if (extraBlocks[index] != 0) hasExtraBlocks[0] = true;
+            data[index] = (byte) (net.minecraft.world.level.block.Block.getId(state) & 0x0F);
         });
         root.putByteArray("Blocks", blocks);
         root.putByteArray("Data", data);
+        if (hasExtraBlocks[0]) {
+            byte[] packed = new byte[(int) Math.ceil(volume / 2.0)];
+            for (int i = 0; i < packed.length; i++) {
+                int even = i * 2;
+                int odd = even + 1;
+                int high = even < extraBlocks.length ? extraBlocks[even] & 0x0F : 0;
+                int low = odd < extraBlocks.length ? extraBlocks[odd] & 0x0F : 0;
+                packed[i] = (byte) ((high << 4) | low);
+            }
+            root.putByteArray("AddBlocks", packed);
+        }
+
+        CompoundTag mapping = new CompoundTag();
+        for (var entry : schematicaIds.entrySet()) {
+            mapping.putShort(entry.getKey(), (short) (int) entry.getValue());
+        }
+        root.put("SchematicaMapping", mapping);
 
         ListTag tileEntities = new ListTag();
         for (Region region : model.getRegions()) {
@@ -313,6 +337,10 @@ public class SchematicWriters {
             builder.append(prop.getName()).append('=').append(state.getValue(prop));
         }
         return builder.append(']').toString();
+    }
+
+    private static String schematicaBlockName(BlockState state) {
+        return BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
     }
 
     private static BlockState resolveBlockState(Object obj) {

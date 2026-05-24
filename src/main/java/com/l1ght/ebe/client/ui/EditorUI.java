@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.l1ght.ebe.EBEMod;
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
@@ -362,17 +363,37 @@ public class EditorUI {
         root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, file -> {
             beginLoadFile(file);
         }));
-        root.child("ebe.editor.save", () -> { try { session.save(); } catch (Exception e) { e.printStackTrace(); } });
+        root.child("ebe.editor.save", () -> saveCurrentProject());
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
+            saveProjectAs(name);
         }));
         root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, file -> {
             beginLoadFile(file);
         }));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            try { session.saveAs(name); } catch (Exception e) { e.printStackTrace(); }
+            saveProjectAs(name);
         }));
         return root;
+    }
+
+    private static void saveCurrentProject() {
+        try {
+            session.save();
+            setStatus(Component.translatable("ebe.editor.status.saved"));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to save current EBE project", e);
+            setStatus(Component.translatable("ebe.error.save_failed"));
+        }
+    }
+
+    private static void saveProjectAs(String name) {
+        try {
+            session.saveAs(name);
+            setStatus(Component.translatable("ebe.editor.status.saved"));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to save EBE project as {}", name, e);
+            setStatus(Component.translatable("ebe.error.save_failed"));
+        }
     }
 
     private static MenuTreeNode buildEditMenu() {
@@ -443,7 +464,7 @@ public class EditorUI {
             if (sequence != FILE_LOAD_SEQUENCE.get()) return;
             if (error != null) {
                 setStatus(Component.translatable("ebe.editor.loading.failed", rootCauseMessage(error)));
-                error.printStackTrace();
+                EBEMod.LOGGER.warn("Failed to load schematic file {}", file, error);
                 return;
             }
             session.applyLoaded(loaded);
@@ -666,6 +687,37 @@ public class EditorUI {
                 list.addChild(label);
             }
         }
+
+        list.addChild(workgroupSection("ebe.workgroup.chat"));
+        JsonArray chat = arr(group.get("chat"));
+        if (chat.size() == 0) {
+            var emptyChat = new Label();
+            emptyChat.setText(Component.translatable("ebe.workgroup.chat.empty"));
+            emptyChat.textStyle(ts -> ts.textColor(0xFF888888).fontSize(8).textShadow(false));
+            list.addChild(emptyChat);
+        } else {
+            for (JsonElement chatElem : chat) {
+                JsonObject msg = chatElem.getAsJsonObject();
+                var label = new Label();
+                label.setText(Component.translatable("ebe.workgroup.chat.row",
+                        string(msg.get("sender"), "-"),
+                        string(msg.get("message"), "")));
+                label.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
+                        .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+                list.addChild(label);
+            }
+        }
+        var chatRow = new UIElement();
+        chatRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+        var chatInput = new TextField();
+        chatInput.layout(l -> l.flex(1).height(20));
+        chatInput.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.workgroup.chat.placeholder")));
+        chatRow.addChild(chatInput);
+        chatRow.addChild(workgroupSmallButton("ebe.workgroup.chat.send", 48, () -> {
+            String message = chatInput.getText().trim();
+            if (!message.isEmpty()) sendWorkgroupAction("chat", groupName, "", message);
+        }));
+        list.addChild(chatRow);
 
         scroller.addScrollViewChild(list);
         return scroller;
@@ -3924,7 +3976,8 @@ public class EditorUI {
                     session.saveAs(name);
                     refreshFileList();
                 } catch (Exception ex) {
-                    ex.printStackTrace();
+                    EBEMod.LOGGER.warn("Failed to export file {}", name, ex);
+                    setStatus(Component.translatable("ebe.error.save_failed"));
                 }
             });
         }));
@@ -3935,7 +3988,8 @@ public class EditorUI {
                     Files.deleteIfExists(file);
                     refreshFileList();
                 } catch (Exception ex) {
-                    ex.printStackTrace();
+                    EBEMod.LOGGER.warn("Failed to delete schematic file {}", file, ex);
+                    setStatus(Component.translatable("ebe.editor.files.delete_failed"));
                 }
             });
         }));
@@ -3953,7 +4007,8 @@ public class EditorUI {
                         Files.move(file, file.resolveSibling(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         refreshFileList();
                     } catch (Exception e) {
-                        e.printStackTrace();
+                        EBEMod.LOGGER.warn("Failed to rename schematic file {} to {}", file, name, e);
+                        setStatus(Component.translatable("ebe.editor.files.rename_failed"));
                     }
                 }
         );
@@ -3972,7 +4027,8 @@ public class EditorUI {
                 hash = 31 * hash + Files.size(path);
                 hash = 31 * hash + Files.getLastModifiedTime(path).toMillis();
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.debug("Failed to compute file tree signature", e);
         }
         return hash;
     }
@@ -4012,7 +4068,9 @@ public class EditorUI {
                     .forEach(p -> parent.addChild(Files.isDirectory(p)
                             ? FileTreeNode.ofDirectory(p)
                             : FileTreeNode.ofFile(p)));
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to load schematic directory children from {}", dir, e);
+        }
     }
 
     private static void onFileSelected(Path file) {

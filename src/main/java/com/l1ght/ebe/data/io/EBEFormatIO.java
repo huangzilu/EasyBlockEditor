@@ -265,7 +265,8 @@ public class EBEFormatIO {
                     try {
                         CompoundTag tag = TagParser.parseTag(nbtStr);
                         region.setWorldBlockEntity(wx, wy, wz, tag);
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        LOG.warn("Failed to parse block entity NBT at {},{},{} from EBE file", wx, wy, wz, e);
                     }
                 }
             }
@@ -277,7 +278,8 @@ public class EBEFormatIO {
                     var pos = obj.getAsJsonArray("pos");
                     String layerId = obj.get("layer").getAsString();
                     model.setBlockLayerOverride(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt(), layerId);
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse block layer override from EBE file", e);
                 }
             }
         }
@@ -285,7 +287,8 @@ public class EBEFormatIO {
             for (var elem : root.getAsJsonArray("entities")) {
                 try {
                     model.addEntity(TagParser.parseTag(elem.getAsString()));
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse entity NBT from EBE file", e);
                 }
             }
         }

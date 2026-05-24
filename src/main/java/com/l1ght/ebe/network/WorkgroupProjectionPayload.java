@@ -37,16 +37,17 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        buf.writeUtf(action);
+        buf.writeUtf(NetworkLimits.bounded(action, NetworkLimits.MAX_ACTION_CHARS), NetworkLimits.MAX_ACTION_CHARS);
         buf.writeUUID(groupId);
         buf.writeUUID(projectionId);
-        buf.writeUtf(fileName);
+        buf.writeUtf(NetworkLimits.bounded(fileName, NetworkLimits.MAX_SHORT_TEXT_CHARS), NetworkLimits.MAX_SHORT_TEXT_CHARS);
         buf.writeBlockPos(origin);
         buf.writeBoolean(visible);
     }
 
     public static WorkgroupProjectionPayload decode(RegistryFriendlyByteBuf buf) {
-        return new WorkgroupProjectionPayload(buf.readUtf(), buf.readUUID(), buf.readUUID(), buf.readUtf(), buf.readBlockPos(), buf.readBoolean());
+        return new WorkgroupProjectionPayload(buf.readUtf(NetworkLimits.MAX_ACTION_CHARS), buf.readUUID(), buf.readUUID(),
+                buf.readUtf(NetworkLimits.MAX_SHORT_TEXT_CHARS), buf.readBlockPos(), buf.readBoolean());
     }
 
     @Override

@@ -11,6 +11,7 @@ import com.l1ght.ebe.network.AdminActionPayload;
 import com.l1ght.ebe.network.WorkgroupNetworkSync;
 import com.l1ght.ebe.network.WorkgroupSyncPayload;
 import com.l1ght.ebe.server.ServerSettingsManager;
+import com.l1ght.ebe.server.library.ServerFileLibraryManager;
 import com.l1ght.ebe.server.permission.PermissionManager;
 import com.l1ght.ebe.server.placement.PlaceAllQueue;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
@@ -93,6 +94,7 @@ public class EBEMod {
     public void onServerStarting(ServerStartingEvent event) {
         PermissionManager.load();
         ServerSettingsManager.load();
+        ServerFileLibraryManager.load();
         WorkgroupManager.load();
         LOGGER.info("EasyBlockEditor server starting");
     }
@@ -101,13 +103,14 @@ public class EBEMod {
     public void onServerTick(ServerTickEvent.Post event) {
         boolean permissionsChanged = PermissionManager.pollHotReload();
         boolean settingsChanged = ServerSettingsManager.pollHotReload();
+        boolean libraryChanged = ServerFileLibraryManager.pollHotReload();
         boolean workgroupsChanged = WorkgroupManager.pollHotReload();
         boolean projectionExpired = WorkgroupManager.expireProjections(ServerSettingsManager.get().projectionTimeoutSeconds);
         boolean printTickChanged = WorkgroupPrintSessionManager.tick(event.getServer().overworld().getGameTime());
         PlaceAllQueue.tick();
         var printChangedGroups = WorkgroupPrintSessionManager.consumeChangedGroupsForBroadcast();
 
-        if (permissionsChanged || settingsChanged || workgroupsChanged || projectionExpired || printTickChanged || !printChangedGroups.isEmpty()) {
+        if (permissionsChanged || settingsChanged || libraryChanged || workgroupsChanged || projectionExpired || printTickChanged || !printChangedGroups.isEmpty()) {
             for (var player : event.getServer().getPlayerList().getPlayers()) {
                 if (player.hasPermissions(2)) {
                     AdminActionPayload.sendAdminSync(player);

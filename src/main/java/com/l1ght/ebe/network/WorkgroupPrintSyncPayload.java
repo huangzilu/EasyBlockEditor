@@ -31,11 +31,11 @@ public class WorkgroupPrintSyncPayload implements CustomPacketPayload {
         buf.writeBoolean(active);
         buf.writeVarInt(placed);
         buf.writeVarInt(total);
-        buf.writeUtf(snapshotJson, 32767);
+        buf.writeUtf(NetworkLimits.bounded(snapshotJson, NetworkLimits.MAX_JSON_CHARS), NetworkLimits.MAX_JSON_CHARS);
     }
 
     public static WorkgroupPrintSyncPayload decode(RegistryFriendlyByteBuf buf) {
-        return new WorkgroupPrintSyncPayload(buf.readBoolean(), buf.readVarInt(), buf.readVarInt(), buf.readUtf(32767));
+        return new WorkgroupPrintSyncPayload(buf.readBoolean(), buf.readVarInt(), buf.readVarInt(), buf.readUtf(NetworkLimits.MAX_JSON_CHARS));
     }
 
     @Override

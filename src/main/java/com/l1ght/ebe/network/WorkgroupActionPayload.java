@@ -31,14 +31,17 @@ public class WorkgroupActionPayload implements CustomPacketPayload {
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        buf.writeUtf(action);
-        buf.writeUtf(groupName);
-        buf.writeUtf(password);
-        buf.writeUtf(target);
+        buf.writeUtf(NetworkLimits.bounded(action, NetworkLimits.MAX_ACTION_CHARS), NetworkLimits.MAX_ACTION_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(groupName, NetworkLimits.MAX_SHORT_TEXT_CHARS), NetworkLimits.MAX_SHORT_TEXT_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(password, NetworkLimits.MAX_SHORT_TEXT_CHARS), NetworkLimits.MAX_SHORT_TEXT_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(target, NetworkLimits.MAX_MEDIUM_TEXT_CHARS), NetworkLimits.MAX_MEDIUM_TEXT_CHARS);
     }
 
     public static WorkgroupActionPayload decode(RegistryFriendlyByteBuf buf) {
-        return new WorkgroupActionPayload(buf.readUtf(), buf.readUtf(), buf.readUtf(), buf.readUtf());
+        return new WorkgroupActionPayload(buf.readUtf(NetworkLimits.MAX_ACTION_CHARS),
+                buf.readUtf(NetworkLimits.MAX_SHORT_TEXT_CHARS),
+                buf.readUtf(NetworkLimits.MAX_SHORT_TEXT_CHARS),
+                buf.readUtf(NetworkLimits.MAX_MEDIUM_TEXT_CHARS));
     }
 
     @Override
@@ -63,6 +66,7 @@ public class WorkgroupActionPayload implements CustomPacketPayload {
                     case "leave" -> changed = WorkgroupManager.leave(payload.groupName, player);
                     case "disband" -> changed = WorkgroupManager.disband(payload.groupName, player);
                     case "kick" -> changed = WorkgroupManager.kick(payload.groupName, payload.target, player);
+                    case "chat" -> changed = WorkgroupManager.addChatMessage(player, payload.target);
                     case "sync" -> {
                     }
                     default -> {

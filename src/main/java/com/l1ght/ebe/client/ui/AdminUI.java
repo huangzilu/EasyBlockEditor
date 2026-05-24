@@ -31,7 +31,7 @@ public class AdminUI {
     private static String snapshot = "{}";
     private static int activeTab = 0;
     private static final String[] FEATURES = {"editor", "projection", "printer", "place_all", "collaborate", "file_library", "import", "export"};
-    private static final String[] SETTINGS = {"projection_timeout_seconds", "place_chunks_per_tick", "printer_blocks_per_tick", "max_edit_size", "strict_nbt_matching"};
+    private static final String[] SETTINGS = {"projection_timeout_seconds", "place_chunks_per_tick", "place_blocks_per_tick", "printer_blocks_per_tick", "max_edit_size", "strict_nbt_matching"};
 
     public static ModularUI createModularUI() {
         root = new UIElement();
@@ -81,6 +81,8 @@ public class AdminUI {
         side.addChild(tabButton("ebe.admin.permissions", 0));
         side.addChild(tabButton("ebe.admin.server_settings", 1));
         side.addChild(tabButton("ebe.admin.workgroups", 2));
+        side.addChild(tabButton("ebe.admin.file_library", 3));
+        side.addChild(tabButton("ebe.admin.nbt_rules", 4));
         var hint = new Label();
         hint.setText(t("ebe.admin.saved_immediately"));
         hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
@@ -119,6 +121,8 @@ public class AdminUI {
             case 0 -> renderPermissions();
             case 1 -> renderSettings();
             case 2 -> renderWorkgroups();
+            case 3 -> renderLibrary();
+            case 4 -> renderNbtRules();
             default -> renderPermissions();
         }
     }
@@ -202,6 +206,100 @@ public class AdminUI {
         }
         scroller.addScrollViewChild(list);
         content.addChild(scroller);
+    }
+
+    private static void renderLibrary() {
+        content.addChild(sectionTitle("ebe.admin.file_library"));
+        JsonArray files = arr(rootJson().get("library"));
+        if (files.isEmpty()) {
+            var empty = new Label();
+            empty.setText(t("ebe.admin.library.empty"));
+            empty.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9).textShadow(false));
+            content.addChild(empty);
+            return;
+        }
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).flex(1));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+        var list = new UIElement();
+        list.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
+        for (JsonElement elem : files) {
+            list.addChild(libraryCard(elem.getAsJsonObject()));
+        }
+        scroller.addScrollViewChild(list);
+        content.addChild(scroller);
+    }
+
+    private static UIElement libraryCard(JsonObject file) {
+        String id = string(file.get("id"), "");
+        var card = new UIElement();
+        card.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(3).paddingAll(5));
+        card.style(s -> s.background(Sprites.RECT_RD));
+
+        var title = new Label();
+        title.setText(t("ebe.admin.library.row",
+                string(file.get("name"), "-"),
+                string(file.get("format"), "-"),
+                Long.toString(longValue(file.get("size"), 0L)),
+                string(file.get("owner"), "-")));
+        title.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(9).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        card.addChild(title);
+
+        var detail = new Label();
+        detail.setText(Component.literal(id + "  " + string(file.get("checksum"), "")));
+        detail.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        card.addChild(detail);
+
+        var row = new UIElement();
+        row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+        var rename = new TextField();
+        rename.layout(l -> l.flex(1).height(18));
+        rename.setText(string(file.get("name"), ""));
+        row.addChild(rename);
+        row.addChild(smallTextButton("ebe.admin.rename", 52, () -> send("library_rename", id, rename.getText(), "")));
+        row.addChild(smallTextButton("ebe.admin.delete", 52, () -> send("library_delete", id, "", "")));
+        card.addChild(row);
+        return card;
+    }
+
+    private static void renderNbtRules() {
+        content.addChild(sectionTitle("ebe.admin.nbt_rules"));
+        var help = new Label();
+        help.setText(t("ebe.admin.nbt_rules.help"));
+        help.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(help);
+
+        var addRow = new UIElement();
+        addRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+        var input = new TextField();
+        input.layout(l -> l.flex(1).height(18));
+        input.textFieldStyle(s -> s.placeholder(Component.literal("/Items[*]/Slot")));
+        addRow.addChild(input);
+        addRow.addChild(smallTextButton("ebe.nbt.add", 58, () -> {
+            String text = input.getText().trim();
+            if (!text.isEmpty()) send("nbt_ignore_add", text, "", "");
+        }));
+        content.addChild(addRow);
+
+        JsonArray rules = arr(rootJson().get("nbtIgnoreRules"));
+        for (JsonElement elem : rules) {
+            String rule = string(elem, "");
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
+            row.style(s -> s.background(Sprites.RECT_RD));
+            var label = new Label();
+            label.setText(Component.literal(rule));
+            label.layout(l -> l.flex(1));
+            label.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(9).textShadow(false));
+            row.addChild(label);
+            if (!"/x".equals(rule) && !"/y".equals(rule) && !"/z".equals(rule) && !"/id".equals(rule)) {
+                row.addChild(smallTextButton("ebe.nbt.remove", 58, () -> send("nbt_ignore_remove", rule, "", "")));
+            }
+            content.addChild(row);
+        }
     }
 
     private static UIElement adminGroupCard(JsonObject group) {
@@ -299,6 +397,14 @@ public class AdminUI {
         return btn;
     }
 
+    private static Button smallTextButton(String key, int width, Runnable action) {
+        var btn = new Button();
+        btn.setText(t(key));
+        btn.layout(l -> l.width(width).height(18));
+        btn.setOnClick(e -> action.run());
+        return btn;
+    }
+
     private static Label sectionTitle(String key) {
         var label = new Label();
         label.setText(t(key));
@@ -356,9 +462,18 @@ public class AdminUI {
         }
     }
 
+    private static long longValue(JsonElement elem, long fallback) {
+        try {
+            return elem == null || elem.isJsonNull() ? fallback : elem.getAsLong();
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
     private static int defaultSetting(String key) {
         return switch (key) {
             case "place_chunks_per_tick" -> 4;
+            case "place_blocks_per_tick" -> 4096;
             case "printer_blocks_per_tick" -> 1;
             case "max_edit_size" -> 256;
             case "strict_nbt_matching" -> 1;
@@ -370,6 +485,7 @@ public class AdminUI {
         return switch (key) {
             case "projection_timeout_seconds" -> 60;
             case "max_edit_size" -> 16;
+            case "place_blocks_per_tick" -> 512;
             default -> 1;
         };
     }
@@ -401,6 +517,7 @@ public class AdminUI {
         return switch (key) {
             case "projection_timeout_seconds" -> "ebe.admin.projection_timeout";
             case "place_chunks_per_tick" -> "ebe.admin.chunks_per_tick";
+            case "place_blocks_per_tick" -> "ebe.admin.blocks_per_tick";
             case "printer_blocks_per_tick" -> "ebe.admin.printer_speed";
             case "max_edit_size" -> "ebe.admin.max_edit_size";
             case "strict_nbt_matching" -> "ebe.admin.strict_nbt_matching";

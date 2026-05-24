@@ -1,5 +1,7 @@
 package com.l1ght.ebe.server.placement;
 
+import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.nbt.NbtPathRules;
 import com.l1ght.ebe.network.PlaceBlocksPayload;
 import com.l1ght.ebe.network.PlaceProgressPayload;
 import com.l1ght.ebe.server.ServerSettingsManager;
@@ -26,25 +28,33 @@ public class PlaceAllQueue {
         for (var entry : entries) {
             byChunk.computeIfAbsent(new ChunkPos(entry.pos()), ignored -> new ArrayList<>()).add(entry);
         }
-        JOBS.add(new Job(level, player, new ArrayDeque<>(byChunk.values()), entries.size()));
+        Queue<Queue<PlaceBlocksPayload.Entry>> chunks = new ArrayDeque<>();
+        for (var chunkEntries : byChunk.values()) {
+            chunks.add(new ArrayDeque<>(chunkEntries));
+        }
+        JOBS.add(new Job(level, player, chunks, entries.size()));
     }
 
     public static synchronized void tick() {
         int chunkBudget = ServerSettingsManager.get().placeChunksPerTick;
-        int processed = 0;
-        while (processed < chunkBudget && !JOBS.isEmpty()) {
+        int blockBudget = ServerSettingsManager.get().placeBlocksPerTick;
+        int processedChunks = 0;
+        int processedBlocks = 0;
+        while (processedChunks < chunkBudget && processedBlocks < blockBudget && !JOBS.isEmpty()) {
             Job job = JOBS.peek();
             if (job.player.isRemoved() || job.player.connection == null) {
                 JOBS.remove();
                 continue;
             }
-            List<PlaceBlocksPayload.Entry> chunkEntries = job.chunks.poll();
+            Queue<PlaceBlocksPayload.Entry> chunkEntries = job.chunks.poll();
             if (chunkEntries == null) {
                 PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
                 JOBS.remove();
                 continue;
             }
-            for (var entry : chunkEntries) {
+            while (!chunkEntries.isEmpty() && processedBlocks < blockBudget) {
+                var entry = chunkEntries.poll();
+                processedBlocks++;
                 var state = Block.stateById(entry.stateId());
                 if (state != null && !state.isAir()) {
                     boolean placed = false;
@@ -60,7 +70,10 @@ public class PlaceAllQueue {
                     }
                 }
             }
-            processed++;
+            if (!chunkEntries.isEmpty()) {
+                job.chunks.add(chunkEntries);
+            }
+            processedChunks++;
             if (job.chunks.isEmpty()) {
                 PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
                 JOBS.remove();
@@ -102,7 +115,8 @@ public class PlaceAllQueue {
                 be.setChanged();
                 level.sendBlockUpdated(pos, state, state, Block.UPDATE_ALL);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to apply block entity NBT at {}", pos, e);
         }
     }
 
@@ -115,8 +129,12 @@ public class PlaceAllQueue {
             if (be == null) return false;
             var existing = be.saveWithId(level.registryAccess());
             cleanPlacementNbt(existing);
+            if (!ServerSettingsManager.get().strictNbtMatching) return true;
+            target = NbtPathRules.filteredCopy(target, ServerSettingsManager.nbtIgnoreRules());
+            existing = NbtPathRules.filteredCopy(existing, ServerSettingsManager.nbtIgnoreRules());
             return existing.equals(target);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to compare block entity NBT at {}", pos, e);
             return false;
         }
     }
@@ -131,11 +149,11 @@ public class PlaceAllQueue {
     private static class Job {
         final ServerLevel level;
         final ServerPlayer player;
-        final Queue<List<PlaceBlocksPayload.Entry>> chunks;
+        final Queue<Queue<PlaceBlocksPayload.Entry>> chunks;
         final int total;
         int placed;
 
-        Job(ServerLevel level, ServerPlayer player, Queue<List<PlaceBlocksPayload.Entry>> chunks, int total) {
+        Job(ServerLevel level, ServerPlayer player, Queue<Queue<PlaceBlocksPayload.Entry>> chunks, int total) {
             this.level = level;
             this.player = player;
             this.chunks = chunks;

@@ -2,6 +2,7 @@ package com.l1ght.ebe.server.workgroup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.l1ght.ebe.EBEMod;
 import com.l1ght.ebe.server.workgroup.print.WorkgroupPrintSessionManager;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -103,7 +104,8 @@ public class WorkgroupManager {
         WorkgroupPrintSessionManager.cancelGroup(group.id);
         try {
             Files.deleteIfExists(DIR.resolve(group.id + ".json"));
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            EBEMod.LOGGER.warn("Failed to delete workgroup file for {}", group.id, e);
         }
         saveAll();
         return true;
@@ -166,6 +168,23 @@ public class WorkgroupManager {
         saveAll();
     }
 
+    public static synchronized boolean addChatMessage(ServerPlayer player, String message) {
+        Workgroup group = groupFor(player);
+        if (group == null || message == null || message.isBlank()) return false;
+        if (group.chat == null) group.chat = new ArrayList<>();
+        String clean = message.trim();
+        if (clean.length() > 240) clean = clean.substring(0, 240);
+        group.chat.add(new Workgroup.ChatMessage(
+                player.getUUID(),
+                player.getGameProfile().getName(),
+                clean,
+                System.currentTimeMillis()
+        ));
+        while (group.chat.size() > 80) group.chat.remove(0);
+        saveAll();
+        return true;
+    }
+
     public static synchronized boolean pollHotReload() {
         long signature = computeSignature();
         if (signature != lastSignature) {
@@ -224,6 +243,17 @@ public class WorkgroupManager {
             projections.add(p);
         }
         item.put("projections", projections);
+        List<Map<String, Object>> chat = new ArrayList<>();
+        if (group.chat != null) {
+            for (var message : group.chat) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("sender", message.senderName());
+                row.put("message", message.message());
+                row.put("sentAt", message.sentAt());
+                chat.add(row);
+            }
+        }
+        item.put("chat", chat);
         Map<String, Object> printSession = WorkgroupPrintSessionManager.snapshotForGroup(group.id);
         item.put("printSession", printSession == null ? null : printSession);
         return item;
@@ -271,7 +301,8 @@ public class WorkgroupManager {
     private static void deleteGroupFile(UUID id) {
         try {
             Files.deleteIfExists(DIR.resolve(id + ".json"));
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            EBEMod.LOGGER.warn("Failed to delete workgroup file for {}", id, e);
         }
     }
 
@@ -286,7 +317,8 @@ public class WorkgroupManager {
                     hash = 31 * hash + Files.getLastModifiedTime(path).toMillis();
                 }
             }
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            EBEMod.LOGGER.warn("Failed to compute workgroup file signature", e);
         }
         return hash;
     }

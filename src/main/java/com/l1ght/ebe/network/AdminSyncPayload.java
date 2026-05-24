@@ -21,11 +21,11 @@ public class AdminSyncPayload implements CustomPacketPayload {
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        buf.writeUtf(json, 32767);
+        buf.writeUtf(NetworkLimits.bounded(json, NetworkLimits.MAX_JSON_CHARS), NetworkLimits.MAX_JSON_CHARS);
     }
 
     public static AdminSyncPayload decode(RegistryFriendlyByteBuf buf) {
-        return new AdminSyncPayload(buf.readUtf(32767));
+        return new AdminSyncPayload(buf.readUtf(NetworkLimits.MAX_JSON_CHARS));
     }
 
     @Override

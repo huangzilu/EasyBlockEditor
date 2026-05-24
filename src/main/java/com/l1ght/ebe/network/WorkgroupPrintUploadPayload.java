@@ -23,8 +23,6 @@ import java.util.Map;
 import java.util.UUID;
 
 public class WorkgroupPrintUploadPayload implements CustomPacketPayload {
-    private static final int MAX_BATCH_ENTRIES = 1024;
-    private static final int MAX_TOTAL_ENTRIES = 1_000_000;
     private static final Map<UUID, PendingUpload> UPLOADS = new HashMap<>();
 
     public static final ResourceLocation ID = ResourceLocation.fromNamespaceAndPath(EBEMod.MOD_ID, "workgroup_print_upload");
@@ -50,7 +48,7 @@ public class WorkgroupPrintUploadPayload implements CustomPacketPayload {
 
     public void write(RegistryFriendlyByteBuf buf) {
         buf.writeUUID(uploadId);
-        buf.writeUtf(fileName, 255);
+        buf.writeUtf(NetworkLimits.bounded(fileName, NetworkLimits.MAX_SHORT_TEXT_CHARS), NetworkLimits.MAX_SHORT_TEXT_CHARS);
         buf.writeVarInt(total);
         buf.writeVarInt(offset);
         buf.writeBoolean(done);
@@ -58,24 +56,32 @@ public class WorkgroupPrintUploadPayload implements CustomPacketPayload {
         for (Entry entry : entries) {
             buf.writeBlockPos(entry.pos());
             buf.writeVarInt(entry.stateId());
-            buf.writeUtf(entry.nbt(), 32767);
+            buf.writeUtf(NetworkLimits.bounded(entry.nbt(), NetworkLimits.MAX_BLOCK_NBT_CHARS), NetworkLimits.MAX_BLOCK_NBT_CHARS);
         }
     }
 
     public static WorkgroupPrintUploadPayload decode(RegistryFriendlyByteBuf buf) {
         UUID uploadId = buf.readUUID();
-        String fileName = buf.readUtf(255);
+        String fileName = buf.readUtf(NetworkLimits.MAX_SHORT_TEXT_CHARS);
         int total = buf.readVarInt();
         int offset = buf.readVarInt();
         boolean done = buf.readBoolean();
         int rawSize = buf.readVarInt();
-        if (rawSize < 0 || rawSize > MAX_BATCH_ENTRIES) {
+        if (rawSize < 0 || rawSize > NetworkLimits.MAX_WORKGROUP_UPLOAD_BATCH) {
             throw new IllegalArgumentException("Invalid workgroup print upload batch size: " + rawSize);
         }
         int size = rawSize;
         List<Entry> entries = new ArrayList<>(size);
+        long nbtChars = 0L;
         for (int i = 0; i < size; i++) {
-            entries.add(new Entry(buf.readBlockPos(), buf.readVarInt(), buf.readUtf(32767)));
+            var pos = buf.readBlockPos();
+            int stateId = buf.readVarInt();
+            var nbt = buf.readUtf(NetworkLimits.MAX_BLOCK_NBT_CHARS);
+            nbtChars += nbt.length();
+            if (nbtChars > NetworkLimits.MAX_BATCH_NBT_CHARS) {
+                throw new IllegalArgumentException("Workgroup print upload NBT payload is too large");
+            }
+            entries.add(new Entry(pos, stateId, nbt));
         }
         return new WorkgroupPrintUploadPayload(uploadId, fileName, total, offset, done, entries);
     }
@@ -93,7 +99,8 @@ public class WorkgroupPrintUploadPayload implements CustomPacketPayload {
                 return;
             }
             Workgroup group = WorkgroupManager.groupFor(player);
-            if (group == null || payload.total <= 0 || payload.total > MAX_TOTAL_ENTRIES || payload.entries.size() > MAX_BATCH_ENTRIES) {
+            if (group == null || payload.total <= 0 || payload.total > NetworkLimits.MAX_WORKGROUP_UPLOAD_TOTAL
+                    || payload.entries.size() > NetworkLimits.MAX_WORKGROUP_UPLOAD_BATCH) {
                 return;
             }
 

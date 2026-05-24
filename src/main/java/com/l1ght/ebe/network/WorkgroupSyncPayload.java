@@ -21,11 +21,11 @@ public class WorkgroupSyncPayload implements CustomPacketPayload {
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        buf.writeUtf(json, 32767);
+        buf.writeUtf(NetworkLimits.bounded(json, NetworkLimits.MAX_JSON_CHARS), NetworkLimits.MAX_JSON_CHARS);
     }
 
     public static WorkgroupSyncPayload decode(RegistryFriendlyByteBuf buf) {
-        return new WorkgroupSyncPayload(buf.readUtf(32767));
+        return new WorkgroupSyncPayload(buf.readUtf(NetworkLimits.MAX_JSON_CHARS));
     }
 
     @Override

@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.EBEMod;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.io.FileManager;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
@@ -34,7 +35,8 @@ public class ImportDialog {
         var dir = Path.of(EBEClientConfig.schematicDir.get());
         try {
             Files.createDirectories(dir);
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            EBEMod.LOGGER.warn("Failed to create schematic import directory {}", dir, e);
         }
 
         String selected;
@@ -71,6 +73,7 @@ public class ImportDialog {
             }
             onFileSelected.accept(dest);
         } catch (IOException e) {
+            EBEMod.LOGGER.warn("Failed to copy imported schematic {}; loading source directly", source, e);
             onFileSelected.accept(source);
         }
     }
@@ -85,11 +88,13 @@ public class ImportDialog {
                 } catch (Exception e) {
                     try {
                         Runtime.getRuntime().exec("explorer " + dir.toAbsolutePath());
-                    } catch (Exception ignored) {}
+                    } catch (Exception fallback) {
+                        EBEMod.LOGGER.warn("Failed to open schematic folder {}", dir, fallback);
+                    }
                 }
             });
         } catch (Exception e) {
-            e.printStackTrace();
+            EBEMod.LOGGER.warn("Failed to prepare schematic folder", e);
         }
     }
 }

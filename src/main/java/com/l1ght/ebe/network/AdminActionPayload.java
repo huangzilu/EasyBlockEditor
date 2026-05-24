@@ -6,6 +6,7 @@ import com.l1ght.ebe.server.ServerSettingsManager;
 import com.l1ght.ebe.server.permission.PermissionDecision;
 import com.l1ght.ebe.server.permission.PermissionFeature;
 import com.l1ght.ebe.server.permission.PermissionManager;
+import com.l1ght.ebe.server.library.ServerFileLibraryManager;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -38,14 +39,15 @@ public class AdminActionPayload implements CustomPacketPayload {
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        buf.writeUtf(action);
-        buf.writeUtf(a);
-        buf.writeUtf(b);
-        buf.writeUtf(c);
+        buf.writeUtf(NetworkLimits.bounded(action, NetworkLimits.MAX_ACTION_CHARS), NetworkLimits.MAX_ACTION_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(a, NetworkLimits.MAX_MEDIUM_TEXT_CHARS), NetworkLimits.MAX_MEDIUM_TEXT_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(b, NetworkLimits.MAX_MEDIUM_TEXT_CHARS), NetworkLimits.MAX_MEDIUM_TEXT_CHARS);
+        buf.writeUtf(NetworkLimits.bounded(c, NetworkLimits.MAX_MEDIUM_TEXT_CHARS), NetworkLimits.MAX_MEDIUM_TEXT_CHARS);
     }
 
     public static AdminActionPayload decode(RegistryFriendlyByteBuf buf) {
-        return new AdminActionPayload(buf.readUtf(), buf.readUtf(), buf.readUtf(), buf.readUtf());
+        return new AdminActionPayload(buf.readUtf(NetworkLimits.MAX_ACTION_CHARS), buf.readUtf(NetworkLimits.MAX_MEDIUM_TEXT_CHARS),
+                buf.readUtf(NetworkLimits.MAX_MEDIUM_TEXT_CHARS), buf.readUtf(NetworkLimits.MAX_MEDIUM_TEXT_CHARS));
     }
 
     @Override
@@ -62,8 +64,12 @@ public class AdminActionPayload implements CustomPacketPayload {
                     case "permission_global" -> PermissionManager.setGlobal(PermissionFeature.parse(payload.a), PermissionDecision.parse(payload.b));
                     case "permission_player" -> PermissionManager.setPlayer(payload.a, PermissionFeature.parse(payload.b), PermissionDecision.parse(payload.c));
                     case "setting" -> ServerSettingsManager.set(payload.a, Integer.parseInt(payload.b));
+                    case "nbt_ignore_add" -> ServerSettingsManager.addNbtIgnoreRule(payload.a);
+                    case "nbt_ignore_remove" -> ServerSettingsManager.removeNbtIgnoreRule(payload.a);
                     case "group_disband" -> workgroupsChanged = WorkgroupManager.disband(payload.a, player);
                     case "group_kick" -> workgroupsChanged = WorkgroupManager.kick(payload.a, payload.b, player);
+                    case "library_delete" -> ServerFileLibraryManager.delete(payload.a);
+                    case "library_rename" -> ServerFileLibraryManager.rename(payload.a, payload.b);
                     case "sync" -> {
                     }
                     default -> {
@@ -86,6 +92,8 @@ public class AdminActionPayload implements CustomPacketPayload {
         root.put("permissions", PermissionManager.globalSnapshot());
         root.put("playerOverrides", PermissionManager.playerSnapshot());
         root.put("settings", ServerSettingsManager.asMap());
+        root.put("nbtIgnoreRules", ServerSettingsManager.nbtIgnoreRules());
+        root.put("library", GSON.fromJson(ServerFileLibraryManager.toJson(), Object.class));
         root.put("workgroups", GSON.fromJson(WorkgroupManager.toAdminJson(), Object.class));
         return GSON.toJson(root);
     }

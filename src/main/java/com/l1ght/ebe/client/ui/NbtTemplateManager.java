@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import com.l1ght.ebe.EBEMod;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.TagParser;
 
@@ -36,7 +37,8 @@ public class NbtTemplateManager {
         if (raw == null) return null;
         try {
             return TagParser.parseTag(raw);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to parse NBT template {}", name, e);
             return null;
         }
     }
@@ -53,7 +55,8 @@ public class NbtTemplateManager {
             Type type = new TypeToken<Map<String, String>>() {}.getType();
             Map<String, String> loaded = GSON.fromJson(Files.readString(FILE, StandardCharsets.UTF_8), type);
             if (loaded != null) TEMPLATES.putAll(loaded);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to load NBT templates", e);
         }
     }
 
@@ -61,7 +64,8 @@ public class NbtTemplateManager {
         try {
             Files.createDirectories(FILE.getParent());
             Files.writeString(FILE, GSON.toJson(TEMPLATES), StandardCharsets.UTF_8);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to save NBT templates", e);
         }
     }
 }
