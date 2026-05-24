@@ -189,8 +189,8 @@ public final class HelpManualUI {
         var brand = new UIElement();
         brand.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(5));
         var icon = new UIElement();
-        icon.layout(l -> l.width(18).height(18));
-        icon.style(s -> s.backgroundTexture(EditorIcons.INFO));
+        icon.layout(l -> l.width(24).height(24));
+        icon.style(s -> s.backgroundTexture(EditorIcons.EBE_ICON));
         brand.addChild(icon);
         var title = label(Component.translatable("ebe.help.manual.book_title", version()).getString(), INK, 10.5f, true);
         title.layout(l -> l.flex(1));
@@ -343,6 +343,12 @@ public final class HelpManualUI {
         bookmark.layout(l -> l.width(6).height(22));
         bookmark.style(s -> s.backgroundTexture(new ColorRectTexture(ACCENT)));
         titleRow.addChild(bookmark);
+        if ("about".equals(page.id())) {
+            var aboutIcon = new UIElement();
+            aboutIcon.layout(l -> l.width(28).height(28));
+            aboutIcon.style(s -> s.backgroundTexture(EditorIcons.EBE_ICON));
+            titleRow.addChild(aboutIcon);
+        }
         var title = highlightedLine(pageTitle(page), runtime.searchQuery, INK, 14.0f, true);
         title.layout(l -> l.flex(1));
         titleRow.addChild(title);

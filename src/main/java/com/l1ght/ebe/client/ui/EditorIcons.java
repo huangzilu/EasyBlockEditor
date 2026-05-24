@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 
 public final class EditorIcons {
+    public static final SpriteTexture EBE_ICON = SpriteTexture.of("ebe:textures/gui/ebe_icon.png");
     public static final SpriteTexture VISIBLE = SpriteTexture.of("ebe:textures/gui/icon_visible.png");
     public static final SpriteTexture HIDDEN = SpriteTexture.of("ebe:textures/gui/icon_hidden.png");
     public static final SpriteTexture LOCKED = SpriteTexture.of("ebe:textures/gui/icon_locked.png");
