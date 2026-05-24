@@ -58,7 +58,7 @@ public class SchematicWriters {
             block.put("pos", intList(wx - bounds.minX(), wy - bounds.minY(), wz - bounds.minZ()));
             block.putInt("state", id);
             CompoundTag be = region.getWorldBlockEntity(wx, wy, wz);
-            if (be != null) block.put("nbt", cleanBlockEntityPos(be));
+            if (be != null && state.hasBlockEntity()) block.put("nbt", cleanBlockEntityPos(be));
             blocks.add(block);
         });
 
@@ -84,6 +84,7 @@ public class SchematicWriters {
         root.putIntArray("Offset", new int[]{bounds.minX(), bounds.minY(), bounds.minZ()});
 
         Map<String, Integer> palette = new LinkedHashMap<>();
+        palette.put(stateToString(Blocks.AIR.defaultBlockState()), 0);
         int[] indexes = new int[bounds.sizeX() * bounds.sizeY() * bounds.sizeZ()];
         forEachBlock(model, (region, lx, ly, lz, wx, wy, wz, state) -> {
             String key = stateToString(state);
@@ -108,6 +109,8 @@ public class SchematicWriters {
                 int lx = (int) (entry.getKey() & 0xFFF);
                 int ly = (int) ((entry.getKey() >> 12) & 0xFFF);
                 int lz = (int) ((entry.getKey() >> 24) & 0xFFF);
+                BlockState state = resolveBlockState(region.getBlocks().get(lx, ly, lz));
+                if (state.isAir() || !state.hasBlockEntity()) continue;
                 CompoundTag be = cleanBlockEntityPos(entry.getValue());
                 be.putIntArray("Pos", new int[]{
                         region.getOffsetX() + lx - bounds.minX(),
@@ -178,6 +181,8 @@ public class SchematicWriters {
                 int lx = (int) (entry.getKey() & 0xFFF);
                 int ly = (int) ((entry.getKey() >> 12) & 0xFFF);
                 int lz = (int) ((entry.getKey() >> 24) & 0xFFF);
+                BlockState state = resolveBlockState(region.getBlocks().get(lx, ly, lz));
+                if (state.isAir() || !state.hasBlockEntity()) continue;
                 CompoundTag be = entry.getValue().copy();
                 be.putInt("x", region.getOffsetX() + lx - bounds.minX());
                 be.putInt("y", region.getOffsetY() + ly - bounds.minY());
@@ -224,6 +229,8 @@ public class SchematicWriters {
             int lx = (int) (entry.getKey() & 0xFFF);
             int ly = (int) ((entry.getKey() >> 12) & 0xFFF);
             int lz = (int) ((entry.getKey() >> 24) & 0xFFF);
+            BlockState state = resolveBlockState(region.getBlocks().get(lx, ly, lz));
+            if (state.isAir() || !state.hasBlockEntity()) continue;
             CompoundTag be = entry.getValue().copy();
             be.putIntArray("Pos", new int[]{lx, ly, lz});
             tileEntities.add(be);

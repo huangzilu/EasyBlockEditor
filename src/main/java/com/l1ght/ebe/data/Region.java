@@ -46,7 +46,7 @@ public class Region {
         if (tag == null) {
             blockEntities.remove(localIndex(lx, ly, lz));
         } else {
-            blockEntities.put(localIndex(lx, ly, lz), tag);
+            blockEntities.put(localIndex(lx, ly, lz), tag.copy());
         }
     }
 

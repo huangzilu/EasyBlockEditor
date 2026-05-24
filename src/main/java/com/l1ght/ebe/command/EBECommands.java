@@ -90,6 +90,10 @@ public class EBECommands {
                                         .then(Commands.argument("password", StringArgumentType.string())
                                                 .executes(context -> {
                                                     ServerPlayer player = context.getSource().getPlayerOrException();
+                                                    if (!PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                                                        context.getSource().sendFailure(Component.translatable("ebe.error.no_permission"));
+                                                        return 0;
+                                                    }
                                                     var group = WorkgroupManager.create(
                                                             StringArgumentType.getString(context, "name"),
                                                             StringArgumentType.getString(context, "password"),
@@ -106,6 +110,10 @@ public class EBECommands {
                                         .then(Commands.argument("password", StringArgumentType.string())
                                                 .executes(context -> {
                                                     ServerPlayer player = context.getSource().getPlayerOrException();
+                                                    if (!PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                                                        context.getSource().sendFailure(Component.translatable("ebe.error.no_permission"));
+                                                        return 0;
+                                                    }
                                                     boolean ok = WorkgroupManager.join(
                                                             StringArgumentType.getString(context, "name"),
                                                             StringArgumentType.getString(context, "password"),
@@ -132,6 +140,10 @@ public class EBECommands {
                                 .then(Commands.argument("name", StringArgumentType.word())
                                         .executes(context -> {
                                             ServerPlayer player = context.getSource().getPlayerOrException();
+                                            if (!PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                                                context.getSource().sendFailure(Component.translatable("ebe.error.no_permission"));
+                                                return 0;
+                                            }
                                             boolean ok = WorkgroupManager.disband(StringArgumentType.getString(context, "name"), player);
                                             if (ok) syncWorkgroups(player);
                                             context.getSource().sendSuccess(() -> Component.translatable(ok
@@ -155,6 +167,10 @@ public class EBECommands {
                                         .then(Commands.argument("player", StringArgumentType.word())
                                                 .executes(context -> {
                                                     ServerPlayer player = context.getSource().getPlayerOrException();
+                                                    if (!PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                                                        context.getSource().sendFailure(Component.translatable("ebe.error.no_permission"));
+                                                        return 0;
+                                                    }
                                                     boolean ok = WorkgroupManager.kick(
                                                             StringArgumentType.getString(context, "name"),
                                                             StringArgumentType.getString(context, "player"),

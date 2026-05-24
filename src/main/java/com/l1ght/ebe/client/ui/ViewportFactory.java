@@ -1028,6 +1028,7 @@ public class ViewportFactory {
         incrementalUpdateCore(pos, true);
 
         var model = EditorUI.getSession().getModel();
+        var oldNbt = model.copyBlockEntityNbt(pos.getX(), pos.getY(), pos.getZ());
         syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
@@ -1036,7 +1037,7 @@ public class ViewportFactory {
             history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
                     history.nextId(),
                     com.l1ght.ebe.editor.history.HistoryActionType.PLACE,
-                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState}},
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState, oldNbt, null}},
                     pos.getX(), pos.getY(), pos.getZ(), blockState, 1));
         }
     }
@@ -1049,6 +1050,7 @@ public class ViewportFactory {
         incrementalUpdateCore(pos, false);
 
         var model = EditorUI.getSession().getModel();
+        var oldNbt = model.copyBlockEntityNbt(pos.getX(), pos.getY(), pos.getZ());
         syncBlockToModel(model, pos, Blocks.AIR.defaultBlockState());
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
@@ -1057,7 +1059,7 @@ public class ViewportFactory {
             history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
                     history.nextId(),
                     com.l1ght.ebe.editor.history.HistoryActionType.DELETE,
-                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, Blocks.AIR.defaultBlockState()}},
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, Blocks.AIR.defaultBlockState(), oldNbt, null}},
                     pos.getX(), pos.getY(), pos.getZ(), oldState, 1));
         }
     }
@@ -1070,6 +1072,7 @@ public class ViewportFactory {
         currentWorld.addBlock(pos, new BlockInfo(blockState));
 
         var model = EditorUI.getSession().getModel();
+        var oldNbt = model.copyBlockEntityNbt(pos.getX(), pos.getY(), pos.getZ());
         syncBlockToModel(model, pos, blockState);
         EditorUI.getSession().markDirty();
         hasLoadedModel = true;
@@ -1080,7 +1083,7 @@ public class ViewportFactory {
             history.push(new com.l1ght.ebe.editor.history.HistoryEntry(
                     history.nextId(),
                     com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState}},
+                    new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState, oldNbt, null}},
                     pos.getX(), pos.getY(), pos.getZ(), blockState, 1));
         }
     }

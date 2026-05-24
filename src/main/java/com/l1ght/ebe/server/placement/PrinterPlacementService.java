@@ -35,10 +35,11 @@ public final class PrinterPlacementService {
 
         BlockState state = Block.stateById(stateId);
         if (state == null || state.isAir()) return Result.INVALID_STATE;
+        CompoundTag targetNbt = parseCleanTargetNbt(nbtStr);
 
         BlockState existing = level.getBlockState(pos);
         if (!existing.isAir()) {
-            return existing.getBlock() == state.getBlock() ? Result.PLACED : Result.BLOCKED;
+            return existingMatchesTarget(level, pos, existing, state, targetNbt) ? Result.PLACED : Result.BLOCKED;
         }
 
         var block = state.getBlock();
@@ -47,7 +48,6 @@ public final class PrinterPlacementService {
 
         boolean canPlace = player.isCreative();
         if (!canPlace) {
-            CompoundTag targetNbt = parseCleanTargetNbt(nbtStr);
             int range = Math.max(0, materialSourceRange);
             if (requireHeldItem) {
                 canPlace = consumeFromHeldItem(player, level, requiredItem, targetNbt);
@@ -166,6 +166,7 @@ public final class PrinterPlacementService {
     }
 
     private static boolean nbtMatches(ServerLevel level, ItemStack stack, CompoundTag targetNbt) {
+        if (!ServerSettingsManager.get().strictNbtMatching) return true;
         CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : cleanPlacementNbt(targetNbt);
         CompoundTag stackBlockEntityTag = extractStackBlockEntityTag(level, stack);
         if (cleanedTarget.isEmpty()) {
@@ -193,6 +194,26 @@ public final class PrinterPlacementService {
         cleaned.remove("z");
         cleaned.remove("id");
         return cleaned;
+    }
+
+    private static boolean existingMatchesTarget(ServerLevel level, BlockPos pos, BlockState existing,
+                                                 BlockState target, CompoundTag targetNbt) {
+        if (!existing.equals(target)) return false;
+        if (!ServerSettingsManager.get().strictNbtMatching) return true;
+        CompoundTag cleanedTarget = targetNbt == null ? new CompoundTag() : cleanPlacementNbt(targetNbt);
+        var be = level.getBlockEntity(pos);
+        CompoundTag existingNbt = null;
+        if (be != null) {
+            try {
+                existingNbt = be.saveWithId(level.registryAccess());
+            } catch (Exception ignored) {
+                existingNbt = null;
+            }
+        }
+        if (cleanedTarget.isEmpty()) {
+            return existingNbt == null || cleanPlacementNbt(existingNbt).isEmpty();
+        }
+        return existingNbt != null && cleanPlacementNbt(existingNbt).equals(cleanedTarget);
     }
 
     private static boolean consumePrinterBudget(ServerPlayer player, ServerLevel level) {

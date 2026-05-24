@@ -1542,8 +1542,8 @@ public class EditorUI {
         for (int i = snapshots.length - 1; i >= 0; i--) {
             var s = snapshots[i];
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-            model.setBlockAt(x, y, z, s[3]);
-            reversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
+            model.setBlockAtWithNbt(x, y, z, s[3], historyNbt(s, 5));
+            reversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3], historyNbt(s, 6), historyNbt(s, 5)});
         }
         if (entry.isLayerChange()) {
             model.restoreLayerState(entry.getBeforeLayerState());
@@ -1565,7 +1565,7 @@ public class EditorUI {
         var model = session.getModel();
         for (var s : entry.getSnapshots()) {
             int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-            model.setBlockAt(x, y, z, s[4]);
+            model.setBlockAtWithNbt(x, y, z, s[4], historyNbt(s, 6));
         }
         if (entry.isLayerChange()) {
             model.restoreLayerState(entry.getAfterLayerState());
@@ -1581,6 +1581,17 @@ public class EditorUI {
         refreshHistoryList();
     }
 
+    private static net.minecraft.nbt.CompoundTag historyNbt(Object[] snapshot, int index) {
+        if (snapshot == null || snapshot.length <= index) return null;
+        return snapshot[index] instanceof net.minecraft.nbt.CompoundTag tag ? tag.copy() : null;
+    }
+
+    private static Object[] nbtSnapshot(BuildingModel model, int x, int y, int z, Object oldState, Object newState,
+                                        net.minecraft.nbt.CompoundTag newNbt) {
+        return new Object[]{x, y, z, oldState, newState, model.copyBlockEntityNbt(x, y, z),
+                newNbt == null ? null : newNbt.copy()};
+    }
+
     private static void goToHistoryEntry(int displayIdx) {
         int count = history.goToEntryCount(displayIdx);
         if (count <= 0) return;
@@ -1593,8 +1604,8 @@ public class EditorUI {
             for (int i = snapshots.length - 1; i >= 0; i--) {
                 var s = snapshots[i];
                 int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-                model.setBlockAt(x, y, z, s[3]);
-                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
+                model.setBlockAtWithNbt(x, y, z, s[3], historyNbt(s, 5));
+                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3], historyNbt(s, 6), historyNbt(s, 5)});
             }
             if (entry.isLayerChange()) {
                 model.restoreLayerState(entry.getBeforeLayerState());
@@ -1626,8 +1637,8 @@ public class EditorUI {
             for (int i = snapshots.length - 1; i >= 0; i--) {
                 var s = snapshots[i];
                 int x = (int) s[0], y = (int) s[1], z = (int) s[2];
-                model.setBlockAt(x, y, z, s[3]);
-                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3]});
+                model.setBlockAtWithNbt(x, y, z, s[3], historyNbt(s, 5));
+                allReversed.add(new Object[]{s[0], s[1], s[2], s[4], s[3], historyNbt(s, 6), historyNbt(s, 5)});
             }
             if (entry.isLayerChange()) {
                 model.restoreLayerState(entry.getBeforeLayerState());
@@ -4279,8 +4290,8 @@ public class EditorUI {
             for (var p : selection.getPositions()) {
                 int x = (int) p[0], y = (int) p[1], z = (int) p[2];
                 var old = model.getBlockAt(x, y, z);
-                model.setBlockAt(x, y, z, replaceTargetState);
-                snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+                snapshots.add(nbtSnapshot(model, x, y, z, old, replaceTargetState, null));
+                model.setBlockAtWithNbt(x, y, z, replaceTargetState, null);
             }
             if (!snapshots.isEmpty()) {
                 pushModelEditHistory(hist, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
@@ -5139,12 +5150,21 @@ public class EditorUI {
             posMapping.add(new long[]{ox, oy, oz, nx, ny, nz});
         }
 
+        var oldNbt = new LinkedHashMap<Long, net.minecraft.nbt.CompoundTag>();
+        for (var mapping : posMapping) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
+            oldNbt.put(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz),
+                    model.copyBlockEntityNbt(ox, oy, oz));
+        }
+
         var existingAtTarget = new LinkedHashMap<Long, Object>();
+        var existingNbtAtTarget = new LinkedHashMap<Long, net.minecraft.nbt.CompoundTag>();
         for (var mapping : posMapping) {
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long packed = com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz);
             if (!sourceKeys.contains(packed)) {
                 existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
+                existingNbtAtTarget.put(packed, model.copyBlockEntityNbt(nx, ny, nz));
             }
         }
 
@@ -5153,15 +5173,19 @@ public class EditorUI {
         Object repBlock = null;
         for (var mapping : posMapping) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
-            var oldState = oldStates.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+            long sourceKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air", oldNbt.get(sourceKey), null});
             if (repBlock == null) { repX = (int) mapping[3]; repY = (int) mapping[4]; repZ = (int) mapping[5]; repBlock = oldState; }
         }
         for (var mapping : posMapping) {
+            int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
+            long sourceKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz);
             long targetKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz);
             var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
-            snapshots.add(new Object[]{nx, ny, nz, existing, newPositions.get(targetKey)});
+            snapshots.add(new Object[]{nx, ny, nz, existing, newPositions.get(targetKey),
+                    existingNbtAtTarget.get(targetKey), oldNbt.get(sourceKey)});
         }
 
         for (var p : positions) {
@@ -5172,7 +5196,7 @@ public class EditorUI {
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long sourceKey = com.l1ght.ebe.editor.selection.SelectionManager.packPos(ox, oy, oz);
             var newState = newPositions.get(com.l1ght.ebe.editor.selection.SelectionManager.packPos(nx, ny, nz));
-            model.setBlockAt(nx, ny, nz, newState);
+            model.setBlockAtWithNbt(nx, ny, nz, newState, oldNbt.get(sourceKey));
             if (!BuildingModel.isAirLike(newState)) {
                 model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
             }
@@ -5523,8 +5547,8 @@ public class EditorUI {
                             int wy = y + region.getOffsetY();
                             int wz = z + region.getOffsetZ();
                             var old = model.getBlockAt(wx, wy, wz);
-                            model.setBlockAt(wx, wy, wz, replaceTargetState);
-                            snapshots.add(new Object[]{wx, wy, wz, old, replaceTargetState});
+                            snapshots.add(nbtSnapshot(model, wx, wy, wz, old, replaceTargetState, null));
+                            model.setBlockAtWithNbt(wx, wy, wz, replaceTargetState, null);
                         }
                     }
                 }
@@ -5595,8 +5619,8 @@ public class EditorUI {
                                 }
                             }
                         }
-                        model.setBlockAt(wx, wy, wz, newState);
-                        snapshots.add(new Object[]{wx, wy, wz, old, newState});
+                        snapshots.add(nbtSnapshot(model, wx, wy, wz, old, newState, null));
+                        model.setBlockAtWithNbt(wx, wy, wz, newState, null);
                     }
                 }
             }
@@ -5723,8 +5747,8 @@ public class EditorUI {
             int y = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
             int z = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
             var old = model.getBlockAt(x, y, z);
-            model.setBlockAt(x, y, z, replaceTargetState);
-            snapshots.add(new Object[]{x, y, z, old, replaceTargetState});
+            snapshots.add(nbtSnapshot(model, x, y, z, old, replaceTargetState, null));
+            model.setBlockAtWithNbt(x, y, z, replaceTargetState, null);
         }
         if (!snapshots.isEmpty()) {
             pushModelEditHistory(history, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,

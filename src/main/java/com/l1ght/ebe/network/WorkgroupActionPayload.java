@@ -1,6 +1,8 @@
 package com.l1ght.ebe.network;
 
 import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.server.permission.PermissionFeature;
+import com.l1ght.ebe.server.permission.PermissionManager;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -47,6 +49,10 @@ public class WorkgroupActionPayload implements CustomPacketPayload {
     public static void handleServer(WorkgroupActionPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
+            if (!"sync".equals(payload.action) && !PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                PacketDistributor.sendToPlayer(player, new WorkgroupSyncPayload(WorkgroupManager.toClientJson(player)));
+                return;
+            }
             boolean changed = false;
             try {
                 switch (payload.action) {

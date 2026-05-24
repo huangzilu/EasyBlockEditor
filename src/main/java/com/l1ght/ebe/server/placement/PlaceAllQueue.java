@@ -51,7 +51,7 @@ public class PlaceAllQueue {
                     if (job.level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
                         job.placed++;
                         placed = true;
-                    } else if (job.level.getBlockState(entry.pos()).getBlock() == state.getBlock()) {
+                    } else if (job.level.getBlockState(entry.pos()).equals(state) && blockEntityMatches(job.level, entry.pos(), entry.nbt())) {
                         job.placed++;
                         placed = true;
                     }
@@ -104,6 +104,28 @@ public class PlaceAllQueue {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    private static boolean blockEntityMatches(ServerLevel level, BlockPos pos, String nbtStr) {
+        if (nbtStr == null || nbtStr.isBlank()) return true;
+        try {
+            var target = TagParser.parseTag(nbtStr);
+            cleanPlacementNbt(target);
+            var be = level.getBlockEntity(pos);
+            if (be == null) return false;
+            var existing = be.saveWithId(level.registryAccess());
+            cleanPlacementNbt(existing);
+            return existing.equals(target);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void cleanPlacementNbt(net.minecraft.nbt.CompoundTag tag) {
+        tag.remove("x");
+        tag.remove("y");
+        tag.remove("z");
+        tag.remove("id");
     }
 
     private static class Job {

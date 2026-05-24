@@ -31,7 +31,7 @@ public class AdminUI {
     private static String snapshot = "{}";
     private static int activeTab = 0;
     private static final String[] FEATURES = {"editor", "projection", "printer", "place_all", "collaborate", "file_library", "import", "export"};
-    private static final String[] SETTINGS = {"projection_timeout_seconds", "place_chunks_per_tick", "printer_blocks_per_tick", "max_edit_size"};
+    private static final String[] SETTINGS = {"projection_timeout_seconds", "place_chunks_per_tick", "printer_blocks_per_tick", "max_edit_size", "strict_nbt_matching"};
 
     public static ModularUI createModularUI() {
         root = new UIElement();
@@ -252,10 +252,15 @@ public class AdminUI {
         row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4));
         row.style(s -> s.background(Sprites.RECT_RD));
         var label = new Label();
-        label.setText(t("ebe.admin.setting_value", t(settingKey(key)), value));
+        label.setText(t("ebe.admin.setting_value", t(settingKey(key)), settingValueText(key, value)));
         label.layout(l -> l.flex(1));
         label.textStyle(ts -> ts.textColor(0xFFFFFFFF).fontSize(9).textShadow(false));
         row.addChild(label);
+        if ("strict_nbt_matching".equals(key)) {
+            row.addChild(decisionButton(value != 0 ? "ebe.admin.nbt_match.strict" : "ebe.admin.nbt_match.loose",
+                    value != 0, () -> send("setting", key, value == 0 ? "1" : "0", "")));
+            return row;
+        }
         int step = settingStep(key);
         row.addChild(smallButton("-", () -> send("setting", key, Integer.toString(value - step), "")));
         row.addChild(smallButton("+", () -> send("setting", key, Integer.toString(value + step), "")));
@@ -356,6 +361,7 @@ public class AdminUI {
             case "place_chunks_per_tick" -> 4;
             case "printer_blocks_per_tick" -> 1;
             case "max_edit_size" -> 256;
+            case "strict_nbt_matching" -> 1;
             default -> 0;
         };
     }
@@ -366,6 +372,13 @@ public class AdminUI {
             case "max_edit_size" -> 16;
             default -> 1;
         };
+    }
+
+    private static Component settingValueText(String key, int value) {
+        if ("strict_nbt_matching".equals(key)) {
+            return t(value != 0 ? "ebe.admin.nbt_match.strict" : "ebe.admin.nbt_match.loose");
+        }
+        return Component.literal(Integer.toString(value));
     }
 
     private static Component t(String key, Object... args) {
@@ -390,6 +403,7 @@ public class AdminUI {
             case "place_chunks_per_tick" -> "ebe.admin.chunks_per_tick";
             case "printer_blocks_per_tick" -> "ebe.admin.printer_speed";
             case "max_edit_size" -> "ebe.admin.max_edit_size";
+            case "strict_nbt_matching" -> "ebe.admin.strict_nbt_matching";
             default -> key;
         };
     }

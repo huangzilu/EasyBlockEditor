@@ -6,6 +6,7 @@ import com.l1ght.ebe.editor.history.HistoryEntry;
 import com.l1ght.ebe.editor.history.HistoryManager;
 import com.l1ght.ebe.editor.selection.SelectionManager;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
 public class ClipboardManager {
 
     private final Map<BlockPos, Object> clipboard = new LinkedHashMap<>();
+    private final Map<BlockPos, CompoundTag> clipboardNbt = new LinkedHashMap<>();
     private int clipboardOriginX;
     private int clipboardOriginY;
     private int clipboardOriginZ;
@@ -31,6 +33,7 @@ public class ClipboardManager {
 
     public void copy(BuildingModel model, SelectionManager selection) {
         clipboard.clear();
+        clipboardNbt.clear();
         if (selection.isEmpty()) return;
 
         var positions = selection.getPositions();
@@ -64,7 +67,10 @@ public class ClipboardManager {
         for (var p : posList) {
             int wx = (int) p[0], wy = (int) p[1], wz = (int) p[2];
             int lx = wx - minX, ly = wy - minY, lz = wz - minZ;
-            clipboard.put(new BlockPos(lx, ly, lz), model.getBlockAt(wx, wy, wz));
+            var localPos = new BlockPos(lx, ly, lz);
+            clipboard.put(localPos, model.getBlockAt(wx, wy, wz));
+            var nbt = model.copyBlockEntityNbt(wx, wy, wz);
+            if (nbt != null) clipboardNbt.put(localPos, nbt);
         }
     }
 
@@ -86,9 +92,11 @@ public class ClipboardManager {
 
             var oldState = model.getBlockAt(wx, wy, wz);
             var newState = entry.getValue();
+            var oldNbt = model.copyBlockEntityNbt(wx, wy, wz);
+            var newNbt = copyNbt(clipboardNbt.get(localPos));
 
-            snapshots.add(new Object[]{wx, wy, wz, oldState, newState});
-            model.setBlockAt(wx, wy, wz, newState);
+            snapshots.add(snapshot(wx, wy, wz, oldState, newState, oldNbt, newNbt));
+            model.setBlockAtWithNbt(wx, wy, wz, newState, newNbt);
             if (repBlock == null) repBlock = newState;
         }
 
@@ -121,8 +129,9 @@ public class ClipboardManager {
             int x = (int) p[0], y = (int) p[1], z = (int) p[2];
             var oldState = model.getBlockAt(x, y, z);
             if (BuildingModel.isAirLike(oldState)) continue;
+            var oldNbt = model.copyBlockEntityNbt(x, y, z);
 
-            snapshots.add(new Object[]{x, y, z, oldState, "minecraft:air"});
+            snapshots.add(snapshot(x, y, z, oldState, "minecraft:air", oldNbt, null));
             model.setBlockAt(x, y, z, "minecraft:air");
             if (repBlock == null) { repX = x; repY = y; repZ = z; repBlock = oldState; }
         }
@@ -146,8 +155,9 @@ public class ClipboardManager {
                 int x = (int) p[0], y = (int) p[1], z = (int) p[2];
                 var current = model.getBlockAt(x, y, z);
                 if (statesMatch(current, fromState)) {
-                    snapshots.add(new Object[]{x, y, z, current, toState});
-                    model.setBlockAt(x, y, z, toState);
+                    var oldNbt = model.copyBlockEntityNbt(x, y, z);
+                    snapshots.add(snapshot(x, y, z, current, toState, oldNbt, null));
+                    model.setBlockAtWithNbt(x, y, z, toState, null);
                     if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
                 }
             }
@@ -161,8 +171,9 @@ public class ClipboardManager {
                             int wz = z + region.getOffsetZ();
                             var current = region.getBlocks().get(x, y, z);
                             if (statesMatch(current, fromState)) {
-                                snapshots.add(new Object[]{wx, wy, wz, current, toState});
-                                model.setBlockAt(wx, wy, wz, toState);
+                                var oldNbt = model.copyBlockEntityNbt(wx, wy, wz);
+                                snapshots.add(snapshot(wx, wy, wz, current, toState, oldNbt, null));
+                                model.setBlockAtWithNbt(wx, wy, wz, toState, null);
                                 if (snapshots.size() == 1) { repX = wx; repY = wy; repZ = wz; }
                             }
                         }
@@ -194,6 +205,7 @@ public class ClipboardManager {
         Object repBlock = null;
         var oldStates = new LinkedHashMap<Long, Object>();
         var oldLayerIds = new LinkedHashMap<Long, String>();
+        var oldNbt = new LinkedHashMap<Long, CompoundTag>();
         var targetMappings = new ArrayList<long[]>();
         var sourceKeys = new java.util.HashSet<Long>();
 
@@ -204,6 +216,7 @@ public class ClipboardManager {
             var oldState = model.getBlockAt(ox, oy, oz);
             oldStates.put(sourceKey, oldState);
             oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
+            oldNbt.put(sourceKey, model.copyBlockEntityNbt(ox, oy, oz));
 
             int rx = ox - minX, rz = oz - minZ;
             int nx = switch (angle) {
@@ -218,26 +231,30 @@ public class ClipboardManager {
         }
 
         var existingAtTarget = new LinkedHashMap<Long, Object>();
+        var existingNbtAtTarget = new LinkedHashMap<Long, CompoundTag>();
         for (var mapping : targetMappings) {
             int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
             long targetKey = SelectionManager.packPos(wx, wy, wz);
             if (!sourceKeys.contains(targetKey)) {
                 existingAtTarget.put(targetKey, model.getBlockAt(wx, wy, wz));
+                existingNbtAtTarget.put(targetKey, model.copyBlockEntityNbt(wx, wy, wz));
             }
         }
 
         for (var mapping : targetMappings) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(snapshot(ox, oy, oz, oldState, "minecraft:air", oldNbt.get(sourceKey), null));
         }
         for (var mapping : targetMappings) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
             int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
             long targetKey = SelectionManager.packPos(wx, wy, wz);
             var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{wx, wy, wz, existing, oldState});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(snapshot(wx, wy, wz, existing, oldState, existingNbtAtTarget.get(targetKey), oldNbt.get(sourceKey)));
         }
 
         for (var p : positions) {
@@ -248,7 +265,7 @@ public class ClipboardManager {
             int wx = (int) mapping[3], wy = (int) mapping[4], wz = (int) mapping[5];
             long sourceKey = SelectionManager.packPos(ox, oy, oz);
             var oldState = oldStates.get(sourceKey);
-            model.setBlockAt(wx, wy, wz, oldState);
+            model.setBlockAtWithNbt(wx, wy, wz, oldState, oldNbt.get(sourceKey));
             if (!BuildingModel.isAirLike(oldState)) {
                 model.setBlockLayerOverride(wx, wy, wz, oldLayerIds.get(sourceKey));
             }
@@ -276,6 +293,7 @@ public class ClipboardManager {
         Object repBlock = null;
         var oldStates = new LinkedHashMap<Long, Object>();
         var oldLayerIds = new LinkedHashMap<Long, String>();
+        var oldNbt = new LinkedHashMap<Long, CompoundTag>();
         var targetMappings = new ArrayList<long[]>();
         var sourceKeys = new java.util.HashSet<Long>();
 
@@ -286,6 +304,7 @@ public class ClipboardManager {
             var oldState = model.getBlockAt(ox, oy, oz);
             oldStates.put(sourceKey, oldState);
             oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
+            oldNbt.put(sourceKey, model.copyBlockEntityNbt(ox, oy, oz));
 
             int nx = switch (axis) { case 0 -> 2 * centerX - ox; default -> ox; };
             int ny = switch (axis) { case 1 -> 2 * centerY - oy; default -> oy; };
@@ -296,26 +315,30 @@ public class ClipboardManager {
         }
 
         var existingAtTarget = new LinkedHashMap<Long, Object>();
+        var existingNbtAtTarget = new LinkedHashMap<Long, CompoundTag>();
         for (var mapping : targetMappings) {
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long targetKey = SelectionManager.packPos(nx, ny, nz);
             if (!sourceKeys.contains(targetKey)) {
                 existingAtTarget.put(targetKey, model.getBlockAt(nx, ny, nz));
+                existingNbtAtTarget.put(targetKey, model.copyBlockEntityNbt(nx, ny, nz));
             }
         }
 
         for (var mapping : targetMappings) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(snapshot(ox, oy, oz, oldState, "minecraft:air", oldNbt.get(sourceKey), null));
         }
         for (var mapping : targetMappings) {
             int ox = (int) mapping[0], oy = (int) mapping[1], oz = (int) mapping[2];
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long targetKey = SelectionManager.packPos(nx, ny, nz);
             var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{nx, ny, nz, existing, oldState});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(snapshot(nx, ny, nz, existing, oldState, existingNbtAtTarget.get(targetKey), oldNbt.get(sourceKey)));
         }
 
         for (var p : positions) {
@@ -326,7 +349,7 @@ public class ClipboardManager {
             int nx = (int) mapping[3], ny = (int) mapping[4], nz = (int) mapping[5];
             long sourceKey = SelectionManager.packPos(ox, oy, oz);
             var oldState = oldStates.get(sourceKey);
-            model.setBlockAt(nx, ny, nz, oldState);
+            model.setBlockAtWithNbt(nx, ny, nz, oldState, oldNbt.get(sourceKey));
             if (!BuildingModel.isAirLike(oldState)) {
                 model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
             }
@@ -355,6 +378,7 @@ public class ClipboardManager {
 
         var oldStates = new LinkedHashMap<Long, Object>();
         var oldLayerIds = new LinkedHashMap<Long, String>();
+        var oldNbt = new LinkedHashMap<Long, CompoundTag>();
         var sourceKeys = new java.util.HashSet<Long>();
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
@@ -362,28 +386,34 @@ public class ClipboardManager {
             sourceKeys.add(sourceKey);
             oldStates.put(sourceKey, model.getBlockAt(ox, oy, oz));
             oldLayerIds.put(sourceKey, model.getLayerIdAt(ox, oy, oz));
+            oldNbt.put(sourceKey, model.copyBlockEntityNbt(ox, oy, oz));
         }
 
         var existingAtTarget = new LinkedHashMap<Long, Object>();
+        var existingNbtAtTarget = new LinkedHashMap<Long, CompoundTag>();
         for (var p : positions) {
             int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
             long packed = SelectionManager.packPos(nx, ny, nz);
             if (!sourceKeys.contains(packed)) {
                 existingAtTarget.put(packed, model.getBlockAt(nx, ny, nz));
+                existingNbtAtTarget.put(packed, model.copyBlockEntityNbt(nx, ny, nz));
             }
         }
 
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            snapshots.add(new Object[]{ox, oy, oz, oldState, "minecraft:air"});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            var oldState = oldStates.get(sourceKey);
+            snapshots.add(snapshot(ox, oy, oz, oldState, "minecraft:air", oldNbt.get(sourceKey), null));
         }
         for (var p : positions) {
             int ox = (int) p[0], oy = (int) p[1], oz = (int) p[2];
             int nx = ox + dx, ny = oy + dy, nz = oz + dz;
-            var oldState = oldStates.get(SelectionManager.packPos(ox, oy, oz));
-            var existing = existingAtTarget.getOrDefault(SelectionManager.packPos(nx, ny, nz), "minecraft:air");
-            snapshots.add(new Object[]{nx, ny, nz, existing, oldState});
+            long sourceKey = SelectionManager.packPos(ox, oy, oz);
+            long targetKey = SelectionManager.packPos(nx, ny, nz);
+            var oldState = oldStates.get(sourceKey);
+            var existing = existingAtTarget.getOrDefault(targetKey, "minecraft:air");
+            snapshots.add(snapshot(nx, ny, nz, existing, oldState, existingNbtAtTarget.get(targetKey), oldNbt.get(sourceKey)));
         }
 
         for (var p : positions) {
@@ -393,7 +423,7 @@ public class ClipboardManager {
             int nx = (int) p[0] + dx, ny = (int) p[1] + dy, nz = (int) p[2] + dz;
             long sourceKey = SelectionManager.packPos((int) p[0], (int) p[1], (int) p[2]);
             var oldState = oldStates.get(sourceKey);
-            model.setBlockAt(nx, ny, nz, oldState);
+            model.setBlockAtWithNbt(nx, ny, nz, oldState, oldNbt.get(sourceKey));
             if (!BuildingModel.isAirLike(oldState)) {
                 model.setBlockLayerOverride(nx, ny, nz, oldLayerIds.get(sourceKey));
             }
@@ -423,9 +453,10 @@ public class ClipboardManager {
             if (!model.canEditAt(x, y, z)) continue;
             var oldState = model.getBlockAt(x, y, z);
             if (statesMatch(oldState, fillState)) continue;
+            var oldNbt = model.copyBlockEntityNbt(x, y, z);
 
-            snapshots.add(new Object[]{x, y, z, oldState, fillState});
-            model.setBlockAt(x, y, z, fillState);
+            snapshots.add(snapshot(x, y, z, oldState, fillState, oldNbt, null));
+            model.setBlockAtWithNbt(x, y, z, fillState, null);
             if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
         }
 
@@ -464,9 +495,10 @@ public class ClipboardManager {
 
             var oldState = model.getBlockAt(x, y, z);
             if (statesMatch(oldState, chosen)) continue;
+            var oldNbt = model.copyBlockEntityNbt(x, y, z);
 
-            snapshots.add(new Object[]{x, y, z, oldState, chosen});
-            model.setBlockAt(x, y, z, chosen);
+            snapshots.add(snapshot(x, y, z, oldState, chosen, oldNbt, null));
+            model.setBlockAtWithNbt(x, y, z, chosen, null);
             if (repBlock == null) { repX = x; repY = y; repZ = z; repBlock = chosen; }
         }
 
@@ -516,5 +548,14 @@ public class ClipboardManager {
 
     private boolean isMinecraftBlockState(Object state) {
         return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
+    }
+
+    private static Object[] snapshot(int x, int y, int z, Object oldState, Object newState,
+                                     CompoundTag oldNbt, CompoundTag newNbt) {
+        return new Object[]{x, y, z, oldState, newState, copyNbt(oldNbt), copyNbt(newNbt)};
+    }
+
+    private static CompoundTag copyNbt(CompoundTag tag) {
+        return tag == null ? null : tag.copy();
     }
 }

@@ -337,14 +337,14 @@ public class PrinterController {
         boolean hasMaterial = player.isCreative();
         if (!hasMaterial && requireHeldItem) {
             var stack = player.getMainHandItem();
-            hasMaterial = stack.is(requiredItem) && nbtMatchesForPlacement(stack, targetNbt, level.registryAccess());
+            hasMaterial = stack.is(requiredItem);
         } else if (!hasMaterial && sourcePos != null) {
             // The authoritative material check happens on the server against the bound container.
             hasMaterial = true;
         } else if (!hasMaterial) {
             for (int i = 0; i < player.getInventory().items.size(); i++) {
                 var stack = player.getInventory().items.get(i);
-                if (stack.is(requiredItem) && nbtMatchesForPlacement(stack, targetNbt, level.registryAccess())) {
+                if (stack.is(requiredItem)) {
                     hasMaterial = true;
                     break;
                 }
@@ -495,8 +495,7 @@ public class PrinterController {
         if (best == null) return false;
 
         var requiredItem = best.state().getBlock().asItem();
-        if (requiredItem == null || !stack.is(requiredItem)
-                || !nbtMatchesForPlacement(stack, best.nbt(), player.level().registryAccess())) {
+        if (requiredItem == null || !stack.is(requiredItem)) {
             player.displayClientMessage(Component.translatable("ebe.printer.no_materials"), true);
             return true;
         }

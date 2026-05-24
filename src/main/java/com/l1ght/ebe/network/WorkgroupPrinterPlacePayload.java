@@ -1,6 +1,8 @@
 package com.l1ght.ebe.network;
 
 import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.server.permission.PermissionFeature;
+import com.l1ght.ebe.server.permission.PermissionManager;
 import com.l1ght.ebe.server.placement.PrinterPlacementService;
 import com.l1ght.ebe.server.workgroup.Workgroup;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
@@ -67,6 +69,10 @@ public class WorkgroupPrinterPlacePayload implements CustomPacketPayload {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
             if (!(player.level() instanceof ServerLevel level)) return;
+            if (!PermissionManager.canUse(player, PermissionFeature.PRINTER)
+                    || !PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) {
+                return;
+            }
             Workgroup group = WorkgroupManager.groupFor(player);
             if (group == null) return;
 

@@ -431,7 +431,7 @@ public class ProjectionManager {
 
         for (var pb : blocks) {
             var existing = level.getBlockState(pb.pos());
-            if (!existing.isAir() && existing.getBlock() == pb.state().getBlock()) {
+            if (!existing.isAir() && existing.equals(pb.state()) && blockEntityMatches(pb)) {
                 placed++;
             }
         }
@@ -439,5 +439,29 @@ public class ProjectionManager {
         progressPlaced = placed;
         progressTotal = total;
         progressAuthoritative = false;
+    }
+
+    private static boolean blockEntityMatches(ProjectionData.ProjectionBlock block) {
+        if (!block.hasNbt()) return true;
+        var mc = Minecraft.getInstance();
+        if (mc.level == null) return false;
+        var be = mc.level.getBlockEntity(block.pos());
+        if (be == null) return false;
+        try {
+            var existing = be.saveWithId(mc.level.registryAccess());
+            cleanPlacementNbt(existing);
+            var target = block.nbt().copy();
+            cleanPlacementNbt(target);
+            return existing.equals(target);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void cleanPlacementNbt(net.minecraft.nbt.CompoundTag tag) {
+        tag.remove("x");
+        tag.remove("y");
+        tag.remove("z");
+        tag.remove("id");
     }
 }

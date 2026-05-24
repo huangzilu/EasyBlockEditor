@@ -115,6 +115,8 @@ public class EBEFormatIO {
                 int lx = (int) (key & 0xFFF);
                 int ly = (int) ((key >> 12) & 0xFFF);
                 int lz = (int) ((key >> 24) & 0xFFF);
+                Object state = region.getBlocks().get(lx, ly, lz);
+                if (BuildingModel.isAirLike(state) || !BuildingModel.supportsBlockEntity(state)) continue;
                 int wx = lx + region.getOffsetX();
                 int wy = ly + region.getOffsetY();
                 int wz = lz + region.getOffsetZ();

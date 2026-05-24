@@ -244,8 +244,22 @@ public class BuildingModel {
         var region = findRegionAt(wx, wy, wz);
         if (region != null) {
             region.setWorldBlock(wx, wy, wz, state);
-            if (isAirLike(state)) blockLayerOverrides.remove(PosKey.pack(wx, wy, wz));
+            if (isAirLike(state)) {
+                blockLayerOverrides.remove(PosKey.pack(wx, wy, wz));
+                region.setWorldBlockEntity(wx, wy, wz, null);
+            } else if (!supportsBlockEntity(state)) {
+                region.setWorldBlockEntity(wx, wy, wz, null);
+            }
             return;
+        }
+    }
+
+    public void setBlockAtWithNbt(int wx, int wy, int wz, Object state, CompoundTag tag) {
+        setBlockAt(wx, wy, wz, state);
+        if (!isAirLike(state) && tag != null && supportsBlockEntity(state)) {
+            setBlockEntityNbt(wx, wy, wz, tag);
+        } else if (tag == null || isAirLike(state) || !supportsBlockEntity(state)) {
+            setBlockEntityNbt(wx, wy, wz, null);
         }
     }
 
@@ -261,10 +275,15 @@ public class BuildingModel {
     public void setBlockEntityNbt(int wx, int wy, int wz, CompoundTag tag) {
         for (var region : regions) {
             if (region.containsWorldPos(wx, wy, wz)) {
-                region.setWorldBlockEntity(wx, wy, wz, tag);
+                region.setWorldBlockEntity(wx, wy, wz, tag == null ? null : tag.copy());
                 return;
             }
         }
+    }
+
+    public CompoundTag copyBlockEntityNbt(int wx, int wy, int wz) {
+        CompoundTag tag = getBlockEntityNbt(wx, wy, wz);
+        return tag == null ? null : tag.copy();
     }
 
     public LayerState captureLayerState() {
@@ -361,6 +380,18 @@ public class BuildingModel {
 
     private static boolean isMinecraftBlockState(Object state) {
         return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
+    }
+
+    public static boolean supportsBlockEntity(Object state) {
+        if (state == null || isAirLike(state)) return false;
+        if (isMinecraftBlockState(state)) {
+            try {
+                return Boolean.TRUE.equals(state.getClass().getMethod("hasBlockEntity").invoke(state));
+            } catch (ReflectiveOperationException ignored) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Region findRegionAt(int wx, int wy, int wz) {

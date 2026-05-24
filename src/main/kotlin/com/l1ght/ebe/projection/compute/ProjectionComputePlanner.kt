@@ -99,7 +99,7 @@ object ProjectionComputePlanner {
                         }
 
                         val immutablePos = worldPos.immutable()
-                        val nbt: CompoundTag? = region.getBlockEntity(x, y, z)
+                        val nbt: CompoundTag? = region.getBlockEntity(x, y, z)?.copy()
                         blocks.add(BlockEntry(immutablePos, state, nbt))
                         if (includeViewportPlan && model.isLayerVisibleAt(region, ox + x, oy + y, oz + z)) {
                             viewportEntries.add(ViewportEntry(localPos.immutable(), rawState, source))

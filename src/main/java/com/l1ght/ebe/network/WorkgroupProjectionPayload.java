@@ -1,6 +1,8 @@
 package com.l1ght.ebe.network;
 
 import com.l1ght.ebe.EBEMod;
+import com.l1ght.ebe.server.permission.PermissionFeature;
+import com.l1ght.ebe.server.permission.PermissionManager;
 import com.l1ght.ebe.server.workgroup.Workgroup;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
 import net.minecraft.core.BlockPos;
@@ -55,6 +57,7 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
     public static void handleServer(WorkgroupProjectionPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
+            if (!PermissionManager.canUse(player, PermissionFeature.COLLABORATE)) return;
             Workgroup group = WorkgroupManager.groupFor(player);
             if (group == null || payload.groupId == null || !group.id.equals(payload.groupId)) return;
             if ("remove".equalsIgnoreCase(payload.action)) {

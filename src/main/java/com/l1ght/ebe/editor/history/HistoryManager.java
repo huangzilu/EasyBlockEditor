@@ -6,6 +6,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.io.EBEFormatIO;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -468,6 +470,10 @@ public class HistoryManager {
             sArr.add((int) s[2]);
             sArr.add(stateToString(s[3]));
             sArr.add(stateToString(s[4]));
+            if (s.length > 5) {
+                sArr.add(nbtToString(s[5]));
+                sArr.add(s.length > 6 ? nbtToString(s[6]) : "");
+            }
             snapArr.add(sArr);
         }
         eObj.add("snapshots", snapArr);
@@ -490,15 +496,21 @@ public class HistoryManager {
         int count = eObj.get("affectedCount").getAsInt();
 
         var snapArr = eObj.has("snapshots") ? eObj.getAsJsonArray("snapshots") : new JsonArray();
-        var snapshots = new Object[snapArr.size()][5];
+        var snapshots = new Object[snapArr.size()][];
         int si = 0;
         for (var sElem : snapArr) {
             var sArr = sElem.getAsJsonArray();
-            snapshots[si][0] = sArr.get(0).getAsInt();
-            snapshots[si][1] = sArr.get(1).getAsInt();
-            snapshots[si][2] = sArr.get(2).getAsInt();
-            snapshots[si][3] = sArr.get(3).getAsString();
-            snapshots[si][4] = sArr.get(4).getAsString();
+            Object[] snapshot = new Object[sArr.size() >= 7 ? 7 : 5];
+            snapshot[0] = sArr.get(0).getAsInt();
+            snapshot[1] = sArr.get(1).getAsInt();
+            snapshot[2] = sArr.get(2).getAsInt();
+            snapshot[3] = sArr.get(3).getAsString();
+            snapshot[4] = sArr.get(4).getAsString();
+            if (snapshot.length >= 7) {
+                snapshot[5] = parseNbtSnapshot(sArr.get(5).getAsString());
+                snapshot[6] = parseNbtSnapshot(sArr.get(6).getAsString());
+            }
+            snapshots[si] = snapshot;
             si++;
         }
 
@@ -510,5 +522,18 @@ public class HistoryManager {
         }
         return new HistoryEntry(id, type, snapshots, beforeLayerState, afterLayerState,
                 px, py, pz, pBlock, count, timestamp);
+    }
+
+    private static String nbtToString(Object nbt) {
+        return nbt instanceof CompoundTag tag ? tag.toString() : "";
+    }
+
+    private static CompoundTag parseNbtSnapshot(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return TagParser.parseTag(raw);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

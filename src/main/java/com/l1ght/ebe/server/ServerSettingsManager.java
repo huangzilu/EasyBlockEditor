@@ -66,6 +66,7 @@ public class ServerSettingsManager {
             case "place_chunks_per_tick" -> settings.withPlaceChunksPerTick(value);
             case "printer_blocks_per_tick" -> settings.withPrinterBlocksPerTick(value);
             case "max_edit_size" -> settings.withMaxEditSize(value);
+            case "strict_nbt_matching" -> settings.withStrictNbtMatching(value != 0);
             default -> settings;
         };
         save();
@@ -77,6 +78,7 @@ public class ServerSettingsManager {
         map.put("place_chunks_per_tick", settings.placeChunksPerTick);
         map.put("printer_blocks_per_tick", settings.printerBlocksPerTick);
         map.put("max_edit_size", settings.maxEditSize);
+        map.put("strict_nbt_matching", settings.strictNbtMatching ? 1 : 0);
         return map;
     }
 
@@ -85,6 +87,7 @@ public class ServerSettingsManager {
         public int placeChunksPerTick = 4;
         public int printerBlocksPerTick = 1;
         public int maxEditSize = 256;
+        public boolean strictNbtMatching = true;
 
         public ServerSettings clamped() {
             projectionTimeoutSeconds = clamp(projectionTimeoutSeconds, 0, 86400);
@@ -118,12 +121,19 @@ public class ServerSettingsManager {
             return copy.clamped();
         }
 
+        public ServerSettings withStrictNbtMatching(boolean value) {
+            var copy = copy();
+            copy.strictNbtMatching = value;
+            return copy.clamped();
+        }
+
         private ServerSettings copy() {
             var copy = new ServerSettings();
             copy.projectionTimeoutSeconds = projectionTimeoutSeconds;
             copy.placeChunksPerTick = placeChunksPerTick;
             copy.printerBlocksPerTick = printerBlocksPerTick;
             copy.maxEditSize = maxEditSize;
+            copy.strictNbtMatching = strictNbtMatching;
             return copy;
         }
 
