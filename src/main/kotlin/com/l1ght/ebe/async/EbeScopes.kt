@@ -41,7 +41,8 @@ object EbeScopes {
             EBEMod.LOGGER.info("Using Kotlin coroutine runner for EBE background compute tasks")
             runner
         } catch (t: Throwable) {
-            EBEMod.LOGGER.warn("Kotlin coroutine runtime is unavailable; using JDK executor fallback for EBE background compute tasks", t)
+            EBEMod.LOGGER.info("Kotlin coroutine runtime is unavailable; using JDK executor fallback for EBE background compute tasks")
+            EBEMod.LOGGER.debug("Coroutine runner initialization failed", t)
             ExecutorTaskRunner(computeExecutor)
         }
     }
