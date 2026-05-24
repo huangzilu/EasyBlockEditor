@@ -10,10 +10,6 @@ import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.data.io.SchematicReaders;
 import com.l1ght.ebe.data.io.SchematicWriters;
 
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.Mirror;
-import net.minecraft.world.level.block.Rotation;
-
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -109,32 +105,22 @@ public class EditorSession {
 
     public static LoadedFile readFileWithComputed(Path file) throws Exception {
         LoadedFile loaded = readFile(file);
-        ComputedProjection computed = null;
-        ProjectionLoadProfile profile = null;
+        ProjectionLoadProfile profile = ProjectionLoadProfile.fromModel(file, loaded.model());
         try {
             if (shouldPreferSynchronousViewportLoad(file)) {
-                profile = ProjectionLoadProfile.fromModel(file, loaded.model());
                 return new LoadedFile(file, loaded.model(), null, profile);
             }
-            String cacheKey = fileComputeKey(file);
-            computed = ProjectionComputePlanner.computeAsync(
-                    cacheKey,
-                    loaded.model(),
-                    BlockPos.ZERO,
-                    Rotation.NONE,
-                    Mirror.NONE,
-                    BlockPos.ZERO,
-                    true
-            ).join();
-            profile = ProjectionLoadProfile.fromComputed(file, loaded.model(), computed);
+            if (profile.shouldPreferProgressiveViewport()) {
+                com.l1ght.ebe.EBEMod.LOGGER.info(
+                        "Skipping eager projection precompute for large viewport load: file={}, risk={}, blocks={}, volume={}",
+                        file.getFileName(), profile.risk(), profile.nonAirBlocks(), profile.totalVolume());
+            }
+            return new LoadedFile(file, loaded.model(), null, profile);
         } catch (Throwable t) {
-            com.l1ght.ebe.EBEMod.LOGGER.warn("Failed to precompute projection for {}, falling back to legacy viewport load",
+            com.l1ght.ebe.EBEMod.LOGGER.warn("Failed to prepare viewport profile for {}, falling back to legacy viewport load",
                     file.getFileName(), t);
         }
-        if (profile == null) {
-            profile = ProjectionLoadProfile.fromModel(file, loaded.model());
-        }
-        return new LoadedFile(file, loaded.model(), computed, profile);
+        return new LoadedFile(file, loaded.model(), null, profile);
     }
 
     public static boolean shouldPreferSynchronousViewportLoad(Path file) {
@@ -171,13 +157,6 @@ public class EditorSession {
         public LoadedFile(Path file, BuildingModel model) {
             this(file, model, null, null);
         }
-    }
-
-    private static String fileComputeKey(Path file) throws Exception {
-        Path absolute = file.toAbsolutePath().normalize();
-        long size = Files.size(file);
-        long modified = Files.getLastModifiedTime(file).toMillis();
-        return absolute + "|" + size + "|" + modified;
     }
 
     private Path getHistoryPath() {

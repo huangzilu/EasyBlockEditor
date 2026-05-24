@@ -562,6 +562,7 @@
   "ebe.editor.loading.viewport": "Preparing viewport for %s...",
   "ebe.editor.loading.viewport_profile": "Preparing viewport for %s: %d blocks, %d chunk columns, risk: %s",
   "ebe.editor.loading.progress": "Loading viewport: %d%%, %d blocks",
+  "ebe.editor.loading.preview_capped": "Mega viewport entered lightweight preview: %d exact blocks loaded, remaining areas use low-detail outline",
   "ebe.editor.loading.failed": "Failed to load file: %s",
   "ebe.editor.large_projection.title": "Large Projection Warning",
   "ebe.editor.large_projection.headline": "%s is %s, which is 512 KB or larger.",

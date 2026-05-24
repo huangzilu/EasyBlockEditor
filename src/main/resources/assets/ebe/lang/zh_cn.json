@@ -562,6 +562,7 @@
   "ebe.editor.loading.viewport": "正在为 %s 准备视口...",
   "ebe.editor.loading.viewport_profile": "正在为 %s 准备视口：%d 个方块，%d 个区块列，风险等级：%s",
   "ebe.editor.loading.progress": "正在加载视口：%d%%，%d 个方块",
+  "ebe.editor.loading.preview_capped": "超大投影视口已进入轻量预览：已加载 %d 个精细方块，其余区域使用低模轮廓显示",
   "ebe.editor.loading.failed": "加载文件失败：%s",
   "ebe.editor.large_projection.title": "大型投影加载提示",
   "ebe.editor.large_projection.headline": "%s 大小为 %s，已达到 512 KB 以上。",

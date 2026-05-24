@@ -61,36 +61,19 @@ public final class ProjectionSparseStore {
             return EMPTY;
         }
 
-        var entries = new ArrayList<Entry>(sourceBlocks.size());
-        var palette = new ArrayList<BlockState>();
-        var paletteIds = new LinkedHashMap<BlockState, Integer>();
-        var bySection = new LinkedHashMap<Long, List<Entry>>();
-        var byPos = new Long2ObjectOpenHashMap<Entry>(sourceBlocks.size());
+        var builder = new Builder(sourceBlocks.size(), renderVersion, meshVersion);
 
         for (var block : sourceBlocks) {
-            if (block == null || block.state() == null || block.state().isAir()) {
-                continue;
+            if (block != null) {
+                builder.add(block.pos(), block.state(), block.nbt());
             }
-            int stateId = paletteIds.computeIfAbsent(block.state(), state -> {
-                palette.add(state);
-                return palette.size() - 1;
-            });
-            long packedPos = block.pos().asLong();
-            long sectionKey = ProjectionSectionKey.fromBlockPos(block.pos()).asLong();
-            var entry = new Entry(packedPos, stateId, block.nbt(), sectionKey);
-            entries.add(entry);
-            byPos.put(packedPos, entry);
-            bySection.computeIfAbsent(sectionKey, ignored -> new ArrayList<>()).add(entry);
         }
 
-        return new ProjectionSparseStore(
-                Collections.unmodifiableList(entries),
-                Collections.unmodifiableList(palette),
-                freezeSectionMap(bySection),
-                byPos,
-                renderVersion,
-                meshVersion
-        );
+        return builder.build();
+    }
+
+    public static Builder builder(int expectedSize, int renderVersion, int meshVersion) {
+        return new Builder(expectedSize, renderVersion, meshVersion);
     }
 
     public List<Entry> entries() {
@@ -151,6 +134,58 @@ public final class ProjectionSparseStore {
 
         public boolean hasNbt() {
             return nbt != null && !nbt.isEmpty();
+        }
+    }
+
+    public static final class Builder {
+        private final List<Entry> entries;
+        private final List<BlockState> palette = new ArrayList<>();
+        private final Map<BlockState, Integer> paletteIds = new LinkedHashMap<>();
+        private final Map<Long, List<Entry>> bySection = new LinkedHashMap<>();
+        private final Long2ObjectOpenHashMap<Entry> byPos;
+        private final int renderVersion;
+        private final int meshVersion;
+
+        private Builder(int expectedSize, int renderVersion, int meshVersion) {
+            int capacity = Math.max(16, expectedSize);
+            this.entries = new ArrayList<>(capacity);
+            this.byPos = new Long2ObjectOpenHashMap<>(capacity);
+            this.renderVersion = renderVersion;
+            this.meshVersion = meshVersion;
+        }
+
+        public void add(BlockPos pos, BlockState state, CompoundTag nbt) {
+            if (pos == null || state == null || state.isAir()) {
+                return;
+            }
+            int stateId = paletteIds.computeIfAbsent(state, value -> {
+                palette.add(value);
+                return palette.size() - 1;
+            });
+            long packedPos = pos.asLong();
+            long sectionKey = ProjectionSectionKey.fromBlockPos(pos).asLong();
+            var entry = new Entry(packedPos, stateId, nbt, sectionKey);
+            entries.add(entry);
+            byPos.put(packedPos, entry);
+            bySection.computeIfAbsent(sectionKey, ignored -> new ArrayList<>()).add(entry);
+        }
+
+        public int size() {
+            return entries.size();
+        }
+
+        public ProjectionSparseStore build() {
+            if (entries.isEmpty()) {
+                return EMPTY;
+            }
+            return new ProjectionSparseStore(
+                    Collections.unmodifiableList(entries),
+                    Collections.unmodifiableList(palette),
+                    freezeSectionMap(bySection),
+                    byPos,
+                    renderVersion,
+                    meshVersion
+            );
         }
     }
 }

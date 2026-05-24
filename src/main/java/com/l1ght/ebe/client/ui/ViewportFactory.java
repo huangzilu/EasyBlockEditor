@@ -12,7 +12,6 @@ import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
-import com.l1ght.ebe.projection.ProjectionData;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramidBuilder;
 import com.l1ght.ebe.projection.mega.ProjectionSparseStore;
@@ -79,6 +78,9 @@ public class ViewportFactory {
     private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
     private static final int PROGRESSIVE_OUTLINE_SAMPLE_CAP = 768;
     private static final int PROGRESSIVE_OUTLINE_MOVING_CAP = 320;
+    private static final int HUGE_LOD_SAMPLE_CAP = 220_000;
+    private static final int EXTREME_LOD_SAMPLE_CAP = 120_000;
+    private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 260_000;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -110,22 +112,29 @@ public class ViewportFactory {
     private static class ProgressiveModelLoad {
         final BuildingModel model;
         final boolean autoCamera;
-        final int totalVolume;
+        final long totalVolume;
         int regionIndex;
         int x;
         int y;
         int z;
-        int visited;
+        long visited;
         int added;
+        final int maxExactBlocks;
+        boolean exactCapped;
 
-        ProgressiveModelLoad(BuildingModel model, boolean autoCamera) {
+        ProgressiveModelLoad(BuildingModel model, boolean autoCamera, ProjectionLoadProfile profile) {
             this.model = model;
             this.autoCamera = autoCamera;
-            int volume = 0;
+            this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
+            long volume = 0L;
             for (var region : model.getRegions()) {
-                volume += region.getSizeX() * region.getSizeY() * region.getSizeZ();
+                volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
             }
             this.totalVolume = Math.max(1, volume);
+        }
+
+        boolean hasExactCap() {
+            return maxExactBlocks > 0;
         }
     }
 
@@ -508,12 +517,13 @@ public class ViewportFactory {
 
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
-        progressiveLoad = new ProgressiveModelLoad(model, autoCamera);
+        progressiveLoad = new ProgressiveModelLoad(model, autoCamera, profile);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createModelOutlineSamples(model) : List.of();
         startViewportLodBuild(model, null, profile);
         progressiveStatusCooldown = 0;
-        LOG.info("Progressive model load started: {} regions, volume={}, profile={}",
-                model.getRegions().size(), progressiveLoad.totalVolume, profile == null ? "none" : profile.risk());
+        LOG.info("Progressive model load started: {} regions, volume={}, profile={}, exactCap={}",
+                model.getRegions().size(), progressiveLoad.totalVolume, profile == null ? "none" : profile.risk(),
+                progressiveLoad.maxExactBlocks);
     }
 
     public static void loadFromComputedProgressive(ComputedProjection computed) {
@@ -830,6 +840,35 @@ public class ViewportFactory {
         return profile != null && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
     }
 
+    private static int progressiveExactViewportBlockLimit(ProjectionLoadProfile profile) {
+        if (profile == null || profile.risk() != ProjectionLoadProfile.Risk.EXTREME) {
+            return 0;
+        }
+        return EXTREME_EXACT_VIEWPORT_BLOCK_CAP;
+    }
+
+    private static int viewportLodSampleCap(ProjectionLoadProfile profile) {
+        if (profile == null) {
+            return HUGE_LOD_SAMPLE_CAP;
+        }
+        if (profile.risk() == ProjectionLoadProfile.Risk.EXTREME) {
+            return EXTREME_LOD_SAMPLE_CAP;
+        }
+        return HUGE_LOD_SAMPLE_CAP;
+    }
+
+    private static int viewportLodSampleStride(ProjectionLoadProfile profile) {
+        if (profile == null) {
+            return 1;
+        }
+        int cap = viewportLodSampleCap(profile);
+        int blocks = Math.max(0, profile.nonAirBlocks());
+        if (blocks <= cap || cap <= 0) {
+            return 1;
+        }
+        return Math.max(1, (blocks + cap - 1) / cap);
+    }
+
     private static List<BlockPos> createComputedOutlineSamples(ComputedProjection computed) {
         if (computed == null || computed.isEmpty()) return List.of();
 
@@ -865,8 +904,8 @@ public class ViewportFactory {
         int sequence = viewportLodBuildSequence.incrementAndGet();
         viewportLodBuild = CompletableFuture.supplyAsync(() -> {
             ProjectionSparseStore store = computed != null
-                    ? buildViewportSparseStore(computed)
-                    : buildViewportSparseStore(model);
+                    ? buildViewportSparseStore(computed, profile)
+                    : buildViewportSparseStore(model, profile);
             ProjectionLodPyramid pyramid = ProjectionLodPyramidBuilder.build(store);
             return new ViewportLodBuildResult(store, pyramid);
         }).whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
@@ -884,11 +923,15 @@ public class ViewportFactory {
         }));
     }
 
-    private static ProjectionSparseStore buildViewportSparseStore(BuildingModel model) {
+    private static ProjectionSparseStore buildViewportSparseStore(BuildingModel model, ProjectionLoadProfile profile) {
         if (model == null || model.getRegions().isEmpty()) return ProjectionSparseStore.empty();
 
-        var blocks = new ArrayList<ProjectionData.ProjectionBlock>();
+        int sampleCap = viewportLodSampleCap(profile);
+        int sampleStride = viewportLodSampleStride(profile);
+        var builder = ProjectionSparseStore.builder(Math.min(sampleCap, Math.max(1024,
+                profile == null ? sampleCap : profile.nonAirBlocks() / Math.max(1, sampleStride) + 1)), 0, 0);
         var displayFilter = EditorUI.getState().getDisplayFilter();
+        int visibleNonAir = 0;
         for (var region : model.getRegions()) {
             var container = region.getBlocks();
             for (int y = 0; y < region.getSizeY(); y++) {
@@ -902,33 +945,52 @@ public class ViewportFactory {
                         int wz = z + region.getOffsetZ();
                         if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                         if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
-                        blocks.add(new ProjectionData.ProjectionBlock(new BlockPos(wx, wy, wz), state, null));
+                        if (visibleNonAir++ % sampleStride == 0) {
+                            builder.add(new BlockPos(wx, wy, wz), state, null);
+                            if (builder.size() >= sampleCap) {
+                                return builder.build();
+                            }
+                        }
                     }
                 }
             }
         }
-        return ProjectionSparseStore.fromBlocks(blocks, 0, 0);
+        return builder.build();
     }
 
-    private static ProjectionSparseStore buildViewportSparseStore(ComputedProjection computed) {
+    private static ProjectionSparseStore buildViewportSparseStore(ComputedProjection computed, ProjectionLoadProfile profile) {
         if (computed == null || computed.isEmpty()) return ProjectionSparseStore.empty();
-        var blocks = new ArrayList<ProjectionData.ProjectionBlock>(computed.blockCount());
+        int sampleCap = viewportLodSampleCap(profile);
+        int sampleStride = Math.max(1, (computed.blockCount() + sampleCap - 1) / Math.max(1, sampleCap));
+        var builder = ProjectionSparseStore.builder(Math.min(sampleCap, Math.max(1024,
+                computed.blockCount() / sampleStride + 1)), 0, 0);
         var displayFilter = EditorUI.getState().getDisplayFilter();
+        int visibleNonAir = 0;
         if (!computed.getViewportBatches().isEmpty()) {
             for (var batch : computed.getViewportBatches()) {
                 for (var entry : batch.getEntries()) {
                     var pos = entry.getPos();
                     if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
-                        blocks.add(new ProjectionData.ProjectionBlock(pos, entry.getState(), null));
+                        if (visibleNonAir++ % sampleStride == 0) {
+                            builder.add(pos, entry.getState(), null);
+                            if (builder.size() >= sampleCap) {
+                                return builder.build();
+                            }
+                        }
                     }
                 }
             }
         } else {
             for (var entry : computed.getBlocks()) {
-                blocks.add(new ProjectionData.ProjectionBlock(entry.getPos(), entry.getState(), null));
+                if (visibleNonAir++ % sampleStride == 0) {
+                    builder.add(entry.getPos(), entry.getState(), null);
+                    if (builder.size() >= sampleCap) {
+                        return builder.build();
+                    }
+                }
             }
         }
-        return ProjectionSparseStore.fromBlocks(blocks, 0, 0);
+        return builder.build();
     }
 
     private static void clearViewportLod() {
@@ -982,6 +1044,10 @@ public class ViewportFactory {
         while (load.regionIndex < regions.size()
                 && blocksThisTick < progressiveLoadBlockLimit()
                 && System.nanoTime() < deadline) {
+            if (load.hasExactCap() && load.added >= load.maxExactBlocks) {
+                load.exactCapped = true;
+                break;
+            }
             var region = regions.get(load.regionIndex);
             if (load.y >= region.getSizeY()) {
                 LOG.info("Progressive region loaded '{}' : visited={} added={}", region.getName(), load.visited, load.added);
@@ -1032,9 +1098,12 @@ public class ViewportFactory {
                     "ebe.editor.loading.progress", percent, load.added));
         }
 
-        if (load.regionIndex >= regions.size()) {
+        if (load.exactCapped || load.regionIndex >= regions.size()) {
             progressiveLoad = null;
-            progressiveOutlineSamples = List.of();
+            if (!load.exactCapped) {
+                progressiveOutlineSamples = List.of();
+                clearViewportLod();
+            }
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
             if (sectionedRenderer != null) {
                 sectionedRenderer.finishProgressiveLoad();
@@ -1054,7 +1123,14 @@ public class ViewportFactory {
                 EditorUI.markMaterialListStale();
             }
             EditorUI.updateStatusBar();
-            LOG.info("Progressive model load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+            if (load.exactCapped) {
+                EditorUI.setStatus(net.minecraft.network.chat.Component.translatable(
+                        "ebe.editor.loading.preview_capped", load.added));
+                LOG.info("Progressive model load capped at {} exact viewport blocks; LOD remains active for the full projection",
+                        load.added);
+            } else {
+                LOG.info("Progressive model load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+            }
             activeLoadProfile = null;
         }
     }
@@ -1109,6 +1185,7 @@ public class ViewportFactory {
         if (load.batchIndex >= batches.size()) {
             progressiveComputedLoad = null;
             progressiveOutlineSamples = List.of();
+            clearViewportLod();
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
             if (sectionedRenderer != null) {
                 sectionedRenderer.finishProgressiveLoad();
