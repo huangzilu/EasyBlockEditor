@@ -1,6 +1,7 @@
 package com.l1ght.ebe.server.workgroup.print
 
 import net.minecraft.core.BlockPos
+import net.minecraft.world.level.ChunkPos
 import java.util.UUID
 
 class WorkgroupPrintSession(
@@ -16,6 +17,8 @@ class WorkgroupPrintSession(
 ) {
     private val targetsByIndex: List<PrintBlockTarget> = targets.sortedBy { it.id }
     private val pendingQueue = ArrayDeque<Long>(targetsByIndex.size)
+    private val pendingByChunk = LinkedHashMap<Long, ArrayDeque<Long>>()
+    private val rangeCursors = LinkedHashMap<RangeKey, ChunkCursor>()
     private val statusCodes = IntArray(targetsByIndex.size) { PrintBlockStatus.PENDING.ordinal }
     private val missingMaterialFailures = IntArray(targetsByIndex.size)
     private val reservationsByToken = LinkedHashMap<UUID, BlockReservation>()
@@ -30,7 +33,7 @@ class WorkgroupPrintSession(
 
     init {
         for (target in targetsByIndex) {
-            pendingQueue.addLast(target.id)
+            enqueuePending(target.id)
         }
     }
 
@@ -45,37 +48,12 @@ class WorkgroupPrintSession(
     ): List<BlockReservation> {
         expireReservations(nowTick)
         val limit = maxReservations.coerceIn(1, 64)
-        val result = ArrayList<BlockReservation>(limit)
-        val attempts = pendingQueue.size
         val unlimitedRange = range <= 0
 
-        repeat(attempts) {
-            if (result.size >= limit || pendingQueue.isEmpty()) return@repeat
-            val id = pendingQueue.removeFirst()
-            val target = targetFor(id) ?: return@repeat
-            if (status(id) != PrintBlockStatus.PENDING) return@repeat
-            if (!unlimitedRange && !isWithinBlockRange(target.pos, center, range)) {
-                pendingQueue.addLast(id)
-                return@repeat
-            }
-
-            val token = UUID.randomUUID()
-            val reservation = BlockReservation(
-                token = token,
-                groupId = groupId,
-                sessionId = sessionId,
-                blockId = target.id,
-                pos = target.pos,
-                stateId = target.stateId,
-                nbt = target.nbt,
-                assignedTo = playerId,
-                assignedName = playerName,
-                expiresAtTick = nowTick + reservationTtlTicks
-            )
-            reservationsByToken[token] = reservation
-            setStatus(id, PrintBlockStatus.RESERVED)
-            reservedCount++
-            result.add(reservation)
+        val result = if (unlimitedRange) {
+            reserveFromQueue(pendingQueue, playerId, playerName, nowTick, limit)
+        } else {
+            reserveFromChunks(playerId, playerName, nowTick, limit, center, range)
         }
 
         if (result.isNotEmpty()) touch()
@@ -108,7 +86,7 @@ class WorkgroupPrintSession(
                     PrintBlockStatus.FAILED_MISSING_MATERIAL
                 } else {
                     setStatus(reservation.blockId, PrintBlockStatus.PENDING)
-                    pendingQueue.addLast(reservation.blockId)
+                    enqueuePending(reservation.blockId)
                     touch()
                     return true
                 }
@@ -133,7 +111,7 @@ class WorkgroupPrintSession(
                 if (status(reservation.blockId) == PrintBlockStatus.RESERVED) {
                     setStatus(reservation.blockId, PrintBlockStatus.PENDING)
                     reservedCount = (reservedCount - 1).coerceAtLeast(0)
-                    pendingQueue.addLast(reservation.blockId)
+                    enqueuePending(reservation.blockId)
                     changed = true
                 }
             }
@@ -182,6 +160,103 @@ class WorkgroupPrintSession(
         return targetsByIndex.getOrNull(index)?.takeIf { it.id == id }
     }
 
+    private fun reserveFromQueue(
+        queue: ArrayDeque<Long>,
+        playerId: UUID,
+        playerName: String,
+        nowTick: Long,
+        limit: Int
+    ): List<BlockReservation> {
+        val result = ArrayList<BlockReservation>(limit)
+        val scanBudget = queue.size.coerceAtMost((limit * 256).coerceAtLeast(1024))
+        repeat(scanBudget) {
+            if (result.size >= limit || queue.isEmpty()) return@repeat
+            val id = queue.removeFirst()
+            val target = targetFor(id) ?: return@repeat
+            if (status(id) != PrintBlockStatus.PENDING) return@repeat
+            result.add(createReservation(target, playerId, playerName, nowTick))
+        }
+        return result
+    }
+
+    private fun reserveFromChunks(
+        playerId: UUID,
+        playerName: String,
+        nowTick: Long,
+        limit: Int,
+        center: BlockPos,
+        range: Int
+    ): List<BlockReservation> {
+        val chunkKeys = chunkKeysNear(center, range)
+        if (chunkKeys.isEmpty()) return emptyList()
+
+        val key = RangeKey(center.x shr 4, center.z shr 4, range)
+        val cursor = rangeCursors.computeIfAbsent(key) { ChunkCursor() }
+        pruneRangeCursors()
+        if (cursor.chunkIndex >= chunkKeys.size) cursor.chunkIndex = 0
+
+        val result = ArrayList<BlockReservation>(limit)
+        val scanBudget = (limit * 256).coerceAtLeast(1024)
+        var scanned = 0
+        var advancedChunks = 0
+        while (result.size < limit && scanned < scanBudget && advancedChunks <= chunkKeys.size) {
+            val queue = pendingByChunk[chunkKeys[cursor.chunkIndex]]
+            if (queue.isNullOrEmpty()) {
+                advanceChunk(cursor, chunkKeys.size)
+                advancedChunks++
+                continue
+            }
+
+            val id = queue.removeFirst()
+            scanned++
+            val target = targetFor(id)
+            if (target == null || status(id) != PrintBlockStatus.PENDING) {
+                continue
+            }
+            if (!isWithinBlockRange(target.pos, center, range)) {
+                queue.addLast(id)
+                advanceChunk(cursor, chunkKeys.size)
+                advancedChunks++
+                continue
+            }
+
+            result.add(createReservation(target, playerId, playerName, nowTick))
+        }
+
+        return result
+    }
+
+    private fun createReservation(
+        target: PrintBlockTarget,
+        playerId: UUID,
+        playerName: String,
+        nowTick: Long
+    ): BlockReservation {
+        val token = UUID.randomUUID()
+        val reservation = BlockReservation(
+            token = token,
+            groupId = groupId,
+            sessionId = sessionId,
+            blockId = target.id,
+            pos = target.pos,
+            stateId = target.stateId,
+            nbt = target.nbt,
+            assignedTo = playerId,
+            assignedName = playerName,
+            expiresAtTick = nowTick + reservationTtlTicks
+        )
+        reservationsByToken[token] = reservation
+        setStatus(target.id, PrintBlockStatus.RESERVED)
+        reservedCount++
+        return reservation
+    }
+
+    private fun enqueuePending(id: Long) {
+        val target = targetFor(id) ?: return
+        pendingQueue.addLast(id)
+        pendingByChunk.computeIfAbsent(chunkKey(target.pos)) { ArrayDeque() }.addLast(id)
+    }
+
     private fun status(id: Long): PrintBlockStatus {
         return PrintBlockStatus.entries[statusCodes[id.toInt()]]
     }
@@ -211,5 +286,43 @@ class WorkgroupPrintSession(
         val dy = pos.y.toDouble() - center.y.toDouble()
         val dz = pos.z.toDouble() - center.z.toDouble()
         return dx * dx + dy * dy + dz * dz <= range.toDouble() * range.toDouble()
+    }
+
+    private fun chunkKeysNear(center: BlockPos, range: Int): List<Long> {
+        val radius = (range shr 4).coerceAtLeast(1) + 1
+        val centerChunkX = center.x shr 4
+        val centerChunkZ = center.z shr 4
+        val keys = LinkedHashSet<Long>()
+        keys.add(ChunkPos.asLong(centerChunkX, centerChunkZ))
+        for (ring in 1..radius) {
+            for (dx in -ring..ring) {
+                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ - ring))
+                keys.add(ChunkPos.asLong(centerChunkX + dx, centerChunkZ + ring))
+            }
+            for (dz in (-ring + 1)..(ring - 1)) {
+                keys.add(ChunkPos.asLong(centerChunkX - ring, centerChunkZ + dz))
+                keys.add(ChunkPos.asLong(centerChunkX + ring, centerChunkZ + dz))
+            }
+        }
+        return keys.filter { pendingByChunk[it]?.isNotEmpty() == true }
+    }
+
+    private fun chunkKey(pos: BlockPos): Long = ChunkPos.asLong(pos.x shr 4, pos.z shr 4)
+
+    private fun advanceChunk(cursor: ChunkCursor, chunkCount: Int) {
+        cursor.chunkIndex = (cursor.chunkIndex + 1) % chunkCount
+    }
+
+    private fun pruneRangeCursors() {
+        while (rangeCursors.size > 64) {
+            val first = rangeCursors.keys.firstOrNull() ?: return
+            rangeCursors.remove(first)
+        }
+    }
+
+    private data class RangeKey(val centerChunkX: Int, val centerChunkZ: Int, val range: Int)
+
+    private class ChunkCursor {
+        var chunkIndex: Int = 0
     }
 }

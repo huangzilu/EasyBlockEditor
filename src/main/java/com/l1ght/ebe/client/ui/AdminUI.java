@@ -474,7 +474,7 @@ public class AdminUI {
         return switch (key) {
             case "place_chunks_per_tick" -> 4;
             case "place_blocks_per_tick" -> 4096;
-            case "printer_blocks_per_tick" -> 1;
+            case "printer_blocks_per_tick" -> 8;
             case "max_edit_size" -> 256;
             case "strict_nbt_matching" -> 1;
             default -> 0;

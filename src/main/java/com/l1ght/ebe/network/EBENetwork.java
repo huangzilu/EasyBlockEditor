@@ -26,6 +26,12 @@ public class EBENetwork {
                 PrinterPlacePayload::handleServer
         );
 
+        registrar.playToServer(
+                PrinterPlaceBatchPayload.TYPE,
+                PrinterPlaceBatchPayload.STREAM_CODEC,
+                PrinterPlaceBatchPayload::handleServer
+        );
+
         registrar.playToClient(
                 PlaceProgressPayload.TYPE,
                 PlaceProgressPayload.STREAM_CODEC,

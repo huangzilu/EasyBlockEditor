@@ -2,6 +2,7 @@ package com.l1ght.ebe.client.projection;
 
 import com.l1ght.ebe.client.ClientOnlyHooks;
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.network.PrinterPlaceBatchPayload;
 import com.l1ght.ebe.network.PrinterPlacePayload;
 import com.l1ght.ebe.network.WorkgroupPrintReservationPayload;
 import com.l1ght.ebe.network.WorkgroupPrintReservePayload;
@@ -9,16 +10,18 @@ import com.l1ght.ebe.network.WorkgroupPrintUploadPayload;
 import com.l1ght.ebe.network.WorkgroupPrinterPlacePayload;
 import com.l1ght.ebe.projection.PrinterMode;
 import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.server.placement.PlacementStateOrder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.Container;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -42,19 +45,16 @@ public class PrinterController {
     private static boolean active = false;
     private static int tickCounter = 0;
     private static final int PENDING_TIMEOUT_TICKS = 40;
-    private static final int AUTO_SCAN_INTERVAL_TICKS = 2;
-    private static final int MAX_CANDIDATE_SCAN_PER_TICK = 512;
+    private static final int AUTO_SCAN_INTERVAL_TICKS = 1;
+    private static final int MAX_CANDIDATE_SCAN_PER_TICK = 4096;
     private static final int WORKGROUP_UPLOAD_BATCH_SIZE = 512;
     private static final int WORKGROUP_UPLOAD_MAX_NBT_CHARS_PER_BATCH = 64_000;
     private static final int WORKGROUP_UPLOAD_MAX_SINGLE_NBT_CHARS = 32_000;
     private static final int WORKGROUP_RESERVATION_REQUEST_INTERVAL_TICKS = 5;
     private static final Map<BlockPos, Integer> pendingPlacements = new HashMap<>();
-    private static final Map<Long, List<ProjectionData.ProjectionBlock>> chunkBuckets = new HashMap<>();
+    private static final PrinterCandidatePlanner candidatePlanner = new PrinterCandidatePlanner();
     private static final Queue<WorkgroupPrintReservationPayload.Entry> workgroupReservationQueue = new ArrayDeque<>();
     private static final Set<UUID> workgroupPendingTokens = new HashSet<>();
-    private static ProjectionData bucketProjection;
-    private static int bucketVersion = -1;
-    private static int candidateCursor = 0;
     private static BlockPos materialSourcePos;
     private static boolean selectingMaterialSource = false;
     private static UUID workgroupUploadId;
@@ -126,35 +126,42 @@ public class PrinterController {
                 return;
             }
 
-            rebuildBucketsIfNeeded(projection);
             int blocksPerTick = Math.max(1, Math.min(8, EBEClientConfig.printerParallelism.get()));
             BlockPos playerPos = player.blockPosition();
             BlockPos scanCenter = materialSourcePos != null ? materialSourcePos : playerPos;
             int range = materialSourcePos != null ? EBEClientConfig.printerMaterialSourceRange.get() : EBEClientConfig.printerRange.get();
-            boolean unlimitedRange = range <= 0;
-            List<ProjectionData.ProjectionBlock> candidates = collectNearbyCandidates(scanCenter, range);
+            List<ProjectionData.ProjectionBlock> candidates = candidatePlanner.nextCandidates(
+                    projection,
+                    scanCenter,
+                    range,
+                    blocksPerTick,
+                    MAX_CANDIDATE_SCAN_PER_TICK,
+                    pendingPlacements.keySet(),
+                    pb -> {
+                        var existing = level.getBlockState(pb.pos());
+                        return existing.isAir()
+                                || (existing.getBlock() == net.minecraft.world.level.block.Blocks.WATER
+                                && PlacementStateOrder.isWaterlogged(pb.state()));
+                    }
+            );
             if (candidates.isEmpty()) return;
 
             int placed = 0;
-            int scanned = 0;
-            int start = Math.floorMod(candidateCursor, candidates.size());
-            for (int i = 0; i < candidates.size() && scanned < MAX_CANDIDATE_SCAN_PER_TICK; i++) {
+            List<PrinterPlaceBatchPayload.Entry> batch = new ArrayList<>(blocksPerTick);
+            for (var pb : candidates) {
                 if (placed >= blocksPerTick) break;
-                scanned++;
-
-                var pb = candidates.get((start + i) % candidates.size());
                 BlockPos pos = pb.pos();
-                if (pendingPlacements.containsKey(pos)) continue;
-                if (!unlimitedRange && !isWithinBlockRange(pos, scanCenter, range)) continue;
 
-                BlockState state = level.getBlockState(pos);
-                if (!state.isAir()) continue;
-
-                if (tryPlaceBlock(player, pos, pb.state(), pb.nbt(), false, materialSourcePos, range)) {
+                var entry = preparePlaceEntry(player, pos, pb.state(), pb.nbt(), false, materialSourcePos);
+                if (entry != null) {
+                    batch.add(entry);
+                    pendingPlacements.put(pos.immutable(), PENDING_TIMEOUT_TICKS);
                     placed++;
                 }
             }
-            candidateCursor = start + scanned;
+            if (!batch.isEmpty()) {
+                PacketDistributor.sendToServer(new PrinterPlaceBatchPayload(batch, materialSourcePos, false, range));
+            }
         }
     }
 
@@ -326,82 +333,88 @@ public class PrinterController {
 
     private static boolean tryPlaceBlock(LocalPlayer player, BlockPos pos, BlockState targetState, CompoundTag targetNbt,
                                          boolean requireHeldItem, BlockPos sourcePos, int sourceRange) {
-        var level = player.level();
-        var existing = level.getBlockState(pos);
-        if (!existing.isAir()) return false;
-
-        var block = targetState.getBlock();
-        var requiredItem = block.asItem();
-        if (requiredItem == null) return false;
-
-        boolean hasMaterial = player.isCreative();
-        if (!hasMaterial && requireHeldItem) {
-            var stack = player.getMainHandItem();
-            hasMaterial = stack.is(requiredItem);
-        } else if (!hasMaterial && sourcePos != null) {
-            // The authoritative material check happens on the server against the bound container.
-            hasMaterial = true;
-        } else if (!hasMaterial) {
-            for (int i = 0; i < player.getInventory().items.size(); i++) {
-                var stack = player.getInventory().items.get(i);
-                if (stack.is(requiredItem)) {
-                    hasMaterial = true;
-                    break;
-                }
-            }
-        }
-
-        if (!hasMaterial) return false;
-
-        int stateId = Block.getId(targetState);
-        String nbtStr = targetNbt != null ? targetNbt.toString() : "";
-        PacketDistributor.sendToServer(new PrinterPlacePayload(pos, stateId, nbtStr, sourcePos, requireHeldItem, sourceRange));
+        var entry = preparePlaceEntry(player, pos, targetState, targetNbt, requireHeldItem, sourcePos);
+        if (entry == null) return false;
+        PacketDistributor.sendToServer(new PrinterPlacePayload(pos, entry.stateId(), entry.nbtStr(), sourcePos, requireHeldItem, sourceRange));
         pendingPlacements.put(pos.immutable(), PENDING_TIMEOUT_TICKS);
         return true;
     }
 
-    private static void rebuildBucketsIfNeeded(ProjectionData projection) {
-        if (bucketProjection == projection && bucketVersion == projection.getRenderVersion()) {
-            return;
+    private static PrinterPlaceBatchPayload.Entry preparePlaceEntry(LocalPlayer player, BlockPos pos,
+                                                                    BlockState targetState, CompoundTag targetNbt,
+                                                                    boolean requireHeldItem, BlockPos sourcePos) {
+        var level = player.level();
+        var existing = level.getBlockState(pos);
+        if (!existing.isAir()
+                && !(existing.getBlock() == net.minecraft.world.level.block.Blocks.WATER
+                && PlacementStateOrder.isWaterlogged(targetState))) {
+            return null;
         }
-        chunkBuckets.clear();
-        for (var pb : projection.getBlocks()) {
-            long key = ChunkPos.asLong(pb.pos().getX() >> 4, pb.pos().getZ() >> 4);
-            chunkBuckets.computeIfAbsent(key, ignored -> new ArrayList<>()).add(pb);
+
+        List<Item> requiredItems = materialItems(targetState);
+
+        boolean hasMaterial = player.isCreative();
+        if (!hasMaterial && requireHeldItem) {
+            hasMaterial = hasHeldMaterials(player, requiredItems);
+        } else if (!hasMaterial && sourcePos != null) {
+            // The authoritative material check happens on the server against the bound container.
+            hasMaterial = true;
+        } else if (!hasMaterial) {
+            hasMaterial = hasInventoryMaterials(player, requiredItems);
         }
-        bucketProjection = projection;
-        bucketVersion = projection.getRenderVersion();
-        candidateCursor = 0;
+
+        if (!hasMaterial) return null;
+
+        int stateId = Block.getId(targetState);
+        String nbtStr = targetNbt != null ? targetNbt.toString() : "";
+        return new PrinterPlaceBatchPayload.Entry(pos, stateId, nbtStr);
     }
 
-    private static List<ProjectionData.ProjectionBlock> collectNearbyCandidates(BlockPos centerPos, int range) {
-        if (range <= 0) {
-            List<ProjectionData.ProjectionBlock> candidates = new ArrayList<>();
-            for (var blocks : chunkBuckets.values()) {
-                candidates.addAll(blocks);
-            }
-            return candidates;
-        }
-        int chunkRadius = Math.max(1, (range >> 4) + 1);
-        int centerX = centerPos.getX() >> 4;
-        int centerZ = centerPos.getZ() >> 4;
-        List<ProjectionData.ProjectionBlock> candidates = new ArrayList<>();
-        for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
-            for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
-                var blocks = chunkBuckets.get(ChunkPos.asLong(centerX + dx, centerZ + dz));
-                if (blocks != null) {
-                    candidates.addAll(blocks);
+    private static boolean hasHeldMaterials(LocalPlayer player, List<Item> requiredItems) {
+        if (requiredItems.isEmpty()) return false;
+        if (!player.getMainHandItem().is(requiredItems.getFirst())) return false;
+        if (requiredItems.size() == 1) return true;
+        return hasInventoryMaterials(player, requiredItems.subList(1, requiredItems.size()));
+    }
+
+    private static boolean hasInventoryMaterials(LocalPlayer player, List<Item> requiredItems) {
+        if (requiredItems.isEmpty()) return false;
+        for (var item : requiredItems) {
+            boolean found = false;
+            for (var stack : player.getInventory().items) {
+                if (stack.is(item)) {
+                    found = true;
+                    break;
                 }
             }
+            if (!found) return false;
         }
-        return candidates;
+        return true;
     }
 
-    private static boolean isWithinBlockRange(BlockPos pos, BlockPos center, int range) {
-        double dx = pos.getX() - center.getX();
-        double dy = pos.getY() - center.getY();
-        double dz = pos.getZ() - center.getZ();
-        return dx * dx + dy * dy + dz * dz <= (double) range * range;
+    private static List<Item> materialItems(BlockState state) {
+        var items = new ArrayList<Item>(2);
+        if (state == null || state.isAir()) return items;
+        if (state.getBlock() == net.minecraft.world.level.block.Blocks.WATER) {
+            items.add(Items.WATER_BUCKET);
+            return items;
+        }
+        if (state.getBlock() == net.minecraft.world.level.block.Blocks.LAVA) {
+            items.add(Items.LAVA_BUCKET);
+            return items;
+        }
+        if (state.getBlock() == net.minecraft.world.level.block.Blocks.POWDER_SNOW) {
+            items.add(Items.POWDER_SNOW_BUCKET);
+            return items;
+        }
+        var blockItem = state.getBlock().asItem();
+        if (blockItem != Items.AIR) {
+            items.add(blockItem);
+        }
+        if (PlacementStateOrder.isWaterlogged(state)) {
+            items.add(Items.WATER_BUCKET);
+        }
+        return items;
     }
 
     private static void cleanupPendingPlacements() {
@@ -480,7 +493,12 @@ public class PrinterController {
         ProjectionData.ProjectionBlock best = null;
         double bestDistance = Double.MAX_VALUE;
         for (var pb : projection.getBlocks()) {
-            if (!player.level().getBlockState(pb.pos()).isAir()) continue;
+            var existing = player.level().getBlockState(pb.pos());
+            if (!existing.isAir()
+                    && !(existing.getBlock() == net.minecraft.world.level.block.Blocks.WATER
+                    && PlacementStateOrder.isWaterlogged(pb.state()))) {
+                continue;
+            }
 
             var hit = new AABB(pb.pos()).clip(eye, end);
             if (hit.isPresent()) {
@@ -494,8 +512,8 @@ public class PrinterController {
 
         if (best == null) return false;
 
-        var requiredItem = best.state().getBlock().asItem();
-        if (requiredItem == null || !stack.is(requiredItem)) {
+        var requiredItems = materialItems(best.state());
+        if (!hasHeldMaterials(player, requiredItems)) {
             player.displayClientMessage(Component.translatable("ebe.printer.no_materials"), true);
             return true;
         }

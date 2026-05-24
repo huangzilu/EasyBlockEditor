@@ -13,6 +13,11 @@ EasyBlockEditor is a building editor mod inspired by Litematica, developed with 
 It serves as both a building editor and a building management platform.
 Core concept: Provide an in-game full-screen 3D UI editor, allowing players to design, edit, manage, and share buildings in a non-destructive way.
 Enjoy the fun of immersive building editing and collaboration!
+
+EasyBlockEditor 是一个受 Litematica 启发、基于 LDLib2 框架开发的建筑编辑模组。
+它既是建筑编辑器，也是建筑管理与协作平台。
+核心理念：在游戏内提供全屏 3D UI 编辑器，让玩家以非破坏性的方式设计、编辑、管理和共享建筑。
+享受沉浸式建筑编辑与多人协作的乐趣！
 '''
 
 [[dependencies.${mod_id}]]

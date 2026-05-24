@@ -3,12 +3,15 @@ package com.l1ght.ebe.client.projection;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.io.EBEFormatIO;
+import com.l1ght.ebe.network.NetworkLimits;
 import com.l1ght.ebe.network.PlaceBlocksPayload;
 import com.l1ght.ebe.projection.ProjectionData;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
+import com.l1ght.ebe.server.placement.PlacementStateOrder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
@@ -22,13 +25,16 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProjectionManager {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/Projection");
+    private static final int PLACE_ALL_MAX_NBT_CHARS_PER_PACKET = 96_000;
     private static final Path PERSIST_DIR = Path.of("config", "ebe", "client");
     private static final String PERSIST_STATE_FILE_NAME = "projection_state.properties";
     private static final String PERSIST_MODEL_FILE_NAME = "projection_snapshot.ebe";
@@ -400,14 +406,48 @@ public class ProjectionManager {
         var blocks = activeProjection.getBlocks();
         if (blocks.isEmpty()) return;
 
-        List<PlaceBlocksPayload.Entry> entries = new ArrayList<>();
+        Map<Integer, Map<Long, List<PlaceBlocksPayload.Entry>>> byPhaseAndChunk = new LinkedHashMap<>();
+        int total = 0;
         for (var pb : blocks) {
+            int phase = PlacementStateOrder.phase(pb.state());
             int stateId = Block.getId(pb.state());
-            entries.add(new PlaceBlocksPayload.Entry(pb.pos(), stateId, pb.hasNbt() ? pb.nbt().toString() : ""));
+            String nbt = pb.hasNbt() ? pb.nbt().toString() : "";
+            var entry = new PlaceBlocksPayload.Entry(pb.pos(), stateId,
+                    NetworkLimits.bounded(nbt, NetworkLimits.MAX_BLOCK_NBT_CHARS));
+            byPhaseAndChunk.computeIfAbsent(phase, ignored -> new LinkedHashMap<>())
+                    .computeIfAbsent(ChunkPos.asLong(pb.pos().getX() >> 4, pb.pos().getZ() >> 4),
+                    ignored -> new ArrayList<>()).add(entry);
+            total++;
         }
 
-        setProgress(entries.size(), entries.size());
-        PacketDistributor.sendToServer(new PlaceBlocksPayload(entries));
+        setProgress(0, total);
+        for (int phase = PlacementStateOrder.NORMAL; phase <= PlacementStateOrder.FLUID; phase++) {
+            var byChunk = byPhaseAndChunk.get(phase);
+            if (byChunk == null) continue;
+            for (var chunkEntries : byChunk.values()) {
+                sendPlaceAllPackets(chunkEntries);
+            }
+        }
+    }
+
+    private static void sendPlaceAllPackets(List<PlaceBlocksPayload.Entry> entries) {
+        List<PlaceBlocksPayload.Entry> batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
+        int nbtChars = 0;
+        for (var entry : entries) {
+            int entryNbtChars = entry.nbt().length();
+            boolean fullByCount = batch.size() >= NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET;
+            boolean fullByNbt = !batch.isEmpty() && nbtChars + entryNbtChars > PLACE_ALL_MAX_NBT_CHARS_PER_PACKET;
+            if (fullByCount || fullByNbt) {
+                PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
+                batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
+                nbtChars = 0;
+            }
+            batch.add(entry);
+            nbtChars += entryNbtChars;
+        }
+        if (!batch.isEmpty()) {
+            PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
+        }
     }
 
     public static void calculateProgress() {

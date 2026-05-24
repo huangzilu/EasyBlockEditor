@@ -11,6 +11,7 @@ import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
+import com.l1ght.ebe.util.PosKey;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
@@ -1372,6 +1373,78 @@ public class ViewportFactory {
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
     }
 
+    public static void applyLayerStateChange(BuildingModel model,
+                                             BuildingModel.LayerState before,
+                                             BuildingModel.LayerState after) {
+        if (currentScene == null || currentWorld == null || model == null || before == null || after == null) {
+            if (model != null) {
+                refreshFromModel(model);
+            }
+            return;
+        }
+
+        var core = getSceneCore();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        Map<BlockPos, Boolean> changedBlocks = new LinkedHashMap<>();
+        var regions = model.getRegions();
+
+        for (int regionIndex = 0; regionIndex < regions.size(); regionIndex++) {
+            var region = regions.get(regionIndex);
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        var obj = region.getBlocks().get(x, y, z);
+                        var blockState = resolveBlockState(obj);
+                        if (blockState == null || blockState.isAir()) continue;
+
+                        int wx = x + region.getOffsetX();
+                        int wy = y + region.getOffsetY();
+                        int wz = z + region.getOffsetZ();
+                        boolean passesFilter = displayFilter.shouldDisplay(wx, wy, wz, obj);
+                        boolean wasVisible = passesFilter && isLayerVisibleAt(before, regionIndex, wx, wy, wz);
+                        boolean isVisible = passesFilter && isLayerVisibleAt(after, regionIndex, wx, wy, wz);
+                        if (wasVisible == isVisible) continue;
+
+                        var pos = new BlockPos(wx, wy, wz);
+                        if (isVisible) {
+                            addBlockToViewportWorld(pos, blockState);
+                            if (core != null) core.add(pos.immutable());
+                            changedBlocks.put(pos.immutable(), true);
+                        } else {
+                            currentWorld.removeBlock(pos);
+                            if (core != null) core.remove(pos);
+                            changedBlocks.put(pos.immutable(), false);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!changedBlocks.isEmpty()) {
+            scheduleIncrementalCompile(changedBlocks);
+        } else if (sectionedRenderer != null) {
+            sectionedRenderer.updateRenderHook(createCombinedHook(), false);
+        }
+    }
+
+    private static boolean isLayerVisibleAt(BuildingModel.LayerState state, int regionIndex, int wx, int wy, int wz) {
+        String layerId = null;
+        if (state.regionLayerIds() != null && regionIndex >= 0 && regionIndex < state.regionLayerIds().size()) {
+            layerId = state.regionLayerIds().get(regionIndex);
+        }
+        if (state.blockLayerOverrides() != null) {
+            layerId = state.blockLayerOverrides().getOrDefault(PosKey.pack(wx, wy, wz), layerId);
+        }
+        if (layerId == null) return true;
+        if (state.layers() == null) return true;
+        for (var layer : state.layers()) {
+            if (layerId.equals(layer.id())) {
+                return layer.visible();
+            }
+        }
+        return false;
+    }
+
     public static void refreshRenderedCore() {
         refreshRenderedCore(false);
     }
@@ -1397,7 +1470,12 @@ public class ViewportFactory {
     public static void setHeatmapMode(HeatmapMode mode) {
         heatmapHook.setMode(mode);
         if (currentScene != null) {
-            refreshRenderedCore(false);
+            ISceneBlockRenderHook hook = createCombinedHook();
+            if (sectionedRenderer != null) {
+                sectionedRenderer.updateRenderHook(hook, true);
+            } else {
+                refreshRenderedCore(false);
+            }
         }
     }
 

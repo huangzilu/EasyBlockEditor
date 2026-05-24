@@ -118,19 +118,24 @@ public class ServerSettingsManager {
     }
 
     public static class ServerSettings {
+        public int settingsVersion = 2;
         public int projectionTimeoutSeconds = 0;
         public int placeChunksPerTick = 4;
         public int placeBlocksPerTick = 4096;
-        public int printerBlocksPerTick = 1;
+        public int printerBlocksPerTick = 8;
         public int maxEditSize = 256;
         public boolean strictNbtMatching = true;
         public List<String> nbtIgnoreRules = new ArrayList<>();
 
         public ServerSettings clamped() {
+            if (settingsVersion < 2 && printerBlocksPerTick == 1) {
+                printerBlocksPerTick = 8;
+            }
+            settingsVersion = 2;
             projectionTimeoutSeconds = clamp(projectionTimeoutSeconds, 0, 86400);
             placeChunksPerTick = clamp(placeChunksPerTick, 1, 32);
             placeBlocksPerTick = clamp(placeBlocksPerTick, 128, 65_536);
-            printerBlocksPerTick = clamp(printerBlocksPerTick, 1, 10);
+            printerBlocksPerTick = clamp(printerBlocksPerTick, 1, 64);
             maxEditSize = clamp(maxEditSize, 16, 512);
             nbtIgnoreRules = new ArrayList<>(NbtPathRules.normalize(nbtIgnoreRules));
             return this;
@@ -174,6 +179,7 @@ public class ServerSettingsManager {
 
         private ServerSettings copy() {
             var copy = new ServerSettings();
+            copy.settingsVersion = settingsVersion;
             copy.projectionTimeoutSeconds = projectionTimeoutSeconds;
             copy.placeChunksPerTick = placeChunksPerTick;
             copy.placeBlocksPerTick = placeBlocksPerTick;

@@ -1603,7 +1603,7 @@ public class EditorUI {
         session.markDirty();
         if (entry.isLayerChange()) {
             refreshLayersList();
-            ViewportFactory.refreshFromModel(model);
+            ViewportFactory.applyLayerStateChange(model, entry.getAfterLayerState(), entry.getBeforeLayerState());
         } else {
             ViewportFactory.applyBlockDeltasFromModel(reversed.toArray(Object[][]::new));
         }
@@ -1625,7 +1625,7 @@ public class EditorUI {
         session.markDirty();
         if (entry.isLayerChange()) {
             refreshLayersList();
-            ViewportFactory.refreshFromModel(model);
+            ViewportFactory.applyLayerStateChange(model, entry.getBeforeLayerState(), entry.getAfterLayerState());
         } else {
             ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
         }
@@ -2320,7 +2320,7 @@ public class EditorUI {
         }
         refreshLayersList();
         if (refreshViewport) {
-            ViewportFactory.refreshFromModel(session.getModel());
+            ViewportFactory.applyLayerStateChange(session.getModel(), before, after);
         }
         refreshHistoryList();
         updateStatusBar();
@@ -5832,7 +5832,7 @@ public class EditorUI {
         if (entry == null || session == null) return;
         if (entry.isLayerChange()) {
             refreshLayersList();
-            ViewportFactory.refreshFromModel(session.getModel());
+            ViewportFactory.applyLayerStateChange(session.getModel(), entry.getBeforeLayerState(), entry.getAfterLayerState());
         } else {
             ViewportFactory.applyBlockDeltasFromModel(entry.getSnapshots());
         }

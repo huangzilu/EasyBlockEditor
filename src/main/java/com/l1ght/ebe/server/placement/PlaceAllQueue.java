@@ -32,7 +32,24 @@ public class PlaceAllQueue {
         for (var chunkEntries : byChunk.values()) {
             chunks.add(new ArrayDeque<>(chunkEntries));
         }
-        JOBS.add(new Job(level, player, chunks, entries.size()));
+        Job existing = findMergeableJob(level, player);
+        if (existing != null) {
+            existing.chunks.addAll(chunks);
+            existing.total += entries.size();
+            PacketDistributor.sendToPlayer(player, new PlaceProgressPayload(existing.placed, existing.total));
+        } else {
+            JOBS.add(new Job(level, player, chunks, entries.size()));
+            PacketDistributor.sendToPlayer(player, new PlaceProgressPayload(0, entries.size()));
+        }
+    }
+
+    private static Job findMergeableJob(ServerLevel level, ServerPlayer player) {
+        for (var job : JOBS) {
+            if (job.level == level && job.player.getUUID().equals(player.getUUID())) {
+                return job;
+            }
+        }
+        return null;
     }
 
     public static synchronized void tick() {
@@ -74,6 +91,10 @@ public class PlaceAllQueue {
                 job.chunks.add(chunkEntries);
             }
             processedChunks++;
+            if (job.progressCooldown-- <= 0) {
+                job.progressCooldown = 5;
+                PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
+            }
             if (job.chunks.isEmpty()) {
                 PacketDistributor.sendToPlayer(job.player, new PlaceProgressPayload(job.placed, job.total));
                 JOBS.remove();
@@ -150,8 +171,9 @@ public class PlaceAllQueue {
         final ServerLevel level;
         final ServerPlayer player;
         final Queue<Queue<PlaceBlocksPayload.Entry>> chunks;
-        final int total;
+        int total;
         int placed;
+        int progressCooldown;
 
         Job(ServerLevel level, ServerPlayer player, Queue<Queue<PlaceBlocksPayload.Entry>> chunks, int total) {
             this.level = level;

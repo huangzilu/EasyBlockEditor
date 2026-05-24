@@ -213,6 +213,23 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
     }
 
+    public void updateRenderHook(ISceneBlockRenderHook renderHook, boolean recompile) {
+        if (renderedBlocksMap.isEmpty()) {
+            return;
+        }
+        var blocks = new ArrayList<>(renderedBlocksMap.keySet());
+        renderedBlocksMap.clear();
+        for (var blockSet : blocks) {
+            renderedBlocksMap.put(blockSet, renderHook);
+        }
+        if (recompile) {
+            dirtySections.addAll(sectionBlocks.keySet());
+            for (var data : sections.values()) {
+                data.compiled = false;
+            }
+        }
+    }
+
     private void updateSectionBlock(BlockPos pos, boolean added) {
         var sp = SectionPos.fromBlock(pos);
         if (added) {
@@ -430,6 +447,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         boolean compileFailed = false;
         try {
             PoseStack poseStack = new PoseStack();
+            ISceneBlockRenderHook renderHook = currentRenderHook();
             for (var pos : blocks) {
                 if (Thread.interrupted()) return;
                 var state = world.getBlockState(pos);
@@ -455,6 +473,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                         randomSource.setSeed(seed);
                         poseStack.pushPose();
                         poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
+                        if (renderHook != null) {
+                            renderHook.applyVertexConsumerWrapper(world, pos, state, wrappers[i], layer, 0);
+                        }
                         brd.renderBatched(state, pos, world, poseStack, wrappers[i], false, randomSource, modelData, layer);
                         poseStack.popPose();
                         wrappers[i].clearOffset();
@@ -468,6 +489,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                     if (layerIndex != null) {
                         var wrapper = wrappers[layerIndex];
                         wrapper.addOffset(pos.getX() - (pos.getX() & 15), pos.getY() - (pos.getY() & 15), pos.getZ() - (pos.getZ() & 15));
+                        if (renderHook != null) {
+                            renderHook.applyVertexConsumerWrapper(world, pos, state, wrapper, fluidLayer, 0);
+                        }
                         brd.renderLiquid(pos, world, wrapper, state, fluidState);
                         wrapper.clearOffset();
                         wrapper.clearColor();
@@ -505,6 +529,13 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
 
         data.compiled = true;
+    }
+
+    private ISceneBlockRenderHook currentRenderHook() {
+        if (renderedBlocksMap.isEmpty()) {
+            return null;
+        }
+        return renderedBlocksMap.values().iterator().next();
     }
 
     private List<SectionPos> selectDirtySectionsForCompile(Vector3f eyePos, Vector3f focusPos, long deadline) {

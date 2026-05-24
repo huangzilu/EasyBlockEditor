@@ -31,7 +31,7 @@ public class EBEServerConfig {
 
         printerBlocksPerTick = builder
                 .comment("Blocks placed per tick by auto printer")
-                .defineInRange("printer_blocks_per_tick", 1, 1, 10);
+                .defineInRange("printer_blocks_per_tick", 8, 1, 64);
 
         maxEditSize = builder
                 .comment("Max single edit region size (blocks per axis)")
