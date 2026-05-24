@@ -218,6 +218,16 @@ public class SettingsUI {
         ).setRange(0.0, 20.0).setWheel(0.25));
 
         performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.sync_load_below_mb").getString(),
+                EBEClientConfig.viewportSynchronousLoadBelowMb::get,
+                v -> {
+                    EBEClientConfig.viewportSynchronousLoadBelowMb.set(v.doubleValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                0.5, true
+        ).setRange(0.0, 1024.0).setWheel(0.25));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.viewport_performance.load_blocks").getString(),
                 EBEClientConfig.viewportLoadBlocksPerFrame::get,
                 v -> {

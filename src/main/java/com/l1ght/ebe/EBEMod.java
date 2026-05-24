@@ -14,6 +14,7 @@ import com.l1ght.ebe.server.ServerSettingsManager;
 import com.l1ght.ebe.server.library.ServerFileLibraryManager;
 import com.l1ght.ebe.server.permission.PermissionManager;
 import com.l1ght.ebe.server.placement.PlaceAllQueue;
+import com.l1ght.ebe.server.placement.PrinterPlacementQueue;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
 import com.l1ght.ebe.server.workgroup.print.WorkgroupPrintSessionManager;
 import net.minecraft.core.registries.Registries;
@@ -108,6 +109,7 @@ public class EBEMod {
         boolean projectionExpired = WorkgroupManager.expireProjections(ServerSettingsManager.get().projectionTimeoutSeconds);
         boolean printTickChanged = WorkgroupPrintSessionManager.tick(event.getServer().overworld().getGameTime());
         PlaceAllQueue.tick();
+        PrinterPlacementQueue.tick();
         var printChangedGroups = WorkgroupPrintSessionManager.consumeChangedGroupsForBroadcast();
 
         if (permissionsChanged || settingsChanged || libraryChanged || workgroupsChanged || projectionExpired || printTickChanged || !printChangedGroups.isEmpty()) {

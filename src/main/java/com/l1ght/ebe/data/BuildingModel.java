@@ -3,9 +3,14 @@ package com.l1ght.ebe.data;
 import com.l1ght.ebe.util.PosKey;
 import net.minecraft.nbt.CompoundTag;
 
+import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class BuildingModel {
+    private static final String BLOCK_STATE_CLASS_NAME = "net.minecraft.world.level.block.state.BlockState";
+    private static final Map<String, Method> BLOCK_STATE_METHOD_CACHE = new ConcurrentHashMap<>();
+
     private final BuildingMetadata metadata;
     private final List<Region> regions = new ArrayList<>();
     private final List<Layer> layers = new ArrayList<>();
@@ -368,30 +373,39 @@ public class BuildingModel {
     public static boolean isAirLike(Object state) {
         if (state == null) return true;
         if (isMinecraftBlockState(state)) {
-            try {
-                return Boolean.TRUE.equals(state.getClass().getMethod("isAir").invoke(state));
-            } catch (ReflectiveOperationException ignored) {
-                return false;
-            }
+            return invokeBlockStateBoolean(state, "isAir", false);
         }
         if (state instanceof String s) return s.isEmpty() || s.equals("minecraft:air") || s.equals("air");
         return false;
     }
 
-    private static boolean isMinecraftBlockState(Object state) {
-        return state != null && "net.minecraft.world.level.block.state.BlockState".equals(state.getClass().getName());
-    }
-
     public static boolean supportsBlockEntity(Object state) {
         if (state == null || isAirLike(state)) return false;
         if (isMinecraftBlockState(state)) {
-            try {
-                return Boolean.TRUE.equals(state.getClass().getMethod("hasBlockEntity").invoke(state));
-            } catch (ReflectiveOperationException ignored) {
-                return false;
-            }
+            return invokeBlockStateBoolean(state, "hasBlockEntity", false);
         }
         return true;
+    }
+
+    private static boolean isMinecraftBlockState(Object state) {
+        return state != null && BLOCK_STATE_CLASS_NAME.equals(state.getClass().getName());
+    }
+
+    private static boolean invokeBlockStateBoolean(Object state, String methodName, boolean fallback) {
+        try {
+            String key = state.getClass().getName() + "#" + methodName;
+            Method method = BLOCK_STATE_METHOD_CACHE.computeIfAbsent(key, ignoredKey -> {
+                try {
+                    return state.getClass().getMethod(methodName);
+                } catch (ReflectiveOperationException ignored) {
+                    return null;
+                }
+            });
+            if (method == null) return fallback;
+            return Boolean.TRUE.equals(method.invoke(state));
+        } catch (ReflectiveOperationException ignored) {
+            return fallback;
+        }
     }
 
     private Region findRegionAt(int wx, int wy, int wz) {

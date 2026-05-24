@@ -1,7 +1,7 @@
 package com.l1ght.ebe.network;
 
 import com.l1ght.ebe.EBEMod;
-import com.l1ght.ebe.server.placement.PrinterPlacementService;
+import com.l1ght.ebe.server.placement.PrinterPlacementQueue;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -90,10 +90,8 @@ public class PrinterPlaceBatchPayload implements CustomPacketPayload {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
             if (!(player.level() instanceof ServerLevel level)) return;
-            for (var entry : payload.entries) {
-                PrinterPlacementService.place(player, level, entry.pos(), entry.stateId(), entry.nbtStr(),
-                        payload.materialSourcePos, payload.requireHeldItem, payload.materialSourceRange);
-            }
+            PrinterPlacementQueue.enqueue(level, player, payload.entries, payload.materialSourcePos,
+                    payload.requireHeldItem, payload.materialSourceRange);
         });
     }
 }

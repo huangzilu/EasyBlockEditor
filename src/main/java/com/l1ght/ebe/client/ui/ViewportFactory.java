@@ -2,6 +2,7 @@ package com.l1ght.ebe.client.ui;
 
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.compat.IrisCompat;
+import com.l1ght.ebe.client.projection.ProjectionLoadProfile;
 import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
 import com.l1ght.ebe.client.renderer.FastTrackedDummyWorld;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
@@ -29,6 +30,7 @@ import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
@@ -67,6 +69,8 @@ public class ViewportFactory {
     private static final int SYNC_COMPUTED_LOAD_BLOCK_LIMIT = 80_000;
     private static final int PROGRESSIVE_LOAD_BLOCKS_PER_TICK = 4096;
     private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
+    private static final int PROGRESSIVE_OUTLINE_SAMPLE_CAP = 768;
+    private static final int PROGRESSIVE_OUTLINE_MOVING_CAP = 320;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -80,6 +84,8 @@ public class ViewportFactory {
     private static int progressiveStatusCooldown = 0;
     private static final List<BlockPos> progressiveLoadedScratch = new ArrayList<>(4096);
     private static boolean progressiveCoreAttached = false;
+    private static List<BlockPos> progressiveOutlineSamples = List.of();
+    private static ProjectionLoadProfile activeLoadProfile;
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -332,6 +338,10 @@ public class ViewportFactory {
             }
         }
 
+        if (isProgressiveLoadActive()) {
+            renderProgressiveOutlineOverlay();
+        }
+
         if (deferredCompileScheduled) {
             framesSinceLastEdit++;
             if (framesSinceLastEdit >= DEFERRED_COMPILE_FRAMES) {
@@ -356,6 +366,19 @@ public class ViewportFactory {
                 irisFinalizeProbeLogged = true;
                 logShaderProbe("after-iris-finalize");
             }
+        }
+    }
+
+    private static void renderProgressiveOutlineOverlay() {
+        if (progressiveOutlineSamples.isEmpty()) return;
+
+        int maxSamples = viewportInteractionFrames > 0 ? PROGRESSIVE_OUTLINE_MOVING_CAP : PROGRESSIVE_OUTLINE_SAMPLE_CAP;
+        int stride = Math.max(1, progressiveOutlineSamples.size() / Math.max(1, maxSamples));
+        int drawn = 0;
+        var poseStack = new PoseStack();
+        for (int i = 0; i < progressiveOutlineSamples.size() && drawn < maxSamples; i += stride) {
+            RenderUtils.renderBlockOverLay(poseStack, progressiveOutlineSamples.get(i), 0.05f, 0.65f, 1.0f, 1.01f);
+            drawn++;
         }
     }
 
@@ -410,11 +433,24 @@ public class ViewportFactory {
         loadFromModel(model, true);
     }
 
+    public static void loadFromModel(BuildingModel model, ProjectionLoadProfile profile) {
+        loadFromModel(model, true, profile);
+    }
+
     public static void loadFromModelProgressive(BuildingModel model) {
         loadFromModelProgressive(model, true);
     }
 
+    public static void loadFromModelProgressive(BuildingModel model, ProjectionLoadProfile profile) {
+        loadFromModelProgressive(model, true, profile);
+    }
+
     public static boolean shouldLoadModelProgressively(BuildingModel model) {
+        return shouldLoadModelProgressively(model, null);
+    }
+
+    public static boolean shouldLoadModelProgressively(BuildingModel model, ProjectionLoadProfile profile) {
+        if (profile != null) return profile.shouldPreferProgressiveViewport();
         if (model == null) return false;
         long volume = 0L;
         for (var region : model.getRegions()) {
@@ -425,16 +461,26 @@ public class ViewportFactory {
     }
 
     public static boolean shouldLoadComputedProgressively(ComputedProjection computed) {
+        return shouldLoadComputedProgressively(computed, null);
+    }
+
+    public static boolean shouldLoadComputedProgressively(ComputedProjection computed, ProjectionLoadProfile profile) {
+        if (profile != null) return profile.shouldPreferProgressiveViewport();
         return computed != null && computed.blockCount() > SYNC_COMPUTED_LOAD_BLOCK_LIMIT;
     }
 
     public static void loadFromModelProgressive(BuildingModel model, boolean autoCamera) {
+        loadFromModelProgressive(model, autoCamera, null);
+    }
+
+    public static void loadFromModelProgressive(BuildingModel model, boolean autoCamera, ProjectionLoadProfile profile) {
         if (currentScene == null) {
             LOG.error("loadFromModelProgressive: currentScene is null");
             return;
         }
 
         cancelProgressiveLoad();
+        activeLoadProfile = profile;
         releaseCachedSectionedRenderer("progressive-load-model");
         currentWorld = newViewportWorld();
         progressiveCoreAttached = false;
@@ -450,15 +496,25 @@ public class ViewportFactory {
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
         progressiveLoad = new ProgressiveModelLoad(model, autoCamera);
+        progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createModelOutlineSamples(model) : List.of();
         progressiveStatusCooldown = 0;
-        LOG.info("Progressive model load started: {} regions, volume={}", model.getRegions().size(), progressiveLoad.totalVolume);
+        LOG.info("Progressive model load started: {} regions, volume={}, profile={}",
+                model.getRegions().size(), progressiveLoad.totalVolume, profile == null ? "none" : profile.risk());
     }
 
     public static void loadFromComputedProgressive(ComputedProjection computed) {
         loadFromComputedProgressive(computed, true);
     }
 
+    public static void loadFromComputedProgressive(ComputedProjection computed, ProjectionLoadProfile profile) {
+        loadFromComputedProgressive(computed, true, profile);
+    }
+
     public static void loadFromComputedProgressive(ComputedProjection computed, boolean autoCamera) {
+        loadFromComputedProgressive(computed, autoCamera, null);
+    }
+
+    public static void loadFromComputedProgressive(ComputedProjection computed, boolean autoCamera, ProjectionLoadProfile profile) {
         if (currentScene == null) {
             LOG.error("loadFromComputedProgressive: currentScene is null");
             return;
@@ -469,6 +525,7 @@ public class ViewportFactory {
         }
 
         cancelProgressiveLoad();
+        activeLoadProfile = profile;
         releaseCachedSectionedRenderer("progressive-load-computed");
         currentWorld = newViewportWorld();
         progressiveCoreAttached = false;
@@ -490,18 +547,25 @@ public class ViewportFactory {
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
         progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera);
+        progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createComputedOutlineSamples(computed) : List.of();
         progressiveStatusCooldown = 0;
-        LOG.info("Computed progressive load started: {} blocks, {} batches, volume={}",
-                computed.blockCount(), computed.getViewportBatches().size(), computed.getTotalVolume());
+        LOG.info("Computed progressive load started: {} blocks, {} batches, volume={}, profile={}",
+                computed.blockCount(), computed.getViewportBatches().size(), computed.getTotalVolume(),
+                profile == null ? "none" : profile.risk());
     }
 
     public static void loadFromModel(BuildingModel model, boolean autoCamera) {
+        loadFromModel(model, autoCamera, null);
+    }
+
+    public static void loadFromModel(BuildingModel model, boolean autoCamera, ProjectionLoadProfile profile) {
         if (currentScene == null) {
             LOG.error("loadFromModel: currentScene is null");
             return;
         }
 
         cancelProgressiveLoad();
+        activeLoadProfile = profile;
         releaseCachedSectionedRenderer("load-model");
         currentWorld = newViewportWorld();
 
@@ -527,7 +591,8 @@ public class ViewportFactory {
 
         hasLoadedModel = true;
         shaderProbeSceneActive = false;
-        LOG.info("Model loaded: {} blocks, autoCamera={}", totalBlocksAdded, autoCamera);
+        LOG.info("Model loaded: {} blocks, autoCamera={}, profile={}",
+                totalBlocksAdded, autoCamera, profile == null ? "none" : profile.risk());
     }
 
     public static void saveCameraState() {
@@ -669,11 +734,78 @@ public class ViewportFactory {
         return progressiveLoad != null || progressiveComputedLoad != null;
     }
 
+    private static List<BlockPos> createModelOutlineSamples(BuildingModel model) {
+        if (model == null || model.getRegions().isEmpty()) return List.of();
+
+        var samples = new LinkedHashMap<Long, BlockPos>();
+        for (var region : model.getRegions()) {
+            int minSectionX = region.getOffsetX() >> 4;
+            int minSectionY = region.getOffsetY() >> 4;
+            int minSectionZ = region.getOffsetZ() >> 4;
+            int maxSectionX = (region.getOffsetX() + Math.max(1, region.getSizeX()) - 1) >> 4;
+            int maxSectionY = (region.getOffsetY() + Math.max(1, region.getSizeY()) - 1) >> 4;
+            int maxSectionZ = (region.getOffsetZ() + Math.max(1, region.getSizeZ()) - 1) >> 4;
+
+            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
+                    for (int sx = minSectionX; sx <= maxSectionX; sx++) {
+                        addSectionOutlineSample(samples, sx, sy, sz);
+                        if (samples.size() >= PROGRESSIVE_OUTLINE_SAMPLE_CAP) {
+                            return List.copyOf(samples.values());
+                        }
+                    }
+                }
+            }
+        }
+        return List.copyOf(samples.values());
+    }
+
+    private static boolean shouldShowProgressiveOutline(ProjectionLoadProfile profile) {
+        return profile != null && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
+    }
+
+    private static List<BlockPos> createComputedOutlineSamples(ComputedProjection computed) {
+        if (computed == null || computed.isEmpty()) return List.of();
+
+        var samples = new LinkedHashMap<Long, BlockPos>();
+        var batches = computed.getViewportBatches();
+        if (!batches.isEmpty()) {
+            for (var batch : batches) {
+                for (var entry : batch.getEntries()) {
+                    addSectionOutlineSample(samples, entry.getPos());
+                    if (samples.size() >= PROGRESSIVE_OUTLINE_SAMPLE_CAP) {
+                        return List.copyOf(samples.values());
+                    }
+                }
+            }
+            return List.copyOf(samples.values());
+        }
+
+        for (var entry : computed.getBlocks()) {
+            addSectionOutlineSample(samples, entry.getPos());
+            if (samples.size() >= PROGRESSIVE_OUTLINE_SAMPLE_CAP) {
+                return List.copyOf(samples.values());
+            }
+        }
+        return List.copyOf(samples.values());
+    }
+
+    private static void addSectionOutlineSample(Map<Long, BlockPos> samples, BlockPos pos) {
+        addSectionOutlineSample(samples, pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+    }
+
+    private static void addSectionOutlineSample(Map<Long, BlockPos> samples, int sectionX, int sectionY, int sectionZ) {
+        long key = SectionPos.asLong(sectionX, sectionY, sectionZ);
+        samples.putIfAbsent(key, new BlockPos((sectionX << 4) + 8, (sectionY << 4) + 8, (sectionZ << 4) + 8));
+    }
+
     private static void cancelProgressiveLoad() {
         progressiveLoad = null;
         progressiveComputedLoad = null;
         progressiveStatusCooldown = 0;
         progressiveCoreAttached = false;
+        progressiveOutlineSamples = List.of();
+        activeLoadProfile = null;
     }
 
     private static void tickProgressiveModelLoad() {
@@ -748,6 +880,7 @@ public class ViewportFactory {
 
         if (load.regionIndex >= regions.size()) {
             progressiveLoad = null;
+            progressiveOutlineSamples = List.of();
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
             if (sectionedRenderer != null) {
                 sectionedRenderer.finishProgressiveLoad();
@@ -768,6 +901,7 @@ public class ViewportFactory {
             }
             EditorUI.updateStatusBar();
             LOG.info("Progressive model load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+            activeLoadProfile = null;
         }
     }
 
@@ -820,6 +954,7 @@ public class ViewportFactory {
 
         if (load.batchIndex >= batches.size()) {
             progressiveComputedLoad = null;
+            progressiveOutlineSamples = List.of();
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
             if (sectionedRenderer != null) {
                 sectionedRenderer.finishProgressiveLoad();
@@ -840,6 +975,7 @@ public class ViewportFactory {
             }
             EditorUI.updateStatusBar();
             LOG.info("Computed progressive load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+            activeLoadProfile = null;
         }
     }
 
@@ -1142,15 +1278,28 @@ public class ViewportFactory {
         } else if ("performance".equals(mode) && moving) {
             budgetMs = Math.min(budgetMs, 0.5D);
         }
+        if (!moving && activeLoadProfile != null && activeLoadProfile.isLargeOrAbove()) {
+            budgetMs = Math.max(budgetMs, activeLoadProfile.steadyLoadBudgetFloorMs());
+        }
         return Math.max(0L, (long) (budgetMs * 1_000_000L));
     }
 
     private static int progressiveLoadBlockLimit() {
         int configured = Math.max(128, EBEClientConfig.viewportLoadBlocksPerFrame.get());
         if (viewportInteractionFrames > 0 && EBEClientConfig.viewportDegradeWhileMoving.get()) {
+            if (activeLoadProfile != null && activeLoadProfile.isLargeOrAbove()) {
+                return activeLoadProfile.movingBlockLimitCeiling(configured);
+            }
             return Math.max(128, configured / 4);
         }
-        return Math.min(PROGRESSIVE_LOAD_BLOCKS_PER_TICK, configured);
+        int limit = configured;
+        if (activeLoadProfile != null && activeLoadProfile.isLargeOrAbove()) {
+            limit = Math.max(limit, activeLoadProfile.steadyBlockLimitFloor());
+        }
+        int ceiling = activeLoadProfile != null && activeLoadProfile.isHugeOrAbove()
+                ? Math.max(PROGRESSIVE_LOAD_BLOCKS_PER_TICK, activeLoadProfile.steadyBlockLimitFloor())
+                : PROGRESSIVE_LOAD_BLOCKS_PER_TICK;
+        return Math.min(ceiling, limit);
     }
 
     private static void updateViewportInteractionState() {
@@ -1323,6 +1472,7 @@ public class ViewportFactory {
     }
 
     public static void clearModel() {
+        cancelProgressiveLoad();
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
         savedYaw = -135;

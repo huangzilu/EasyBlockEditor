@@ -1,5 +1,6 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.client.projection.ProjectionLoadProfile;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
 import com.l1ght.ebe.config.EBEClientConfig;
@@ -17,7 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class EditorSession {
-    private static final long ASYNC_VIEWPORT_COMPUTE_FILE_THRESHOLD_BYTES = 1_500_000L;
+    private static final long BYTES_PER_MEGABYTE = 1024L * 1024L;
 
     private BuildingModel model;
     private Path currentFile;
@@ -100,15 +101,17 @@ public class EditorSession {
             case ".schematic" -> SchematicReaders.readSchematica(file);
             default -> throw new UnsupportedOperationException("Unknown format: " + ext);
         };
-        return new LoadedFile(file, loadedModel);
+        return new LoadedFile(file, loadedModel, null, null);
     }
 
     public static LoadedFile readFileWithComputed(Path file) throws Exception {
         LoadedFile loaded = readFile(file);
         ComputedProjection computed = null;
+        ProjectionLoadProfile profile = null;
         try {
             if (shouldPreferSynchronousViewportLoad(file)) {
-                return new LoadedFile(file, loaded.model(), null);
+                profile = ProjectionLoadProfile.fromModel(file, loaded.model());
+                return new LoadedFile(file, loaded.model(), null, profile);
             }
             String cacheKey = fileComputeKey(file);
             computed = ProjectionComputePlanner.computeAsync(
@@ -120,16 +123,25 @@ public class EditorSession {
                     BlockPos.ZERO,
                     true
             ).join();
+            profile = ProjectionLoadProfile.fromComputed(file, loaded.model(), computed);
         } catch (Throwable t) {
             com.l1ght.ebe.EBEMod.LOGGER.warn("Failed to precompute projection for {}, falling back to legacy viewport load",
                     file.getFileName(), t);
         }
-        return new LoadedFile(file, loaded.model(), computed);
+        if (profile == null) {
+            profile = ProjectionLoadProfile.fromModel(file, loaded.model());
+        }
+        return new LoadedFile(file, loaded.model(), computed, profile);
     }
 
     public static boolean shouldPreferSynchronousViewportLoad(Path file) {
+        double thresholdMb = EBEClientConfig.viewportSynchronousLoadBelowMb.get();
+        if (thresholdMb <= 0.0D) {
+            return true;
+        }
         try {
-            return Files.size(file) <= ASYNC_VIEWPORT_COMPUTE_FILE_THRESHOLD_BYTES;
+            long thresholdBytes = Math.max(1L, Math.round(thresholdMb * BYTES_PER_MEGABYTE));
+            return Files.size(file) <= thresholdBytes;
         } catch (Exception ignored) {
             return false;
         }
@@ -146,9 +158,9 @@ public class EditorSession {
         EditorUI.refreshHistoryList();
     }
 
-    public record LoadedFile(Path file, BuildingModel model, ComputedProjection computed) {
+    public record LoadedFile(Path file, BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
         public LoadedFile(Path file, BuildingModel model) {
-            this(file, model, null);
+            this(file, model, null, null);
         }
     }
 

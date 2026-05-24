@@ -1,7 +1,6 @@
 package com.l1ght.ebe.client.projection
 
 import com.l1ght.ebe.projection.ProjectionData
-import com.l1ght.ebe.server.placement.PlacementStateOrder
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.ChunkPos
 import java.util.LinkedHashMap
@@ -57,16 +56,11 @@ class PrinterCandidatePlanner {
         finiteStates.clear()
         unlimitedCursor = 0
 
-        for (block in projection.blocks) {
-            val immutable = ProjectionData.ProjectionBlock(block.pos().immutable(), block.state(), block.nbt())
-            val key = ChunkPos.asLong(immutable.pos().x shr 4, immutable.pos().z shr 4)
-            buckets.computeIfAbsent(key) { ArrayList() }.add(immutable)
-            allTargets.add(immutable)
+        val index = projection.sparseIndex
+        for ((key, chunkBlocks) in index.blocksByChunk()) {
+            buckets[key] = ArrayList(chunkBlocks)
         }
-        allTargets.sortWith(compareBy<ProjectionData.ProjectionBlock> { PlacementStateOrder.phase(it.state()) }
-            .thenBy { it.pos().y }
-            .thenBy { it.pos().z }
-            .thenBy { it.pos().x })
+        allTargets.addAll(index.phaseOrderedBlocks())
     }
 
     private fun nextUnlimited(

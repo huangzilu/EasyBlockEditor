@@ -6,13 +6,11 @@ import com.l1ght.ebe.data.io.EBEFormatIO;
 import com.l1ght.ebe.network.NetworkLimits;
 import com.l1ght.ebe.network.PlaceBlocksPayload;
 import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.projection.ProjectionSparseIndex;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
-import com.l1ght.ebe.server.placement.PlacementStateOrder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.state.BlockState;
@@ -25,9 +23,7 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -403,38 +399,23 @@ public class ProjectionManager {
 
         if (!player.isCreative()) return;
 
-        var blocks = activeProjection.getBlocks();
-        if (blocks.isEmpty()) return;
+        var sparseIndex = activeProjection.getSparseIndex();
+        if (sparseIndex.isEmpty()) return;
 
-        Map<Integer, Map<Long, List<PlaceBlocksPayload.Entry>>> byPhaseAndChunk = new LinkedHashMap<>();
-        int total = 0;
-        for (var pb : blocks) {
-            int phase = PlacementStateOrder.phase(pb.state());
-            int stateId = Block.getId(pb.state());
-            String nbt = pb.hasNbt() ? pb.nbt().toString() : "";
-            var entry = new PlaceBlocksPayload.Entry(pb.pos(), stateId,
-                    NetworkLimits.bounded(nbt, NetworkLimits.MAX_BLOCK_NBT_CHARS));
-            byPhaseAndChunk.computeIfAbsent(phase, ignored -> new LinkedHashMap<>())
-                    .computeIfAbsent(ChunkPos.asLong(pb.pos().getX() >> 4, pb.pos().getZ() >> 4),
-                    ignored -> new ArrayList<>()).add(entry);
-            total++;
-        }
-
-        setProgress(0, total);
-        for (int phase = PlacementStateOrder.NORMAL; phase <= PlacementStateOrder.FLUID; phase++) {
-            var byChunk = byPhaseAndChunk.get(phase);
-            if (byChunk == null) continue;
+        setProgress(0, sparseIndex.size());
+        for (var byChunk : sparseIndex.entriesByPhaseAndChunk().values()) {
             for (var chunkEntries : byChunk.values()) {
-                sendPlaceAllPackets(chunkEntries);
+                sendPlaceAllPacketsFromSparse(chunkEntries);
             }
         }
     }
 
-    private static void sendPlaceAllPackets(List<PlaceBlocksPayload.Entry> entries) {
+    private static void sendPlaceAllPacketsFromSparse(List<ProjectionSparseIndex.Entry> entries) {
         List<PlaceBlocksPayload.Entry> batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
         int nbtChars = 0;
         for (var entry : entries) {
-            int entryNbtChars = entry.nbt().length();
+            String nbt = NetworkLimits.bounded(entry.nbtString(), NetworkLimits.MAX_BLOCK_NBT_CHARS);
+            int entryNbtChars = nbt.length();
             boolean fullByCount = batch.size() >= NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET;
             boolean fullByNbt = !batch.isEmpty() && nbtChars + entryNbtChars > PLACE_ALL_MAX_NBT_CHARS_PER_PACKET;
             if (fullByCount || fullByNbt) {
@@ -442,7 +423,7 @@ public class ProjectionManager {
                 batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
                 nbtChars = 0;
             }
-            batch.add(entry);
+            batch.add(new PlaceBlocksPayload.Entry(entry.pos(), entry.stateId(), nbt));
             nbtChars += entryNbtChars;
         }
         if (!batch.isEmpty()) {

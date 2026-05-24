@@ -140,6 +140,7 @@ public class EditorUI {
         return thread;
     });
     private static final AtomicInteger FILE_LOAD_SEQUENCE = new AtomicInteger();
+    private static final long LARGE_PROJECTION_WARNING_BYTES = 512L * 1024L;
 
     public static ModularUI createModularUI() {
         ProjectionManager.loadPersistentStateIfNeeded();
@@ -360,16 +361,12 @@ public class EditorUI {
             session.newProject(name);
             ViewportFactory.clearModel();
         }));
-        root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, file -> {
-            beginLoadFile(file);
-        }));
+        root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, EditorUI::onFileSelected));
         root.child("ebe.editor.save", () -> saveCurrentProject());
         root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             saveProjectAs(name);
         }));
-        root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, file -> {
-            beginLoadFile(file);
-        }));
+        root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, EditorUI::onFileSelected));
         root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
             saveProjectAs(name);
         }));
@@ -451,6 +448,36 @@ public class EditorUI {
         return root;
     }
 
+    private static void requestLoadFile(Path file) {
+        if (file == null) return;
+        long fileSize = fileSizeOrUnknown(file);
+        if (rootElement != null && fileSize >= LARGE_PROJECTION_WARNING_BYTES) {
+            EditorDialogs.largeProjectionWarningDialog(
+                    rootElement,
+                    file.getFileName().toString(),
+                    formatFileSize(fileSize),
+                    () -> beginLoadFile(file));
+            return;
+        }
+        beginLoadFile(file);
+    }
+
+    private static long fileSizeOrUnknown(Path file) {
+        try {
+            return Files.size(file);
+        } catch (Exception e) {
+            EBEMod.LOGGER.debug("Failed to inspect projection file size for {}", file, e);
+            return -1L;
+        }
+    }
+
+    private static String formatFileSize(long bytes) {
+        if (bytes < 1024L * 1024L) {
+            return Math.max(1L, (bytes + 1023L) / 1024L) + " KB";
+        }
+        return String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024D * 1024D));
+    }
+
     private static void beginLoadFile(Path file) {
         int sequence = FILE_LOAD_SEQUENCE.incrementAndGet();
         setStatus(Component.translatable("ebe.editor.loading.reading", file.getFileName().toString()));
@@ -468,19 +495,28 @@ public class EditorUI {
                 return;
             }
             session.applyLoaded(loaded);
-            setStatus(Component.translatable("ebe.editor.loading.viewport", loaded.file().getFileName().toString()));
-            boolean preferSyncViewport = EditorSession.shouldPreferSynchronousViewportLoad(loaded.file());
+            if (loaded.profile() != null && loaded.profile().isLargeOrAbove()) {
+                setStatus(Component.translatable("ebe.editor.loading.viewport_profile",
+                        loaded.file().getFileName().toString(),
+                        loaded.profile().nonAirBlocks(),
+                        loaded.profile().chunkColumnCount(),
+                        Component.translatable(loaded.profile().riskKey())));
+            } else {
+                setStatus(Component.translatable("ebe.editor.loading.viewport", loaded.file().getFileName().toString()));
+            }
+            boolean preferSyncViewport = EditorSession.shouldPreferSynchronousViewportLoad(loaded.file())
+                    && (loaded.profile() == null || !loaded.profile().shouldPreferProgressiveViewport());
             if (loaded.computed() != null) {
-                if (!preferSyncViewport && ViewportFactory.shouldLoadComputedProgressively(loaded.computed())) {
-                    ViewportFactory.loadFromComputedProgressive(loaded.computed());
+                if (!preferSyncViewport && ViewportFactory.shouldLoadComputedProgressively(loaded.computed(), loaded.profile())) {
+                    ViewportFactory.loadFromComputedProgressive(loaded.computed(), loaded.profile());
                 } else {
-                    ViewportFactory.loadFromModel(session.getModel());
+                    ViewportFactory.loadFromModel(session.getModel(), loaded.profile());
                 }
             } else {
-                if (!preferSyncViewport && ViewportFactory.shouldLoadModelProgressively(session.getModel())) {
-                    ViewportFactory.loadFromModelProgressive(session.getModel());
+                if (!preferSyncViewport && ViewportFactory.shouldLoadModelProgressively(session.getModel(), loaded.profile())) {
+                    ViewportFactory.loadFromModelProgressive(session.getModel(), loaded.profile());
                 } else {
-                    ViewportFactory.loadFromModel(session.getModel());
+                    ViewportFactory.loadFromModel(session.getModel(), loaded.profile());
                 }
             }
         }));
@@ -3890,7 +3926,7 @@ public class EditorUI {
         }
         refreshFileList();
         if (firstImported != null) {
-            beginLoadFile(firstImported);
+            onFileSelected(firstImported);
         }
     }
 
@@ -3945,6 +3981,9 @@ public class EditorUI {
     private static Component buildFileThumbnailText(Path file) {
         try {
             long size = Files.size(file);
+            if (size >= LARGE_PROJECTION_WARNING_BYTES) {
+                return Component.translatable("ebe.editor.files.thumbnail_large", fileTypeName(file), Math.max(1, size / 1024));
+            }
             return Component.translatable("ebe.editor.files.thumbnail", fileTypeName(file), Math.max(1, size / 1024));
         } catch (Exception ignored) {
             return fileTypeName(file);
@@ -4074,7 +4113,7 @@ public class EditorUI {
     }
 
     private static void onFileSelected(Path file) {
-        beginLoadFile(file);
+        requestLoadFile(file);
     }
 
     private static Button buildCollapseButton(boolean isLeft) {

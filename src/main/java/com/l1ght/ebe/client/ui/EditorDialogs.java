@@ -91,4 +91,49 @@ public class EditorDialogs {
         dialog.show(parent);
         return dialog;
     }
+
+    public static Dialog largeProjectionWarningDialog(UIElement parent, String filename, String sizeText, Runnable onConfirm) {
+        var dialog = new Dialog();
+        dialog.setTitle(Component.translatable("ebe.editor.large_projection.title").getString());
+        dialog.overlay.layout(l -> l.width(460));
+
+        var content = new UIElement();
+        content.layout(l -> l.flexDirection(FlexDirection.COLUMN).width(430));
+
+        var headline = new Label();
+        headline.setText(Component.translatable("ebe.editor.large_projection.headline", filename, sizeText));
+        headline.layout(l -> l.width(420));
+        headline.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(10).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(headline);
+
+        content.addChild(largeProjectionLine("ebe.editor.large_projection.body.performance"));
+        content.addChild(largeProjectionLine("ebe.editor.large_projection.body.wait"));
+        content.addChild(largeProjectionLine("ebe.editor.large_projection.body.warning"));
+        content.addChild(largeProjectionLine("ebe.editor.large_projection.body.tip"));
+        dialog.addContent(content);
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> {
+                    onConfirm.run();
+                    dialog.close();
+                })
+                .setText(Component.translatable("ebe.editor.large_projection.continue")));
+
+        dialog.addButton(new Button()
+                .setOnClick(e -> dialog.close())
+                .setText(Component.translatable("ebe.history.dialog.cancel")));
+
+        dialog.show(parent);
+        return dialog;
+    }
+
+    private static Label largeProjectionLine(String translationKey) {
+        var label = new Label();
+        label.setText(Component.translatable(translationKey));
+        label.layout(l -> l.width(420).paddingTop(4));
+        label.textStyle(ts -> ts.textColor(0xFFE8E8E8).fontSize(9).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        return label;
+    }
 }

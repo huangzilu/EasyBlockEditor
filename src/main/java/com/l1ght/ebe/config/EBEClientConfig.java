@@ -25,6 +25,7 @@ public class EBEClientConfig {
     public static final ModConfigSpec.DoubleValue viewportMovingCompileBudgetMs;
     public static final ModConfigSpec.DoubleValue viewportLoadBudgetMs;
     public static final ModConfigSpec.DoubleValue viewportMovingLoadBudgetMs;
+    public static final ModConfigSpec.DoubleValue viewportSynchronousLoadBelowMb;
     public static final ModConfigSpec.IntValue viewportLoadBlocksPerFrame;
     public static final ModConfigSpec.IntValue viewportFallbackBlocks;
     public static final ModConfigSpec.IntValue viewportMovingFallbackBlocks;
@@ -93,6 +94,9 @@ public class EBEClientConfig {
         viewportMovingLoadBudgetMs = builder
                 .comment("Milliseconds of viewport block loading allowed per frame while the camera is moving")
                 .defineInRange("moving_load_budget_ms", 0.75, 0.0, 20.0);
+        viewportSynchronousLoadBelowMb = builder
+                .comment("Use synchronous viewport loading for projection files at or below this size in MB. 0 = always use synchronous loading.")
+                .defineInRange("sync_load_below_mb", 0.5, 0.0, 1024.0);
         viewportLoadBlocksPerFrame = builder
                 .comment("Maximum blocks inserted into the editor viewport per frame")
                 .defineInRange("load_blocks_per_frame", 2048, 128, 16384);

@@ -125,9 +125,15 @@ object ProjectionComputePlanner {
             maxZ = origin.z
         }
 
+        val fit = cameraFit(minX, minY, minZ, maxX, maxY, maxZ)
         val batches = if (includeViewportPlan) {
             viewportEntries
-                .sortedWith(compareBy<ViewportEntry> { it.pos.y }.thenBy { it.pos.z shr 4 }.thenBy { it.pos.x shr 4 })
+                .sortedWith(
+                    compareBy<ViewportEntry> { viewportPriorityDistance(it, fit) }
+                        .thenBy { it.pos.y }
+                        .thenBy { it.pos.z shr 4 }
+                        .thenBy { it.pos.x shr 4 }
+                )
                 .chunked(VIEWPORT_BATCH_SIZE)
                 .map { ViewportBatch(it) }
         } else {
@@ -149,7 +155,7 @@ object ProjectionComputePlanner {
             maxY = maxY,
             maxZ = maxZ,
             totalVolume = totalVolume.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1),
-            cameraFit = cameraFit(minX, minY, minZ, maxX, maxY, maxZ)
+            cameraFit = fit
         )
     }
 
@@ -167,6 +173,19 @@ object ProjectionComputePlanner {
         includeViewportPlan: Boolean
     ): String {
         return "$cacheKey|${origin.asLong()}|${rotation.name}|${mirror.name}|${centerPoint.asLong()}|$includeViewportPlan"
+    }
+
+    private fun viewportPriorityDistance(entry: ViewportEntry, fit: CameraFit): Long {
+        val sectionX = entry.pos.x shr 4
+        val sectionY = entry.pos.y shr 4
+        val sectionZ = entry.pos.z shr 4
+        val centerSectionX = fit.centerX.toInt() shr 4
+        val centerSectionY = fit.centerY.toInt() shr 4
+        val centerSectionZ = fit.centerZ.toInt() shr 4
+        val dx = (sectionX - centerSectionX).toLong()
+        val dy = (sectionY - centerSectionY).toLong()
+        val dz = (sectionZ - centerSectionZ).toLong()
+        return dx * dx + dy * dy + dz * dz
     }
 
     private fun rotatePos(pos: BlockPos, rotation: Rotation): BlockPos {

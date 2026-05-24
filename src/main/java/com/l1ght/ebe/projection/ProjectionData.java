@@ -21,6 +21,7 @@ public class ProjectionData {
     private Rotation rotation = Rotation.NONE;
     private Mirror mirror = Mirror.NONE;
     private List<ProjectionBlock> blocks;
+    private ProjectionSparseIndex sparseIndex = ProjectionSparseIndex.empty();
     private int minX, minY, minZ, maxX, maxY, maxZ;
     private int renderVersion = 0;
     private int meshVersion = 0;
@@ -62,6 +63,7 @@ public class ProjectionData {
         for (var entry : computed.getBlocks()) {
             blocks.add(new ProjectionBlock(entry.getPos(), entry.getState(), entry.getNbt()));
         }
+        sparseIndex = ProjectionSparseIndex.fromBlocks(blocks);
         minX = computed.getMinX();
         minY = computed.getMinY();
         minZ = computed.getMinZ();
@@ -162,6 +164,7 @@ public class ProjectionData {
     public BuildingModel getModel() { return model; }
     public BlockPos getOrigin() { return origin; }
     public List<ProjectionBlock> getBlocks() { return blocks; }
+    public ProjectionSparseIndex getSparseIndex() { return sparseIndex; }
     public int getBlockCount() { return blocks.size(); }
     public int getMinX() { return minX; }
     public int getMinY() { return minY; }
