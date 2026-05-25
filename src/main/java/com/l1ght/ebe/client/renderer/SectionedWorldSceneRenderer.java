@@ -772,7 +772,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         ProjectionLodPyramid.LodLevel level = chooseViewportLodLevel(cameraMoving);
         if (level == null || level.isEmpty()) return;
 
-        int maxBoxes = cameraMoving ? 3072 : 8192;
+        int maxBoxes = lodBoxBudget(cameraMoving);
         var boxes = level.boxes();
         int stride = Math.max(1, boxes.size() / Math.max(1, maxBoxes));
 
@@ -789,6 +789,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (int i = 0; i < boxes.size() && drawn < maxBoxes; i += stride) {
             var box = boxes.get(i);
             if (renderDistance > 0 && boxDistanceSqr(box, eyePos) > (double) renderDistance * renderDistance) {
+                continue;
+            }
+            if (isLodBoxCoveredByCompiledSections(box)) {
                 continue;
             }
             addLodBox(buffer, box);
@@ -808,6 +811,39 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (levels == null || levels.isEmpty()) return null;
         if (cameraMoving || levels.size() == 1) return levels.get(0);
         return levels.get(Math.min(1, levels.size() - 1));
+    }
+
+    private int lodBoxBudget(boolean cameraMoving) {
+        String mode = performanceMode();
+        if (cameraMoving) {
+            if ("performance".equals(mode)) return 1024;
+            if ("quality".equals(mode)) return 4096;
+            return 2048;
+        }
+        if ("performance".equals(mode)) return 4096;
+        if ("quality".equals(mode)) return 12288;
+        return 8192;
+    }
+
+    private boolean isLodBoxCoveredByCompiledSections(ProjectionLodPyramid.LodBox box) {
+        int minSectionX = Math.floorDiv(box.minX(), SECTION_SIZE);
+        int minSectionY = Math.floorDiv(box.minY(), SECTION_SIZE);
+        int minSectionZ = Math.floorDiv(box.minZ(), SECTION_SIZE);
+        int maxSectionX = Math.floorDiv(Math.max(box.minX(), box.maxX() - 1), SECTION_SIZE);
+        int maxSectionY = Math.floorDiv(Math.max(box.minY(), box.maxY() - 1), SECTION_SIZE);
+        int maxSectionZ = Math.floorDiv(Math.max(box.minZ(), box.maxZ() - 1), SECTION_SIZE);
+
+        for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+            for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
+                for (int sx = minSectionX; sx <= maxSectionX; sx++) {
+                    var data = sections.get(new SectionPos(sx, sy, sz));
+                    if (data == null || !data.compiled) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     private double boxDistanceSqr(ProjectionLodPyramid.LodBox box, Vector3f eyePos) {

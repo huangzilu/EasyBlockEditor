@@ -79,9 +79,10 @@ public class ViewportFactory {
     private static final long PROGRESSIVE_LOAD_NANOS_PER_TICK = 4_000_000L;
     private static final int PROGRESSIVE_OUTLINE_SAMPLE_CAP = 768;
     private static final int PROGRESSIVE_OUTLINE_MOVING_CAP = 320;
-    private static final int HUGE_LOD_SAMPLE_CAP = 220_000;
-    private static final int EXTREME_LOD_SAMPLE_CAP = 120_000;
-    private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 260_000;
+    private static final int HUGE_LOD_SAMPLE_CAP = 120_000;
+    private static final int EXTREME_LOD_SAMPLE_CAP = 60_000;
+    private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 120_000;
+    private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 60_000;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -142,14 +143,21 @@ public class ViewportFactory {
     private static class ProgressiveComputedLoad {
         final ComputedProjection computed;
         final boolean autoCamera;
+        final int maxExactBlocks;
         int batchIndex;
         int entryIndex;
         int visited;
         int added;
+        boolean exactCapped;
 
-        ProgressiveComputedLoad(ComputedProjection computed, boolean autoCamera) {
+        ProgressiveComputedLoad(ComputedProjection computed, boolean autoCamera, ProjectionLoadProfile profile) {
             this.computed = computed;
             this.autoCamera = autoCamera;
+            this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
+        }
+
+        boolean hasExactCap() {
+            return maxExactBlocks > 0;
         }
     }
 
@@ -572,7 +580,7 @@ public class ViewportFactory {
 
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
-        progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera);
+        progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera, profile);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createComputedOutlineSamples(computed) : List.of();
         startViewportLodBuild(null, computed, profile);
         progressiveStatusCooldown = 0;
@@ -861,10 +869,18 @@ public class ViewportFactory {
     }
 
     private static int progressiveExactViewportBlockLimit(ProjectionLoadProfile profile) {
-        if (profile == null || profile.risk() != ProjectionLoadProfile.Risk.EXTREME) {
+        if (profile == null) {
             return 0;
         }
-        return EXTREME_EXACT_VIEWPORT_BLOCK_CAP;
+        int configuredCap = Math.max(0, EBEClientConfig.viewportMegaExactBlockCap.get());
+        if (configuredCap > 0 && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()) {
+            return configuredCap;
+        }
+        return switch (profile.risk()) {
+            case EXTREME -> EXTREME_EXACT_VIEWPORT_BLOCK_CAP;
+            case HUGE -> HUGE_EXACT_VIEWPORT_BLOCK_CAP;
+            default -> 0;
+        };
     }
 
     private static int viewportLodSampleCap(ProjectionLoadProfile profile) {
@@ -1138,7 +1154,9 @@ public class ViewportFactory {
             currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
             hasLoadedModel = true;
             shaderProbeSceneActive = false;
-            if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
+            if (activeLoadProfile != null && activeLoadProfile.isHugeOrAbove()) {
+                EditorUI.markMaterialListStale();
+            } else if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
                 EditorUI.refreshMaterialList();
             } else {
                 EditorUI.markMaterialListStale();
@@ -1172,6 +1190,10 @@ public class ViewportFactory {
         while (load.batchIndex < batches.size()
                 && blocksThisTick < progressiveLoadBlockLimit()
                 && System.nanoTime() < deadline) {
+            if (load.hasExactCap() && load.added >= load.maxExactBlocks) {
+                load.exactCapped = true;
+                break;
+            }
             var batch = batches.get(load.batchIndex);
             var entries = batch.getEntries();
             if (load.entryIndex >= entries.size()) {
@@ -1204,11 +1226,13 @@ public class ViewportFactory {
                     "ebe.editor.loading.progress", percent, load.added));
         }
 
-        if (load.batchIndex >= batches.size()) {
+        if (load.exactCapped || load.batchIndex >= batches.size()) {
             progressiveComputedLoad = null;
             int entitiesAdded = EditorUI.getSession() == null ? 0 : addModelEntitiesToViewportWorld(EditorUI.getSession().getModel());
-            progressiveOutlineSamples = List.of();
-            clearViewportLod();
+            if (!load.exactCapped) {
+                progressiveOutlineSamples = List.of();
+                clearViewportLod();
+            }
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
             if (sectionedRenderer != null) {
                 sectionedRenderer.finishProgressiveLoad();
@@ -1222,14 +1246,23 @@ public class ViewportFactory {
             currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
             hasLoadedModel = true;
             shaderProbeSceneActive = false;
-            if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
+            if (activeLoadProfile != null && activeLoadProfile.isHugeOrAbove()) {
+                EditorUI.markMaterialListStale();
+            } else if (load.added <= AUTO_MATERIAL_REFRESH_BLOCK_LIMIT) {
                 EditorUI.refreshMaterialList();
             } else {
                 EditorUI.markMaterialListStale();
             }
             EditorUI.updateStatusBar();
-            LOG.info("Computed progressive load finished: {} blocks, {} entities, autoCamera={}",
-                    load.added, entitiesAdded, load.autoCamera);
+            if (load.exactCapped) {
+                EditorUI.setStatus(net.minecraft.network.chat.Component.translatable(
+                        "ebe.editor.loading.preview_capped", load.added));
+                LOG.info("Computed progressive load capped at {} exact viewport blocks; LOD remains active for the full projection",
+                        load.added);
+            } else {
+                LOG.info("Computed progressive load finished: {} blocks, {} entities, autoCamera={}",
+                        load.added, entitiesAdded, load.autoCamera);
+            }
             activeLoadProfile = null;
         }
     }

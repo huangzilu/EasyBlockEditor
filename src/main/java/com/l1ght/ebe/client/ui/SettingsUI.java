@@ -228,6 +228,16 @@ public class SettingsUI {
         ).setRange(0.0, 1024.0).setWheel(0.25));
 
         performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.mega_exact_block_cap").getString(),
+                EBEClientConfig.viewportMegaExactBlockCap::get,
+                v -> {
+                    EBEClientConfig.viewportMegaExactBlockCap.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                },
+                0, false
+        ).setRange(0, 1000000).setWheel(10000));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
                 Component.translatable("ebe.settings.viewport_performance.load_blocks").getString(),
                 EBEClientConfig.viewportLoadBlocksPerFrame::get,
                 v -> {

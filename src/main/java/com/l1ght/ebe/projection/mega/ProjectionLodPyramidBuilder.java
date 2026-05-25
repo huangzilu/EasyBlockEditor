@@ -1,12 +1,15 @@
 package com.l1ght.ebe.projection.mega;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.material.MapColor;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public final class ProjectionLodPyramidBuilder {
-    private static final int[] DEFAULT_CELL_SIZES = {16, 8, 4};
+    private static final int[] DEFAULT_CELL_SIZES = {32, 16, 8, 4};
 
     private ProjectionLodPyramidBuilder() {
     }
@@ -45,7 +48,7 @@ public final class ProjectionLodPyramidBuilder {
 
         var mesherCells = new ArrayList<GreedyLodMesher.Cell>(cells.size());
         for (var accumulator : cells.values()) {
-            mesherCells.add(accumulator.toCell(cellVolume));
+            mesherCells.add(accumulator.toCell(cellVolume, store));
         }
         var boxes = GreedyLodMesher.mesh(mesherCells, cellSize);
         return new ProjectionLodPyramid.LodLevel(cellSize, boxes);
@@ -72,7 +75,7 @@ public final class ProjectionLodPyramidBuilder {
             total++;
         }
 
-        private GreedyLodMesher.Cell toCell(int cellVolume) {
+        private GreedyLodMesher.Cell toCell(int cellVolume, ProjectionSparseStore store) {
             int dominantState = 0;
             int dominantCount = -1;
             for (var entry : stateCounts.entrySet()) {
@@ -82,8 +85,19 @@ public final class ProjectionLodPyramidBuilder {
                 }
             }
             float density = Math.min(1.0F, total / (float) cellVolume);
-            return new GreedyLodMesher.Cell(cellX, cellY, cellZ, dominantState, total, density);
+            return new GreedyLodMesher.Cell(cellX, cellY, cellZ, dominantState,
+                    visualGroup(store.stateById(dominantState)), total, density);
         }
+    }
+
+    private static int visualGroup(net.minecraft.world.level.block.state.BlockState state) {
+        if (state == null) return 0;
+        try {
+            MapColor color = state.getMapColor(null, BlockPos.ZERO);
+            if (color != null) return color.id;
+        } catch (Exception ignored) {
+        }
+        return Math.max(0, net.minecraft.core.registries.BuiltInRegistries.BLOCK.getId(state.getBlock()));
     }
 
 }
