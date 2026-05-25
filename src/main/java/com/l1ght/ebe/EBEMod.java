@@ -1,9 +1,8 @@
 package com.l1ght.ebe;
 
 import com.l1ght.ebe.command.EBECommands;
-import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.clientbridge.EBEClientBridge;
 import com.l1ght.ebe.config.EBEServerConfig;
-import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.item.ArchitectToolboxItem;
 import com.l1ght.ebe.item.RemoteItem;
 import com.l1ght.ebe.network.EBENetwork;
@@ -69,7 +68,7 @@ public class EBEMod {
         ITEMS.register(modEventBus);
         CREATIVE_MODE_TABS.register(modEventBus);
 
-        EBEClientConfig.register(modContainer);
+        EBEClientBridge.registerClientConfig(modContainer);
         EBEServerConfig.register(modContainer);
 
         EBENetwork.register(modEventBus);
@@ -80,15 +79,7 @@ public class EBEMod {
     }
 
     private void onLoadComplete(FMLLoadCompleteEvent event) {
-        event.enqueueWork(() -> {
-            try {
-                var dir = EBEClientConfig.schematicDir.get();
-                new FileManager(dir).ensureDir();
-                LOGGER.info("EasyBlockEditor schematic directory ready: {}", dir);
-            } catch (Exception e) {
-                LOGGER.error("Failed to create schematic directory", e);
-            }
-        });
+        event.enqueueWork(EBEClientBridge::ensureSchematicDir);
     }
 
     @net.neoforged.bus.api.SubscribeEvent
