@@ -12,6 +12,7 @@ import com.l1ght.ebe.network.WorkgroupSyncPayload;
 import com.l1ght.ebe.server.ServerSettingsManager;
 import com.l1ght.ebe.server.library.ServerFileLibraryManager;
 import com.l1ght.ebe.server.permission.PermissionManager;
+import com.l1ght.ebe.server.placement.EntityPlacementQueue;
 import com.l1ght.ebe.server.placement.PlaceAllQueue;
 import com.l1ght.ebe.server.placement.PrinterPlacementQueue;
 import com.l1ght.ebe.server.workgroup.WorkgroupManager;
@@ -101,6 +102,7 @@ public class EBEMod {
         boolean printTickChanged = WorkgroupPrintSessionManager.tick(event.getServer().overworld().getGameTime());
         PlaceAllQueue.tick();
         PrinterPlacementQueue.tick();
+        EntityPlacementQueue.tick();
         var printChangedGroups = WorkgroupPrintSessionManager.consumeChangedGroupsForBroadcast();
 
         if (permissionsChanged || settingsChanged || libraryChanged || workgroupsChanged || projectionExpired || printTickChanged || !printChangedGroups.isEmpty()) {

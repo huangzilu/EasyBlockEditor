@@ -5,6 +5,7 @@ import com.l1ght.ebe.data.Region;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.DoubleTag;
 import net.minecraft.nbt.IntTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
@@ -68,7 +69,7 @@ public class SchematicWriters {
         }
         root.put("palette", palette);
         root.put("blocks", blocks);
-        root.put("entities", copyEntityList(model));
+        root.put("entities", toVanillaStructureEntities(model, bounds));
         writeCompressed(root, file);
     }
 
@@ -144,8 +145,10 @@ public class SchematicWriters {
         root.put("Metadata", metadata);
 
         CompoundTag regions = new CompoundTag();
+        boolean wroteRegionEntities = false;
         for (Region region : model.getRegions()) {
-            regions.put(region.getName(), toLitematicRegion(region));
+            regions.put(region.getName(), toLitematicRegion(region, wroteRegionEntities ? List.of() : model.getEntities()));
+            wroteRegionEntities = true;
         }
         root.put("Regions", regions);
         root.put("Entities", copyEntityList(model));
@@ -219,7 +222,7 @@ public class SchematicWriters {
         writeCompressed(root, file);
     }
 
-    private static CompoundTag toLitematicRegion(Region region) {
+    private static CompoundTag toLitematicRegion(Region region, List<CompoundTag> entities) {
         CompoundTag tag = new CompoundTag();
         tag.put("Position", vecTag(region.getOffsetX(), region.getOffsetY(), region.getOffsetZ()));
         tag.put("Size", vecTag(region.getSizeX(), region.getSizeY(), region.getSizeZ()));
@@ -260,13 +263,38 @@ public class SchematicWriters {
             tileEntities.add(be);
         }
         tag.put("TileEntities", tileEntities);
-        tag.put("Entities", new ListTag());
+        tag.put("Entities", copyEntityList(entities));
         return tag;
     }
 
     private static ListTag copyEntityList(BuildingModel model) {
+        return copyEntityList(model.getEntities());
+    }
+
+    private static ListTag copyEntityList(List<CompoundTag> entities) {
         ListTag list = new ListTag();
-        for (CompoundTag entity : model.getEntities()) list.add(entity.copy());
+        for (CompoundTag entity : entities) list.add(entity.copy());
+        return list;
+    }
+
+    private static ListTag toVanillaStructureEntities(BuildingModel model, Bounds bounds) {
+        ListTag list = new ListTag();
+        for (CompoundTag entity : model.getEntities()) {
+            if (entity == null || !entity.contains("Pos", 9)) continue;
+            ListTag pos = entity.getList("Pos", 6);
+            if (pos.size() < 3) continue;
+            double relX = pos.getDouble(0) - bounds.minX();
+            double relY = pos.getDouble(1) - bounds.minY();
+            double relZ = pos.getDouble(2) - bounds.minZ();
+
+            CompoundTag wrapper = new CompoundTag();
+            wrapper.put("pos", doubleList(relX, relY, relZ));
+            wrapper.put("blockPos", intList((int) Math.floor(relX), (int) Math.floor(relY), (int) Math.floor(relZ)));
+            CompoundTag nbt = entity.copy();
+            nbt.put("Pos", doubleList(relX, relY, relZ));
+            wrapper.put("nbt", nbt);
+            list.add(wrapper);
+        }
         return list;
     }
 
@@ -275,6 +303,14 @@ public class SchematicWriters {
         list.add(IntTag.valueOf(x));
         list.add(IntTag.valueOf(y));
         list.add(IntTag.valueOf(z));
+        return list;
+    }
+
+    private static ListTag doubleList(double x, double y, double z) {
+        ListTag list = new ListTag();
+        list.add(DoubleTag.valueOf(x));
+        list.add(DoubleTag.valueOf(y));
+        list.add(DoubleTag.valueOf(z));
         return list;
     }
 

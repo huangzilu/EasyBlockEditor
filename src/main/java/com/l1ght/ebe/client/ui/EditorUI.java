@@ -10,11 +10,16 @@ import com.l1ght.ebe.client.keybind.KeyRecordingManager;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.io.FileManager;
+import com.l1ght.ebe.data.io.SchematicWriters;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
 import com.l1ght.ebe.network.WorkgroupActionPayload;
 import com.l1ght.ebe.client.projection.PrinterController;
 import com.l1ght.ebe.projection.PrinterMode;
+import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.l1ght.ebe.client.projection.ProjectionManager;
+import com.l1ght.ebe.client.renderer.FastTrackedDummyWorld;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
+import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.gui.texture.ItemStackTexture;
 import com.lowdragmc.lowdraglib2.gui.texture.SpriteTexture;
 import com.l1ght.ebe.data.BuildingModel;
@@ -27,6 +32,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
@@ -41,14 +47,31 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
+import net.minecraft.world.entity.AreaEffectCloud;
+import net.minecraft.world.entity.Display;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.Marker;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.decoration.ArmorStand;
+import net.minecraft.world.entity.decoration.HangingEntity;
+import net.minecraft.world.entity.item.FallingBlockEntity;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.entity.vehicle.VehicleEntity;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.phys.AABB;
 import org.lwjgl.glfw.GLFW;
 
 import net.minecraft.world.level.block.state.BlockState;
@@ -61,11 +84,14 @@ import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntConsumer;
 
 public class EditorUI {
 
@@ -108,11 +134,31 @@ public class EditorUI {
     private static boolean keybindHintsVisible = true;
     private static UIElement replacePanel;
     private static boolean replacePanelVisible = false;
+    private static float replacePanelLeft = 40f;
+    private static float replacePanelTop = 40f;
     private static UIElement fillPanel;
     private static boolean fillPanelVisible = false;
+    private static float fillPanelLeft = 40f;
+    private static float fillPanelTop = 40f;
 
     private static UIElement draggingPanel = null;
     private static float panelDragOffsetX = 0, panelDragOffsetY = 0;
+    private static float panelDragStartX = 0, panelDragStartY = 0;
+    private static float panelDragOriginX = 0, panelDragOriginY = 0;
+
+    private static UIElement convertProjectionPanel;
+    private static boolean convertProjectionPanelVisible = false;
+    private static float convertProjectionPanelLeft = 56f;
+    private static float convertProjectionPanelTop = 36f;
+    private static int convertProjectionTab = 0;
+    private static BuildingModel convertProjectionModel;
+    private static String convertProjectionName = "converted_projection";
+    private static String convertProjectionFormat = ".ebe";
+    private static int convertAx = 0, convertAy = 0, convertAz = 0;
+    private static int convertBx = 0, convertBy = 0, convertBz = 0;
+    private static int convertPreviewYaw = -135;
+    private static int convertPreviewPitch = 25;
+    private static final int CONVERT_PREVIEW_BLOCK_LIMIT = 4096;
 
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
@@ -186,9 +232,10 @@ public class EditorUI {
 
         rootElement.addEventListener(UIEvents.MOUSE_MOVE, e -> {
             if (draggingPanel != null) {
-                float newX = e.x - panelDragOffsetX;
-                float newY = e.y - panelDragOffsetY;
+                float newX = panelDragOriginX + (e.x - panelDragStartX);
+                float newY = panelDragOriginY + (e.y - panelDragStartY);
                 draggingPanel.layout(l -> l.left(newX).top(newY));
+                rememberPanelDragPosition(draggingPanel, newX, newY);
             }
             if (toolbarDragging) {
                 float dx = e.x - toolbarDragStartX;
@@ -358,18 +405,33 @@ public class EditorUI {
     private static MenuTreeNode buildFileMenu() {
         var root = new MenuTreeNode("file");
         root.child("ebe.editor.new_project", () -> EditorDialogs.newProjectDialog(rootElement, name -> {
-            session.newProject(name);
-            ViewportFactory.clearModel();
+            try {
+                session.newProject(name);
+                ViewportFactory.loadFromModel(session.getModel(), false);
+                refreshFileList();
+                refreshMaterialList();
+                updateStatusBar();
+                setStatus(Component.translatable("ebe.editor.status.new_project_created", session.getCurrentName()));
+            } catch (Exception e) {
+                EBEMod.LOGGER.warn("Failed to create new EBE project {}", name, e);
+                setStatus(Component.translatable("ebe.error.save_failed"));
+            }
         }));
         root.child("ebe.editor.open", () -> ImportDialog.showOpen(rootElement, EditorUI::onFileSelected));
         root.child("ebe.editor.save", () -> saveCurrentProject());
-        root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            saveProjectAs(name);
-        }));
+        root.child("ebe.editor.save_as", () -> EditorDialogs.saveAsFormatDialog(
+                rootElement,
+                "ebe.editor.save_as",
+                session.getCurrentName(),
+                defaultFormatForName(session.getCurrentName()),
+                EditorUI::saveProjectAs));
         root.child("ebe.editor.import", () -> ImportDialog.showImport(rootElement, EditorUI::onFileSelected));
-        root.child("ebe.editor.export", () -> EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
-            saveProjectAs(name);
-        }));
+        root.child("ebe.editor.export", () -> EditorDialogs.saveAsFormatDialog(
+                rootElement,
+                "ebe.editor.export",
+                session.getCurrentName(),
+                ".litematic",
+                EditorUI::exportProjectAs));
         return root;
     }
 
@@ -386,11 +448,28 @@ public class EditorUI {
     private static void saveProjectAs(String name) {
         try {
             session.saveAs(name);
+            refreshFileList();
             setStatus(Component.translatable("ebe.editor.status.saved"));
         } catch (Exception e) {
             EBEMod.LOGGER.warn("Failed to save EBE project as {}", name, e);
             setStatus(Component.translatable("ebe.error.save_failed"));
         }
+    }
+
+    private static void exportProjectAs(String name) {
+        try {
+            Path exported = session.exportAs(name);
+            refreshFileList();
+            setStatus(Component.translatable("ebe.editor.status.exported", exported.getFileName().toString()));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to export EBE project as {}", name, e);
+            setStatus(Component.translatable("ebe.error.save_failed"));
+        }
+    }
+
+    private static String defaultFormatForName(String name) {
+        String ext = FileManager.getFileExtension(Path.of(name == null ? "" : name)).toLowerCase(Locale.ROOT);
+        return FileManager.SUPPORTED_EXTENSIONS.contains(ext) ? ext : ".ebe";
     }
 
     private static MenuTreeNode buildEditMenu() {
@@ -445,6 +524,7 @@ public class EditorUI {
     private static MenuTreeNode buildProjectionMenu() {
         var root = new MenuTreeNode("projection");
         root.child("ebe.projection.panel", () -> toggleProjectionPanel());
+        root.child("ebe.projection.convert_panel", () -> toggleConvertProjectionPanel());
         return root;
     }
 
@@ -1407,6 +1487,10 @@ public class EditorUI {
         fillPanel = buildFillPanel();
         fillPanel.setDisplay(false);
         viewport.addChild(fillPanel);
+
+        convertProjectionPanel = buildConvertProjectionPanel();
+        convertProjectionPanel.setDisplay(convertProjectionPanelVisible);
+        viewport.addChild(convertProjectionPanel);
 
         if (!leftPanelVisible) {
             leftPanel.setDisplay(false);
@@ -4061,9 +4145,9 @@ public class EditorUI {
         dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.export_as")).setOnClick(e -> {
             dialog.close();
             onFileSelected(file);
-            EditorDialogs.saveAsDialog(rootElement, session.getCurrentName(), name -> {
+            EditorDialogs.saveAsFormatDialog(rootElement, "ebe.editor.export", session.getCurrentName(), ".litematic", name -> {
                 try {
-                    session.saveAs(name);
+                    session.exportAs(name);
                     refreshFileList();
                 } catch (Exception ex) {
                     EBEMod.LOGGER.warn("Failed to export file {}", name, ex);
@@ -4290,16 +4374,504 @@ public class EditorUI {
         }
     }
 
+    private static void toggleConvertProjectionPanel() {
+        convertProjectionPanelVisible = !convertProjectionPanelVisible;
+        if (convertProjectionPanel == null) {
+            return;
+        }
+        convertProjectionPanel.setDisplay(convertProjectionPanelVisible);
+        if (convertProjectionPanelVisible) {
+            refreshConvertProjectionPanel();
+        }
+    }
+
+    private static UIElement buildConvertProjectionPanel() {
+        var panel = new UIElement();
+        panel.setId("convertProjectionPanel");
+        panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
+                .left(convertProjectionPanelLeft).top(convertProjectionPanelTop)
+                .width(360).height(450)
+                .flexDirection(FlexDirection.COLUMN).gapAll(5)
+                .paddingAll(6));
+        panel.style(s -> s.background(Sprites.BORDER).zIndex(155));
+        panel.setAllowHitTest(false);
+        swallowPanelPointerEvents(panel);
+
+        var titleRow = new UIElement();
+        titleRow.setId("convertProjectionTitleBar");
+        titleRow.layout(l -> l.widthPercent(100).height(20).flexDirection(FlexDirection.ROW)
+                .alignItems(AlignItems.CENTER).gapAll(4));
+        var title = new Label();
+        title.setText(Component.translatable("ebe.convert.title"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD166).textShadow(false).fontSize(11));
+        title.layout(l -> l.flex(1));
+        titleRow.addChild(title);
+        var closeBtn = new UIElement();
+        closeBtn.layout(l -> l.width(16).height(16));
+        var closeIcon = new UIElement();
+        closeIcon.layout(l -> l.widthPercent(100).heightPercent(100));
+        closeIcon.style(s -> s.backgroundTexture(EditorIcons.CLOSE));
+        closeBtn.addChild(closeIcon);
+        closeBtn.addEventListener(UIEvents.MOUSE_DOWN, e -> {
+            if (e.button == 0) {
+                convertProjectionPanelVisible = false;
+                panel.setDisplay(false);
+                e.stopPropagation();
+            }
+        });
+        titleRow.addChild(closeBtn);
+        panel.addChild(titleRow);
+
+        setupPanelDrag(panel, "convertProjectionTitleBar");
+
+        var tabView = createTopTabView();
+        tabView.setId("convertProjectionTabView");
+        panel.addChild(tabView);
+
+        refreshConvertProjectionPanel(panel);
+        return panel;
+    }
+
+    private static void refreshConvertProjectionPanel() {
+        refreshConvertProjectionPanel(convertProjectionPanel);
+    }
+
+    private static void refreshConvertProjectionPanel(UIElement panel) {
+        if (panel == null) return;
+        var tabElement = findById(panel, "convertProjectionTabView");
+        if (!(tabElement instanceof TabView tabView)) return;
+        tabView.clear();
+        var generateTab = new Tab();
+        generateTab.setText(Component.translatable("ebe.convert.generate"));
+        var editTab = new Tab();
+        editTab.setText(Component.translatable("ebe.convert.edit"));
+        tabView.addTab(generateTab, buildConvertGenerateTab());
+        tabView.addTab(editTab, buildConvertEditTab());
+        tabView.setOnTabSelected(tab -> convertProjectionTab = tab == editTab ? 1 : 0);
+        tabView.selectTab(convertProjectionTab == 1 ? editTab : generateTab);
+    }
+
+    private static UIElement buildConvertGenerateTab() {
+        var scroller = new ScrollerView();
+        scroller.layout(l -> l.widthPercent(100).heightPercent(100));
+        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
+
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6));
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.convert.generate_hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(hint);
+
+        content.addChild(buildConvertCornerSection("ebe.convert.corner_a", true));
+        content.addChild(buildConvertCornerSection("ebe.convert.corner_b", false));
+
+        var createBtn = new Button();
+        createBtn.setText(Component.translatable("ebe.convert.create"));
+        createBtn.layout(l -> l.widthPercent(100).height(24));
+        createBtn.textStyle(ts -> ts.fontSize(10).textShadow(false));
+        createBtn.style(s -> s.background(Sprites.RECT_RD_DARK));
+        createBtn.setOnClick(e -> createConvertedProjectionFromWorld());
+        content.addChild(createBtn);
+
+        if (convertProjectionModel != null) {
+            var existing = new Label();
+            existing.setText(Component.translatable("ebe.convert.temp_ready",
+                    convertProjectionName, countNonAirBlocks(convertProjectionModel)));
+            existing.textStyle(ts -> ts.textColor(0xFF9BE7A1).fontSize(8).textShadow(false)
+                    .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+            content.addChild(existing);
+        }
+
+        scroller.addScrollViewChild(content);
+        return scroller;
+    }
+
+    private static UIElement buildConvertCornerSection(String titleKey, boolean firstCorner) {
+        var box = new UIElement();
+        box.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4).paddingAll(5));
+        box.style(s -> s.background(Sprites.RECT_RD));
+
+        var title = new Label();
+        title.setText(Component.translatable(titleKey));
+        title.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(10).textShadow(false));
+        box.addChild(title);
+
+        var coordRow = new UIElement();
+        coordRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).gapAll(4));
+        coordRow.addChild(buildConvertCoordField("X", firstCorner ? convertAx : convertBx,
+                value -> { if (firstCorner) convertAx = value; else convertBx = value; }));
+        coordRow.addChild(buildConvertCoordField("Y", firstCorner ? convertAy : convertBy,
+                value -> { if (firstCorner) convertAy = value; else convertBy = value; }));
+        coordRow.addChild(buildConvertCoordField("Z", firstCorner ? convertAz : convertBz,
+                value -> { if (firstCorner) convertAz = value; else convertBz = value; }));
+        box.addChild(coordRow);
+
+        var playerBtn = new Button();
+        playerBtn.setText(Component.translatable(firstCorner ? "ebe.convert.use_player_a" : "ebe.convert.use_player_b"));
+        playerBtn.layout(l -> l.widthPercent(100).height(20));
+        playerBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        playerBtn.setOnClick(e -> {
+            var player = Minecraft.getInstance().player;
+            if (player == null) return;
+            var pos = player.blockPosition();
+            if (firstCorner) {
+                convertAx = pos.getX();
+                convertAy = pos.getY();
+                convertAz = pos.getZ();
+            } else {
+                convertBx = pos.getX();
+                convertBy = pos.getY();
+                convertBz = pos.getZ();
+            }
+            refreshConvertProjectionPanel();
+        });
+        box.addChild(playerBtn);
+        return box;
+    }
+
+    private static UIElement buildConvertCoordField(String axis, int value, IntConsumer setter) {
+        var row = new UIElement();
+        row.layout(l -> l.flex(1).height(20).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(2));
+        var label = new Label();
+        label.setText(Component.literal(axis));
+        label.layout(l -> l.width(10));
+        label.textStyle(ts -> ts.textColor(0xFFDDDDDD).fontSize(8).textShadow(false));
+        row.addChild(label);
+        var field = new TextField();
+        field.layout(l -> l.flex(1).height(18));
+        field.setNumbersOnlyInt(-30_000_000, 30_000_000);
+        field.setText(String.valueOf(value), false);
+        field.setTextResponder(text -> {
+            try {
+                setter.accept(Integer.parseInt(text));
+            } catch (NumberFormatException ignored) {
+            }
+        });
+        row.addChild(field);
+        return row;
+    }
+
+    private static UIElement buildConvertEditTab() {
+        var content = new UIElement();
+        content.layout(l -> l.widthPercent(100).heightPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(6));
+
+        if (convertProjectionModel == null) {
+            var empty = new Label();
+            empty.setText(Component.translatable("ebe.convert.no_preview"));
+            empty.textStyle(ts -> ts.textColor(0xFFCCCCCC).fontSize(9).textShadow(false)
+                    .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+            content.addChild(empty);
+            return content;
+        }
+
+        var nameLabel = new Label();
+        nameLabel.setText(Component.translatable("ebe.convert.name"));
+        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(9).textShadow(false));
+        content.addChild(nameLabel);
+
+        var nameField = new TextField();
+        nameField.layout(l -> l.widthPercent(100).height(22));
+        nameField.setText(convertProjectionName, false);
+        nameField.setTextResponder(text -> convertProjectionName = text);
+        content.addChild(nameField);
+
+        var preview = buildConvertPreviewScene(convertProjectionModel);
+        content.addChild(preview);
+
+        var rotateRow = new UIElement();
+        rotateRow.layout(l -> l.widthPercent(100).height(22).flexDirection(FlexDirection.ROW).gapAll(4));
+        var left = new Button();
+        left.setText(Component.literal("-90"));
+        left.layout(l -> l.flex(1).height(20));
+        left.setOnClick(e -> {
+            convertPreviewYaw -= 90;
+            refreshConvertProjectionPanel();
+        });
+        rotateRow.addChild(left);
+        var right = new Button();
+        right.setText(Component.literal("+90"));
+        right.layout(l -> l.flex(1).height(20));
+        right.setOnClick(e -> {
+            convertPreviewYaw += 90;
+            refreshConvertProjectionPanel();
+        });
+        rotateRow.addChild(right);
+        content.addChild(rotateRow);
+
+        var formatLabel = new Label();
+        formatLabel.setText(Component.translatable("ebe.convert.format"));
+        formatLabel.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(9).textShadow(false));
+        content.addChild(formatLabel);
+        content.addChild(buildConvertFormatSelector());
+
+        var nbtNotice = new Label();
+        nbtNotice.setText(Component.translatable("ebe.convert.nbt_notice"));
+        nbtNotice.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(nbtNotice);
+
+        var info = new Label();
+        info.setText(Component.translatable("ebe.convert.preview_count",
+                countNonAirBlocks(convertProjectionModel), convertProjectionModel.getMetadata().getSizeX(),
+                convertProjectionModel.getMetadata().getSizeY(), convertProjectionModel.getMetadata().getSizeZ()));
+        info.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(info);
+
+        var saveBtn = new Button();
+        saveBtn.setText(Component.translatable("ebe.convert.save"));
+        saveBtn.layout(l -> l.widthPercent(100).height(24));
+        saveBtn.style(s -> s.background(Sprites.RECT_RD_DARK));
+        saveBtn.setOnClick(e -> saveConvertedProjection());
+        content.addChild(saveBtn);
+
+        return content;
+    }
+
+    private static UIElement buildConvertFormatSelector() {
+        var selector = new Selector<String>();
+        selector.layout(l -> l.widthPercent(100).height(22));
+        selector.setCandidates(List.of(".ebe", ".litematic"));
+        selector.setSelected(normalizeConvertProjectionFormat(), false);
+        selector.setOnValueChanged(value -> convertProjectionFormat = normalizeConvertProjectionFormat(value));
+        return selector;
+    }
+
+    private static String normalizeConvertProjectionFormat() {
+        return normalizeConvertProjectionFormat(convertProjectionFormat);
+    }
+
+    private static String normalizeConvertProjectionFormat(String value) {
+        return ".litematic".equals(value) ? ".litematic" : ".ebe";
+    }
+
+    private static UIElement buildConvertPreviewScene(BuildingModel model) {
+        var scene = new Scene();
+        scene.layout(l -> l.widthPercent(100).height(180));
+        try {
+            var world = new FastTrackedDummyWorld(false);
+            var core = new ArrayList<BlockPos>();
+            int added = addPreviewBlocks(model, world, core);
+            int entityCount = addPreviewEntities(model, world);
+            scene.createScene(world);
+            scene.setRenderedCore(core);
+            scene.setRenderSelect(false);
+            scene.setRenderFacing(false);
+            scene.setShowHoverBlockTips(false);
+            scene.setDraggable(true);
+            scene.setScalable(true);
+            scene.useCacheBuffer(added + entityCount > 512);
+            int sx = Math.max(1, model.getMetadata().getSizeX());
+            int sy = Math.max(1, model.getMetadata().getSizeY());
+            int sz = Math.max(1, model.getMetadata().getSizeZ());
+            var region = model.getRegions().isEmpty() ? null : model.getRegions().getFirst();
+            float cx = (region == null ? 0 : region.getOffsetX()) + sx / 2f;
+            float cy = (region == null ? 0 : region.getOffsetY()) + sy / 2f;
+            float cz = (region == null ? 0 : region.getOffsetZ()) + sz / 2f;
+            scene.setCenter(new org.joml.Vector3f(cx, cy, cz));
+            scene.setCameraYawAndPitch(convertPreviewYaw, convertPreviewPitch);
+            scene.setZoom(Math.max(5f, Math.max(sx, Math.max(sy, sz)) * 1.8f));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to build convert projection preview", e);
+            var fallback = new Label();
+            fallback.setText(Component.translatable("ebe.convert.preview_failed"));
+            fallback.layout(l -> l.widthPercent(100).height(180));
+            fallback.textStyle(ts -> ts.textColor(0xFFFF8888).fontSize(9).textShadow(false));
+            return fallback;
+        }
+        return scene;
+    }
+
+    private static int addPreviewEntities(BuildingModel model, FastTrackedDummyWorld world) {
+        if (model == null || world == null || model.getEntities().isEmpty()) return 0;
+        int added = 0;
+        for (var tag : model.getEntities()) {
+            try {
+                var entity = EntityType.loadEntityRecursive(tag.copy(), world, loaded -> loaded);
+                if (entity != null) {
+                    world.addEntity(entity);
+                    added++;
+                }
+            } catch (Exception e) {
+                EBEMod.LOGGER.warn("Failed to add converted projection entity preview", e);
+            }
+        }
+        return added;
+    }
+
+    private static int addPreviewBlocks(BuildingModel model, FastTrackedDummyWorld world, List<BlockPos> core) {
+        int added = 0;
+        int nonAir = Math.max(1, countNonAirBlocks(model));
+        int stride = Math.max(1, nonAir / CONVERT_PREVIEW_BLOCK_LIMIT);
+        int seen = 0;
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        BlockState state = resolveBlockState(region.getBlocks().get(x, y, z));
+                        if (state.isAir()) continue;
+                        seen++;
+                        boolean boundary = x == 0 || y == 0 || z == 0
+                                || x == region.getSizeX() - 1 || y == region.getSizeY() - 1 || z == region.getSizeZ() - 1;
+                        if (added >= CONVERT_PREVIEW_BLOCK_LIMIT) return added;
+                        if (!boundary && seen % stride != 0) continue;
+                        var pos = new BlockPos(region.getOffsetX() + x, region.getOffsetY() + y, region.getOffsetZ() + z);
+                        world.addBlockFast(pos, new BlockInfo(state));
+                        core.add(pos);
+                        added++;
+                    }
+                }
+            }
+        }
+        return added;
+    }
+
+    private static void createConvertedProjectionFromWorld() {
+        var mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null) {
+            setStatus(Component.translatable("ebe.convert.no_world"));
+            return;
+        }
+        int minX = Math.min(convertAx, convertBx);
+        int minY = Math.min(convertAy, convertBy);
+        int minZ = Math.min(convertAz, convertBz);
+        int maxX = Math.max(convertAx, convertBx);
+        int maxY = Math.max(convertAy, convertBy);
+        int maxZ = Math.max(convertAz, convertBz);
+        int sx = maxX - minX + 1;
+        int sy = maxY - minY + 1;
+        int sz = maxZ - minZ + 1;
+        long volume = (long) sx * sy * sz;
+        if (volume <= 0 || volume > 4_000_000L) {
+            setStatus(Component.translatable("ebe.convert.invalid_area", volume));
+            return;
+        }
+
+        var model = new BuildingModel();
+        String baseName = EditorSession.sanitizeFileBaseName(convertProjectionName);
+        model.getMetadata().setName(baseName);
+        model.getMetadata().setSize(sx, sy, sz);
+        var region = model.addRegion("converted", minX, minY, minZ, sx, sy, sz);
+        var mutable = new BlockPos.MutableBlockPos();
+        int copied = 0;
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    mutable.set(x, y, z);
+                    if (!mc.level.hasChunkAt(mutable)) continue;
+                    BlockState state = mc.level.getBlockState(mutable);
+                    if (state.isAir()) continue;
+                    region.setWorldBlock(x, y, z, state);
+                    if (state.hasBlockEntity()) {
+                        var be = mc.level.getBlockEntity(mutable);
+                        if (be != null) {
+                            CompoundTag tag = be.saveWithId(mc.level.registryAccess());
+                            region.setWorldBlockEntity(x, y, z, tag);
+                        }
+                    }
+                    copied++;
+                }
+            }
+        }
+        int copiedEntities = copyDecorativeEntitiesFromWorld(model, new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1));
+        convertProjectionModel = model;
+        convertProjectionName = baseName;
+        convertProjectionTab = 1;
+        setStatus(Component.translatable("ebe.convert.created", copied, copiedEntities, volume));
+        refreshConvertProjectionPanel();
+    }
+
+    private static int copyDecorativeEntitiesFromWorld(BuildingModel model, AABB bounds) {
+        var level = Minecraft.getInstance().level;
+        if (level == null || model == null) return 0;
+        int copied = 0;
+        for (Entity entity : level.getEntities((Entity) null, bounds, EditorUI::isSupportedDecorativeEntity)) {
+            CompoundTag tag = new CompoundTag();
+            if (entity.save(tag)) {
+                model.addEntity(tag);
+                copied++;
+            }
+        }
+        return copied;
+    }
+
+    private static boolean isSupportedDecorativeEntity(Entity entity) {
+        return ProjectionEntityTransforms.isAllowedDecorativeEntity(entity);
+    }
+
+    private static void saveConvertedProjection() {
+        if (convertProjectionModel == null) return;
+        try {
+            String baseName = EditorSession.sanitizeFileBaseName(convertProjectionName);
+            String ext = normalizeConvertProjectionFormat();
+            var dir = Path.of(EBEClientConfig.schematicDir.get());
+            Files.createDirectories(dir);
+            var path = uniqueProjectionPath(dir.resolve(baseName + ext));
+            convertProjectionModel.getMetadata().setName(baseName);
+            convertProjectionModel.getMetadata().setModified(System.currentTimeMillis());
+            SchematicWriters.write(convertProjectionModel, path);
+            refreshFileList();
+            setStatus(Component.translatable("ebe.convert.saved", path.getFileName().toString()));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to save converted projection", e);
+            setStatus(Component.translatable("ebe.convert.save_failed", rootCauseMessage(e)));
+        }
+    }
+
+    private static Path uniqueProjectionPath(Path requested) {
+        if (!Files.exists(requested)) return requested;
+        String ext = FileManager.getFileExtension(requested);
+        String base = EditorSession.sanitizeFileBaseName(requested.getFileName().toString().replace(ext, ""));
+        Path dir = requested.getParent();
+        for (int i = 2; i < 10_000; i++) {
+            Path candidate = dir.resolve(base + "-" + i + ext);
+            if (!Files.exists(candidate)) return candidate;
+        }
+        return dir.resolve(base + "-" + System.currentTimeMillis() + ext);
+    }
+
+    private static int countNonAirBlocks(BuildingModel model) {
+        if (model == null) return 0;
+        int count = 0;
+        for (var region : model.getRegions()) {
+            for (int y = 0; y < region.getSizeY(); y++) {
+                for (int z = 0; z < region.getSizeZ(); z++) {
+                    for (int x = 0; x < region.getSizeX(); x++) {
+                        if (!resolveBlockState(region.getBlocks().get(x, y, z)).isAir()) count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    private static BlockState resolveBlockState(Object value) {
+        if (value instanceof BlockState state) return state;
+        if (value instanceof String id) {
+            var parsed = ResourceLocation.tryParse(id);
+            if (parsed != null) {
+                return BuiltInRegistries.BLOCK.getOptional(parsed)
+                        .map(block -> block.defaultBlockState())
+                        .orElse(Blocks.AIR.defaultBlockState());
+            }
+        }
+        return Blocks.AIR.defaultBlockState();
+    }
+
     private static UIElement buildReplacePanel() {
         var panel = new UIElement();
         panel.setId("replacePanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(40).top(40)
+                .left(replacePanelLeft).top(replacePanelTop)
                 .minWidth(240).maxWidth(320)
                 .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingAll(6));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
         panel.setAllowHitTest(false);
+        swallowPanelPointerEvents(panel);
 
         var titleRow = new UIElement();
         titleRow.setId("replaceTitleBar");
@@ -4896,12 +5468,13 @@ public class EditorUI {
         var panel = new UIElement();
         panel.setId("fillPanel");
         panel.layout(l -> l.positionType(TaffyPosition.ABSOLUTE)
-                .left(40).top(40)
+                .left(fillPanelLeft).top(fillPanelTop)
                 .minWidth(220).maxWidth(300)
                 .flexDirection(FlexDirection.COLUMN).gapAll(4)
                 .paddingAll(6));
         panel.style(s -> s.background(Sprites.BORDER).zIndex(150));
         panel.setAllowHitTest(false);
+        swallowPanelPointerEvents(panel);
 
         var titleRow = new UIElement();
         titleRow.setId("fillTitleBar");
@@ -6432,10 +7005,46 @@ public class EditorUI {
         titleBar.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button == 0) {
                 draggingPanel = panel;
-                panelDragOffsetX = e.x - panel.getPositionX();
-                panelDragOffsetY = e.y - panel.getPositionY();
+                panelDragStartX = e.x;
+                panelDragStartY = e.y;
+                float[] origin = rememberedPanelPosition(panel);
+                panelDragOriginX = origin[0];
+                panelDragOriginY = origin[1];
+                panelDragOffsetX = e.x - panelDragOriginX;
+                panelDragOffsetY = e.y - panelDragOriginY;
+                e.stopPropagation();
             }
         });
+    }
+
+    private static void swallowPanelPointerEvents(UIElement panel) {
+        panel.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        panel.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        panel.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
+    }
+
+    private static void rememberPanelDragPosition(UIElement panel, float x, float y) {
+        if (panel == replacePanel) {
+            replacePanelLeft = x;
+            replacePanelTop = y;
+            return;
+        }
+        if (panel == fillPanel) {
+            fillPanelLeft = x;
+            fillPanelTop = y;
+            return;
+        }
+        if (panel == convertProjectionPanel) {
+            convertProjectionPanelLeft = x;
+            convertProjectionPanelTop = y;
+        }
+    }
+
+    private static float[] rememberedPanelPosition(UIElement panel) {
+        if (panel == replacePanel) return new float[]{replacePanelLeft, replacePanelTop};
+        if (panel == fillPanel) return new float[]{fillPanelLeft, fillPanelTop};
+        if (panel == convertProjectionPanel) return new float[]{convertProjectionPanelLeft, convertProjectionPanelTop};
+        return new float[]{panel.getPositionX(), panel.getPositionY()};
     }
 
     static UIElement findById(UIElement root, String id) {

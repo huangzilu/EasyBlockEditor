@@ -6,6 +6,8 @@ import com.l1ght.ebe.data.Region;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.DoubleTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
@@ -184,6 +186,11 @@ public class SchematicReaders {
                     region.setWorldBlockEntity(posArr[0] + minX, posArr[1] + minY, posArr[2] + minZ, teTag);
                 }
             }
+
+            var entitiesTag = regionTag.getList("Entities", 10);
+            for (int i = 0; i < entitiesTag.size(); i++) {
+                model.addEntity(entitiesTag.getCompound(i));
+            }
         }
 
         return model;
@@ -214,7 +221,20 @@ public class SchematicReaders {
             maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
         }
 
-        if (minX > maxX) return model;
+        boolean hasBlocks = minX <= maxX;
+        if (!hasBlocks) {
+            var sizeTag = root.getList("size", 3);
+            if (sizeTag.size() >= 3) {
+                minX = 0;
+                minY = 0;
+                minZ = 0;
+                maxX = Math.max(0, sizeTag.getInt(0) - 1);
+                maxY = Math.max(0, sizeTag.getInt(1) - 1);
+                maxZ = Math.max(0, sizeTag.getInt(2) - 1);
+            } else {
+                return model;
+            }
+        }
 
         int sx = maxX - minX + 1;
         int sy = maxY - minY + 1;
@@ -238,7 +258,17 @@ public class SchematicReaders {
 
         var entitiesList = root.getList("entities", 10);
         for (int i = 0; i < entitiesList.size(); i++) {
-            model.addEntity(entitiesList.getCompound(i));
+            var entityEntry = entitiesList.getCompound(i);
+            if (entityEntry.contains("nbt", 10)) {
+                var entity = entityEntry.getCompound("nbt").copy();
+                var pos = entityEntry.getList("pos", 6);
+                if (pos.size() >= 3) {
+                    entity.put("Pos", doubleList(pos.getDouble(0) + minX, pos.getDouble(1) + minY, pos.getDouble(2) + minZ));
+                }
+                model.addEntity(entity);
+            } else {
+                model.addEntity(entityEntry);
+            }
         }
 
         return model;
@@ -497,6 +527,14 @@ public class SchematicReaders {
             }
         }
         return values;
+    }
+
+    private static ListTag doubleList(double x, double y, double z) {
+        ListTag list = new ListTag();
+        list.add(DoubleTag.valueOf(x));
+        list.add(DoubleTag.valueOf(y));
+        list.add(DoubleTag.valueOf(z));
+        return list;
     }
 
     private static CompoundTag readNbtAnyFormat(Path file) {

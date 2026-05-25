@@ -37,6 +37,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -602,8 +603,9 @@ public class ViewportFactory {
             totalBlocksAdded += count;
             LOG.info("Loaded region '{}' : {} blocks", region.getName(), count);
         }
+        int totalEntitiesAdded = addModelEntitiesToViewportWorld(model);
 
-        LOG.info("Total blocks: {}", totalBlocksAdded);
+        LOG.info("Total blocks: {}, entities: {}", totalBlocksAdded, totalEntitiesAdded);
 
         createSceneRenderer();
         currentScene.useCacheBuffer(totalBlocksAdded > FBO_THRESHOLD);
@@ -619,8 +621,8 @@ public class ViewportFactory {
 
         hasLoadedModel = true;
         shaderProbeSceneActive = false;
-        LOG.info("Model loaded: {} blocks, autoCamera={}, profile={}",
-                totalBlocksAdded, autoCamera, profile == null ? "none" : profile.risk());
+        LOG.info("Model loaded: {} blocks, {} entities, autoCamera={}, profile={}",
+                totalBlocksAdded, totalEntitiesAdded, autoCamera, profile == null ? "none" : profile.risk());
     }
 
     public static void saveCameraState() {
@@ -764,6 +766,24 @@ public class ViewportFactory {
         } else {
             currentWorld.addBlock(pos, info);
         }
+    }
+
+    private static int addModelEntitiesToViewportWorld(BuildingModel model) {
+        if (currentWorld == null || model == null || model.getEntities().isEmpty()) return 0;
+        int added = 0;
+        for (var tag : model.getEntities()) {
+            try {
+                var copy = tag.copy();
+                var entity = EntityType.loadEntityRecursive(copy, currentWorld, loaded -> loaded);
+                if (entity != null) {
+                    currentWorld.addEntity(entity);
+                    added++;
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to add model entity to viewport", e);
+            }
+        }
+        return added;
     }
 
     public static boolean isProgressiveLoadActive() {
@@ -1100,6 +1120,7 @@ public class ViewportFactory {
 
         if (load.exactCapped || load.regionIndex >= regions.size()) {
             progressiveLoad = null;
+            int entitiesAdded = addModelEntitiesToViewportWorld(load.model);
             if (!load.exactCapped) {
                 progressiveOutlineSamples = List.of();
                 clearViewportLod();
@@ -1129,7 +1150,8 @@ public class ViewportFactory {
                 LOG.info("Progressive model load capped at {} exact viewport blocks; LOD remains active for the full projection",
                         load.added);
             } else {
-                LOG.info("Progressive model load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+                LOG.info("Progressive model load finished: {} blocks, {} entities, autoCamera={}",
+                        load.added, entitiesAdded, load.autoCamera);
             }
             activeLoadProfile = null;
         }
@@ -1184,6 +1206,7 @@ public class ViewportFactory {
 
         if (load.batchIndex >= batches.size()) {
             progressiveComputedLoad = null;
+            int entitiesAdded = EditorUI.getSession() == null ? 0 : addModelEntitiesToViewportWorld(EditorUI.getSession().getModel());
             progressiveOutlineSamples = List.of();
             clearViewportLod();
             currentScene.useCacheBuffer(load.added > FBO_THRESHOLD);
@@ -1205,7 +1228,8 @@ public class ViewportFactory {
                 EditorUI.markMaterialListStale();
             }
             EditorUI.updateStatusBar();
-            LOG.info("Computed progressive load finished: {} blocks, autoCamera={}", load.added, load.autoCamera);
+            LOG.info("Computed progressive load finished: {} blocks, {} entities, autoCamera={}",
+                    load.added, entitiesAdded, load.autoCamera);
             activeLoadProfile = null;
         }
     }

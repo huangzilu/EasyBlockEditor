@@ -9,6 +9,7 @@ import com.l1ght.ebe.data.io.EBEFormatIO;
 import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.data.io.SchematicReaders;
 import com.l1ght.ebe.data.io.SchematicWriters;
+import net.minecraft.world.level.block.Blocks;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -57,13 +58,20 @@ public class EditorSession {
         return currentFile != null ? currentFile.getFileName().toString() : "untitled";
     }
 
-    public void newProject(String name) {
+    public void newProject(String name) throws Exception {
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
+        Files.createDirectories(dir);
+        String cleanName = sanitizeFileBaseName(stripSupportedExtension(name));
         this.model = new BuildingModel();
         this.computedProjection = null;
-        this.model.getMetadata().setName(name);
-        this.currentFile = null;
+        this.model.getMetadata().setName(cleanName);
+        this.model.getMetadata().setSize(1, 1, 1);
+        var region = this.model.addRegion("project_center", 0, 0, 0, 1, 1, 1);
+        region.setWorldBlock(0, 0, 0, Blocks.STONE.defaultBlockState());
+        this.currentFile = uniqueFile(dir.resolve(cleanName + ".ebe"));
         this.dirty = false;
         EditorUI.getHistory().clear(this.model);
+        save();
         EditorUI.refreshHistoryList();
     }
 
@@ -79,11 +87,61 @@ public class EditorSession {
     public void saveAs(String name) throws Exception {
         var dir = Path.of(EBEClientConfig.schematicDir.get());
         Files.createDirectories(dir);
-        String ext = FileManager.getFileExtension(Path.of(name)).toLowerCase();
-        var filename = FileManager.SUPPORTED_EXTENSIONS.contains(ext) ? name : name + ".ebe";
+        var filename = normalizeOutputFilename(name);
         this.currentFile = dir.resolve(filename);
         model.getMetadata().setName(stripSupportedExtension(filename));
         save();
+    }
+
+    public Path exportAs(String name) throws Exception {
+        var dir = Path.of(EBEClientConfig.schematicDir.get());
+        Files.createDirectories(dir);
+        var filename = normalizeOutputFilename(name);
+        Path target = dir.resolve(filename);
+        SchematicWriters.write(model, target);
+        return target;
+    }
+
+    private static String normalizeOutputFilename(String name) {
+        String ext = FileManager.getFileExtension(Path.of(name)).toLowerCase();
+        return FileManager.SUPPORTED_EXTENSIONS.contains(ext)
+                ? sanitizeFileBaseName(stripSupportedExtension(name)) + ext
+                : sanitizeFileBaseName(name) + ".ebe";
+    }
+
+    public static String sanitizeFileBaseName(String name) {
+        String source = name == null || name.isBlank() ? "untitled" : name.strip();
+        StringBuilder clean = new StringBuilder(source.length());
+        boolean previousSeparator = false;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            boolean allowed = Character.isLetterOrDigit(c) || c == '.' || c == '_' || c == '-';
+            if (allowed) {
+                clean.append(c);
+                previousSeparator = false;
+            } else if (!previousSeparator) {
+                clean.append('_');
+                previousSeparator = true;
+            }
+        }
+        String result = clean.toString();
+        while (result.startsWith(".") || result.startsWith("_")) result = result.substring(1);
+        while (result.endsWith(".") || result.endsWith("_")) result = result.substring(0, result.length() - 1);
+        if (result.isBlank()) result = "untitled";
+        return result.length() > 80 ? result.substring(0, 80) : result;
+    }
+
+    private static Path uniqueFile(Path requested) {
+        if (!Files.exists(requested)) return requested;
+        String filename = requested.getFileName().toString();
+        String ext = FileManager.getFileExtension(requested);
+        String base = stripSupportedExtension(filename);
+        Path dir = requested.getParent();
+        for (int i = 2; i < 10_000; i++) {
+            Path candidate = dir.resolve(base + "-" + i + ext);
+            if (!Files.exists(candidate)) return candidate;
+        }
+        return dir.resolve(base + "-" + System.currentTimeMillis() + ext);
     }
 
     public void load(Path file) throws Exception {

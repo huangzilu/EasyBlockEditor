@@ -1,16 +1,21 @@
 package com.l1ght.ebe.client.ui;
 
+import com.l1ght.ebe.data.io.FileManager;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Button;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
 import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.network.chat.Component;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 public class EditorDialogs {
@@ -37,6 +42,90 @@ public class EditorDialogs {
         dialog.overlay.layout(l -> l.width(220));
         dialog.show(parent);
         return dialog;
+    }
+
+    public static Dialog saveAsFormatDialog(UIElement parent, String titleKey, String currentName,
+                                            String defaultFormat, Consumer<String> onConfirm) {
+        var dialog = new Dialog();
+        dialog.setTitle(Component.translatable(titleKey).getString());
+        dialog.overlay.layout(l -> l.width(300).maxHeight(190));
+
+        var content = new UIElement();
+        content.layout(l -> l.width(270).flexDirection(FlexDirection.COLUMN).gapAll(6));
+
+        var nameLabel = new Label();
+        nameLabel.setText(Component.translatable("ebe.editor.output_name"));
+        nameLabel.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(9).textShadow(false));
+        content.addChild(nameLabel);
+
+        var nameField = new TextField();
+        nameField.layout(l -> l.widthPercent(100).height(22));
+        nameField.setText(stripSupportedExtension(currentName), false);
+        content.addChild(nameField);
+
+        var formatLabel = new Label();
+        formatLabel.setText(Component.translatable("ebe.editor.output_format"));
+        formatLabel.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(9).textShadow(false));
+        content.addChild(formatLabel);
+
+        var selector = new Selector<String>();
+        selector.layout(l -> l.widthPercent(100).height(22));
+        selector.setCandidates(supportedOutputFormats());
+        selector.setSelected(normalizeFormat(defaultFormat), false);
+        content.addChild(selector);
+
+        var hint = new Label();
+        hint.setText(Component.translatable("ebe.editor.output_format_hint"));
+        hint.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(8).textShadow(false)
+                .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+        content.addChild(hint);
+
+        dialog.addContent(content);
+        dialog.addButton(new Button()
+                .setText(Component.translatable("ebe.history.dialog.confirm"))
+                .setOnClick(e -> {
+                    String name = normalizeOutputName(nameField.getText(), selector.getValue());
+                    if (name.isBlank() || name.matches(".*[\\\\/:*?\"<>|].*")) {
+                        return;
+                    }
+                    onConfirm.accept(name);
+                    dialog.close();
+                }));
+        dialog.addButton(new Button()
+                .setText(Component.translatable("ebe.history.dialog.cancel"))
+                .setOnClick(e -> dialog.close()));
+
+        dialog.show(parent);
+        return dialog;
+    }
+
+    private static String normalizeOutputName(String rawName, String selectedFormat) {
+        String name = rawName == null ? "" : rawName.trim();
+        String ext = FileManager.getFileExtension(Path.of(name)).toLowerCase(Locale.ROOT);
+        if (FileManager.SUPPORTED_EXTENSIONS.contains(ext)) {
+            return name;
+        }
+        return name + normalizeFormat(selectedFormat);
+    }
+
+    private static String normalizeFormat(String format) {
+        String normalized = format == null ? ".ebe" : format.toLowerCase(Locale.ROOT);
+        return FileManager.SUPPORTED_EXTENSIONS.contains(normalized) ? normalized : ".ebe";
+    }
+
+    private static List<String> supportedOutputFormats() {
+        return List.of(".ebe", ".litematic", ".schem", ".nbt");
+    }
+
+    private static String stripSupportedExtension(String filename) {
+        if (filename == null || filename.isBlank()) return "untitled";
+        String lower = filename.toLowerCase(Locale.ROOT);
+        for (String ext : FileManager.SUPPORTED_EXTENSIONS) {
+            if (lower.endsWith(ext)) {
+                return filename.substring(0, filename.length() - ext.length());
+            }
+        }
+        return filename;
     }
 
     public static Dialog overwriteConfirmDialog(UIElement parent, String filename, Runnable onConfirm) {

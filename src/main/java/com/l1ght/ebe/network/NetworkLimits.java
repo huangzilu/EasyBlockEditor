@@ -12,6 +12,9 @@ public final class NetworkLimits {
     public static final int MAX_BATCH_NBT_CHARS = 128_000;
     public static final int MAX_PLACE_BLOCKS_PER_PACKET = 4_096;
     public static final int MAX_PLACE_BLOCKS = 262_144;
+    public static final int MAX_ENTITY_NBT_CHARS = 32_768;
+    public static final int MAX_PLACE_ENTITIES_PER_PACKET = 64;
+    public static final int MAX_PLACE_ENTITIES = 4_096;
     public static final int MAX_PRINTER_PLACE_BATCH = 64;
     public static final int MAX_WORKGROUP_UPLOAD_BATCH = 768;
     public static final int MAX_WORKGROUP_UPLOAD_TOTAL = 262_144;

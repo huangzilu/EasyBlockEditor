@@ -21,6 +21,12 @@ public class EBENetwork {
         );
 
         registrar.playToServer(
+                PlaceEntitiesPayload.TYPE,
+                PlaceEntitiesPayload.STREAM_CODEC,
+                PlaceEntitiesPayload::handleServer
+        );
+
+        registrar.playToServer(
                 PrinterPlacePayload.TYPE,
                 PrinterPlacePayload.STREAM_CODEC,
                 PrinterPlacePayload::handleServer

@@ -5,7 +5,9 @@ import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.io.EBEFormatIO;
 import com.l1ght.ebe.network.NetworkLimits;
 import com.l1ght.ebe.network.PlaceBlocksPayload;
+import com.l1ght.ebe.network.PlaceEntitiesPayload;
 import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.l1ght.ebe.projection.ProjectionSparseIndex;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
 import com.l1ght.ebe.projection.compute.ProjectionComputePlanner;
@@ -44,6 +46,7 @@ public class ProjectionManager {
     private static int progressTotal = 0;
     private static boolean progressAuthoritative = false;
     private static boolean placeAllInProgress = false;
+    private static boolean placementEntitiesQueued = false;
     private static boolean persistentStateLoaded = false;
     private static boolean restoringPersistentState = false;
     private static long lastMissingPersistLogMs = 0L;
@@ -58,10 +61,12 @@ public class ProjectionManager {
             activeProjection = null;
             projectionLoaded = false;
             placeAllInProgress = false;
+            placementEntitiesQueued = false;
             deletePersistentState();
             return;
         }
         placeAllInProgress = false;
+        placementEntitiesQueued = false;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -79,6 +84,7 @@ public class ProjectionManager {
     public static void selectProjection(BuildingModel model, ComputedProjection computed) {
         if (model == null) return;
         placeAllInProgress = false;
+        placementEntitiesQueued = false;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -99,6 +105,7 @@ public class ProjectionManager {
     public static void unloadProjection() {
         projectionLoaded = false;
         placeAllInProgress = false;
+        placementEntitiesQueued = false;
         savePersistentState(false);
     }
 
@@ -106,6 +113,7 @@ public class ProjectionManager {
         activeProjection = null;
         projectionLoaded = false;
         placeAllInProgress = false;
+        placementEntitiesQueued = false;
         deletePersistentState();
     }
 
@@ -492,6 +500,10 @@ public class ProjectionManager {
 
     public static void finishPlacementAndUnload() {
         if (activeProjection == null) return;
+        PlaceEntitiesPayload.Purpose entityPurpose = placeAllInProgress
+                ? PlaceEntitiesPayload.Purpose.PLACE_ALL
+                : PlaceEntitiesPayload.Purpose.PRINTER;
+        int queuedEntities = queueProjectionEntitiesForPlacement(entityPurpose);
         progressPlaced = activeProjection.getBlockCount();
         progressTotal = activeProjection.getBlockCount();
         progressAuthoritative = true;
@@ -503,8 +515,46 @@ public class ProjectionManager {
         var mc = Minecraft.getInstance();
         if (mc.player != null) {
             mc.player.displayClientMessage(Component.translatable("ebe.projection.placement_complete"), false);
+            if (queuedEntities > 0) {
+                mc.player.displayClientMessage(Component.translatable("ebe.projection.entities_queued", queuedEntities), false);
+            }
         }
         com.l1ght.ebe.client.ui.EditorUI.refreshPlacementState();
+    }
+
+    private static int queueProjectionEntitiesForPlacement(PlaceEntitiesPayload.Purpose purpose) {
+        if (placementEntitiesQueued || activeProjection == null || activeProjection.getModel().getEntities().isEmpty()) {
+            return 0;
+        }
+        placementEntitiesQueued = true;
+
+        List<String> batch = new ArrayList<>(NetworkLimits.MAX_PLACE_ENTITIES_PER_PACKET);
+        int queued = 0;
+        int nbtChars = 0;
+        for (var entityTag : activeProjection.getModel().getEntities()) {
+            var projected = ProjectionEntityTransforms.prepareForProjection(entityTag, activeProjection);
+            if (projected == null) continue;
+            String encoded = projected.toString();
+            if (encoded.length() > NetworkLimits.MAX_ENTITY_NBT_CHARS) {
+                LOG.warn("Skipping oversized decorative entity NBT: {} chars", encoded.length());
+                continue;
+            }
+            boolean fullByCount = batch.size() >= NetworkLimits.MAX_PLACE_ENTITIES_PER_PACKET;
+            boolean fullByNbt = !batch.isEmpty() && nbtChars + encoded.length() > PLACE_ALL_MAX_NBT_CHARS_PER_PACKET;
+            if (fullByCount || fullByNbt) {
+                PacketDistributor.sendToServer(new PlaceEntitiesPayload(purpose, batch));
+                queued += batch.size();
+                batch = new ArrayList<>(NetworkLimits.MAX_PLACE_ENTITIES_PER_PACKET);
+                nbtChars = 0;
+            }
+            batch.add(encoded);
+            nbtChars += encoded.length();
+        }
+        if (!batch.isEmpty()) {
+            PacketDistributor.sendToServer(new PlaceEntitiesPayload(purpose, batch));
+            queued += batch.size();
+        }
+        return queued;
     }
 
     private static boolean targetBlockPlaced(ProjectionData.ProjectionBlock block) {
