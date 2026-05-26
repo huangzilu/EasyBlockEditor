@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.projection;
 import com.l1ght.ebe.client.projection.mega.MegaProjectionRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.projection.ProjectionData;
+import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
@@ -22,9 +23,13 @@ import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.client.renderer.block.BlockRenderDispatcher;
 import net.minecraft.core.Direction;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -58,6 +63,10 @@ public class ProjectionRenderer {
     private static int cachedProjectionVersion = -1;
     private static ProjectionRenderCache cachedRenderCache;
     private static ProjectionMeshCache cachedMeshCache;
+    private static ProjectionData cachedEntityProjection;
+    private static int cachedEntityProjectionVersion = -1;
+    private static Level cachedEntityLevel;
+    private static List<Entity> cachedProjectionEntities = List.of();
 
     public static void renderProjection(PoseStack poseStack, Matrix4f projectionMatrix) {
         renderProjection(poseStack, projectionMatrix, null);
@@ -76,9 +85,11 @@ public class ProjectionRenderer {
 
         float opacity = ProjectionManager.getOpacity();
         List<ProjectionData.ProjectionBlock> blocks = projection.getBlocks();
-        if (blocks.isEmpty()) return;
+        boolean hasEntities = projection.getModel() != null && !projection.getModel().getEntities().isEmpty();
+        if (blocks.isEmpty() && !hasEntities) return;
         if (MegaProjectionRenderer.shouldUse(projection)
                 && MegaProjectionRenderer.renderProjection(poseStack, projectionMatrix, frustum, projection)) {
+            renderProjectionEntitiesStandalone(poseStack, projection, opacity);
             return;
         }
         ProjectionRenderCache renderCache = getRenderCache(projection);
@@ -168,9 +179,11 @@ public class ProjectionRenderer {
             }
         }
 
+        renderProjectionEntities(projection, poseStack, bufferSource);
+
         poseStack.popPose();
 
-        bufferSource.endBatch(projectionLayer);
+        bufferSource.endBatch();
         blockEntityBuffers.endBatch();
         blockEntityBuffers.close();
 
@@ -179,6 +192,78 @@ public class ProjectionRenderer {
         RenderSystem.disablePolygonOffset();
         RenderSystem.depthMask(true);
         RenderSystem.disableBlend();
+    }
+
+    private static void renderProjectionEntitiesStandalone(PoseStack poseStack, ProjectionData projection, float opacity) {
+        var mc = Minecraft.getInstance();
+        if (mc.level == null) return;
+        var camera = mc.gameRenderer.getMainCamera();
+        Vec3 camPos = camera.getPosition();
+        var bufferSource = mc.renderBuffers().bufferSource();
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, opacity);
+
+        poseStack.pushPose();
+        poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
+        renderProjectionEntities(projection, poseStack, bufferSource);
+        poseStack.popPose();
+        bufferSource.endBatch();
+
+        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+    }
+
+    private static void renderProjectionEntities(ProjectionData projection, PoseStack poseStack, MultiBufferSource.BufferSource bufferSource) {
+        var mc = Minecraft.getInstance();
+        if (mc.level == null || projection == null || projection.getModel() == null || projection.getModel().getEntities().isEmpty()) {
+            return;
+        }
+        var renderManager = mc.getEntityRenderDispatcher();
+        for (Entity entity : projectionEntities(projection, mc.level)) {
+            try {
+                ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
+                renderManager.render(entity,
+                        entity.getX(),
+                        entity.getY(),
+                        entity.getZ(),
+                        entity.getYRot(),
+                        0.0F,
+                        poseStack,
+                        bufferSource,
+                        LightTexture.FULL_BRIGHT);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static List<Entity> projectionEntities(ProjectionData projection, Level level) {
+        if (cachedEntityProjection == projection
+                && cachedEntityProjectionVersion == projection.getRenderVersion()
+                && cachedEntityLevel == level) {
+            return cachedProjectionEntities;
+        }
+        var entities = new java.util.ArrayList<Entity>();
+        for (CompoundTag source : projection.getModel().getEntities()) {
+            try {
+                CompoundTag projected = ProjectionEntityTransforms.prepareForProjection(source, projection);
+                if (projected == null) continue;
+                Entity entity = EntityType.loadEntityRecursive(projected, level, loaded -> loaded);
+                if (entity == null) continue;
+                ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
+                entities.add(entity);
+            } catch (Exception ignored) {
+            }
+        }
+        cachedEntityProjection = projection;
+        cachedEntityProjectionVersion = projection.getRenderVersion();
+        cachedEntityLevel = level;
+        cachedProjectionEntities = List.copyOf(entities);
+        return cachedProjectionEntities;
     }
 
     private static ProjectionRenderCache getRenderCache(ProjectionData projection) {

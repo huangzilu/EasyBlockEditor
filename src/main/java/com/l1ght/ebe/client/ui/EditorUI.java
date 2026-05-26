@@ -32,7 +32,6 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
-import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
@@ -154,6 +153,7 @@ public class EditorUI {
     private static BuildingModel convertProjectionModel;
     private static String convertProjectionName = "converted_projection";
     private static String convertProjectionFormat = ".ebe";
+    private static boolean convertProjectionFormatDropdownOpen = false;
     private static int convertAx = 0, convertAy = 0, convertAz = 0;
     private static int convertBx = 0, convertBy = 0, convertBz = 0;
     private static int convertPreviewYaw = -135;
@@ -4632,17 +4632,41 @@ public class EditorUI {
     }
 
     private static UIElement buildConvertFormatSelector() {
-        var selector = new Selector<String>();
-        selector.layout(l -> l.widthPercent(100).height(22));
-        selector.setCandidates(List.of(".ebe", ".litematic"));
-        selector.setSelected(normalizeConvertProjectionFormat(), false);
-        selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
-        selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
-        selector.setOnValueChanged(value -> {
-            convertProjectionFormat = normalizeConvertProjectionFormat(value);
+        var wrapper = new UIElement();
+        wrapper.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2));
+        wrapper.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        wrapper.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+
+        var current = normalizeConvertProjectionFormat();
+        var trigger = new Button();
+        trigger.setText(Component.literal(current + "  v"));
+        trigger.layout(l -> l.widthPercent(100).height(22));
+        trigger.style(s -> s.background(Sprites.RECT_RD_LIGHT));
+        trigger.setOnClick(e -> {
+            convertProjectionFormatDropdownOpen = !convertProjectionFormatDropdownOpen;
             refreshConvertProjectionPanel();
         });
-        return selector;
+        wrapper.addChild(trigger);
+
+        if (convertProjectionFormatDropdownOpen) {
+            var menu = new UIElement();
+            menu.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2));
+            menu.style(s -> s.background(Sprites.RECT_DARK));
+            for (String option : List.of(".ebe", ".litematic")) {
+                var item = new Button();
+                item.setText(Component.literal(option));
+                item.layout(l -> l.widthPercent(100).height(20));
+                item.style(s -> s.background(option.equals(current) ? Sprites.RECT_RD_T_SOLID : Sprites.RECT_RD_DARK));
+                item.setOnClick(e -> {
+                    convertProjectionFormat = normalizeConvertProjectionFormat(option);
+                    convertProjectionFormatDropdownOpen = false;
+                    refreshConvertProjectionPanel();
+                });
+                menu.addChild(item);
+            }
+            wrapper.addChild(menu);
+        }
+        return wrapper;
     }
 
     private static String normalizeConvertProjectionFormat() {
@@ -4709,13 +4733,7 @@ public class EditorUI {
     }
 
     private static void stabilizeDecorativeEntityPreview(Entity entity) {
-        if (entity == null) return;
-        entity.xOld = entity.getX();
-        entity.yOld = entity.getY();
-        entity.zOld = entity.getZ();
-        entity.xRotO = entity.getXRot();
-        entity.yRotO = entity.getYRot();
-        entity.tickCount = Math.max(entity.tickCount, 1);
+        ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
     }
 
     private static int addPreviewBlocks(BuildingModel model, FastTrackedDummyWorld world, List<BlockPos> core) {
@@ -4779,7 +4797,7 @@ public class EditorUI {
         int actualSz = occupied.sizeZ();
         model.getMetadata().setName(baseName);
         model.getMetadata().setSize(actualSx, actualSy, actualSz);
-        var region = model.addRegion("converted", occupied.minX(), occupied.minY(), occupied.minZ(), actualSx, actualSy, actualSz);
+        var region = model.addRegion("converted", 0, 0, 0, actualSx, actualSy, actualSz);
         var mutable = new BlockPos.MutableBlockPos();
         int copied = 0;
         for (int y = occupied.minY(); y <= occupied.maxY(); y++) {
@@ -4789,12 +4807,12 @@ public class EditorUI {
                     if (!mc.level.hasChunkAt(mutable)) continue;
                     BlockState state = mc.level.getBlockState(mutable);
                     if (state.isAir()) continue;
-                    region.setWorldBlock(x, y, z, state);
+                    region.setWorldBlock(x - occupied.minX(), y - occupied.minY(), z - occupied.minZ(), state);
                     if (state.hasBlockEntity()) {
                         var be = mc.level.getBlockEntity(mutable);
                         if (be != null) {
                             CompoundTag tag = be.saveWithId(mc.level.registryAccess());
-                            region.setWorldBlockEntity(x, y, z, tag);
+                            region.setWorldBlockEntity(x - occupied.minX(), y - occupied.minY(), z - occupied.minZ(), tag);
                         }
                     }
                     copied++;
@@ -4803,7 +4821,8 @@ public class EditorUI {
         }
         int copiedEntities = copyDecorativeEntitiesFromWorld(
                 model,
-                new AABB(occupied.minX(), occupied.minY(), occupied.minZ(), occupied.maxX() + 1, occupied.maxY() + 1, occupied.maxZ() + 1));
+                new AABB(occupied.minX(), occupied.minY(), occupied.minZ(), occupied.maxX() + 1, occupied.maxY() + 1, occupied.maxZ() + 1),
+                occupied.minX(), occupied.minY(), occupied.minZ());
         convertProjectionModel = model;
         convertProjectionName = baseName;
         convertProjectionTab = 1;
@@ -4844,18 +4863,35 @@ public class EditorUI {
         return found ? new WorldBounds(actualMinX, actualMinY, actualMinZ, actualMaxX, actualMaxY, actualMaxZ) : null;
     }
 
-    private static int copyDecorativeEntitiesFromWorld(BuildingModel model, AABB bounds) {
+    private static int copyDecorativeEntitiesFromWorld(BuildingModel model, AABB bounds, int minX, int minY, int minZ) {
         var level = Minecraft.getInstance().level;
         if (level == null || model == null) return 0;
         int copied = 0;
         for (Entity entity : level.getEntities((Entity) null, bounds, EditorUI::isSupportedDecorativeEntity)) {
             CompoundTag tag = new CompoundTag();
             if (entity.save(tag)) {
-                model.addEntity(tag);
+                model.addEntity(toRelativeEntityTag(tag, minX, minY, minZ));
                 copied++;
             }
         }
         return copied;
+    }
+
+    private static CompoundTag toRelativeEntityTag(CompoundTag tag, int minX, int minY, int minZ) {
+        if (tag == null) return null;
+        var copy = tag.copy();
+        var pos = ProjectionEntityTransforms.readPos(copy);
+        if (pos != null) {
+            var list = new net.minecraft.nbt.ListTag();
+            list.add(net.minecraft.nbt.DoubleTag.valueOf(pos.x - minX));
+            list.add(net.minecraft.nbt.DoubleTag.valueOf(pos.y - minY));
+            list.add(net.minecraft.nbt.DoubleTag.valueOf(pos.z - minZ));
+            copy.put("Pos", list);
+        }
+        copy.remove("UUID");
+        copy.remove("UUIDMost");
+        copy.remove("UUIDLeast");
+        return copy;
     }
 
     private static boolean isSupportedDecorativeEntity(Entity entity) {

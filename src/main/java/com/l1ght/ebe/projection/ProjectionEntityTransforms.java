@@ -26,9 +26,13 @@ import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.phys.Vec3;
 
+import java.lang.reflect.Field;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ProjectionEntityTransforms {
+    private static final ConcurrentHashMap<String, Field> FIELD_CACHE = new ConcurrentHashMap<>();
+
     private ProjectionEntityTransforms() {
     }
 
@@ -104,6 +108,23 @@ public final class ProjectionEntityTransforms {
         ResourceLocation id = EntityType.getKey(entity.getType());
         if (id == null || isDeniedEntityPath(id.getPath())) return false;
         return entity.getType().getCategory() == MobCategory.MISC;
+    }
+
+    public static void stabilizeRenderableEntity(Entity entity) {
+        if (entity == null) return;
+        entity.xOld = entity.getX();
+        entity.yOld = entity.getY();
+        entity.zOld = entity.getZ();
+        entity.xRotO = entity.getXRot();
+        entity.yRotO = entity.getYRot();
+        setFloatField(entity, "xo", (float) entity.getX());
+        setFloatField(entity, "yo", (float) entity.getY());
+        setFloatField(entity, "zo", (float) entity.getZ());
+        setFloatField(entity, "yBodyRotO", entity.getYRot());
+        setFloatField(entity, "yHeadRotO", entity.getYRot());
+        setFloatField(entity, "yBodyRot", entity.getYRot());
+        setFloatField(entity, "yHeadRot", entity.getYRot());
+        entity.tickCount = Math.max(entity.tickCount, 1);
     }
 
     private static Vec3 transformPos(Vec3 localPos, ProjectionData projection) {
@@ -193,5 +214,35 @@ public final class ProjectionEntityTransforms {
                 || path.contains("experience")
                 || path.contains("item_entity")
                 || path.contains("area_effect");
+    }
+
+    private static void setFloatField(Entity entity, String name, float value) {
+        Field field = findField(entity.getClass(), name);
+        if (field == null) return;
+        try {
+            if (field.getType() == float.class) {
+                field.setFloat(entity, value);
+            } else if (field.getType() == double.class) {
+                field.setDouble(entity, value);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static Field findField(Class<?> type, String name) {
+        String key = type.getName() + "#" + name;
+        return FIELD_CACHE.computeIfAbsent(key, ignored -> {
+            Class<?> current = type;
+            while (current != null) {
+                try {
+                    Field field = current.getDeclaredField(name);
+                    field.setAccessible(true);
+                    return field;
+                } catch (NoSuchFieldException ignored2) {
+                    current = current.getSuperclass();
+                }
+            }
+            return null;
+        });
     }
 }

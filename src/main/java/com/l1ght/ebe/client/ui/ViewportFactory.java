@@ -203,9 +203,12 @@ public class ViewportFactory {
     private static boolean sceneReflectionInit = false;
     private static Method rendererEyePosMethod;
     private static Method rendererLookAtMethod;
+    private static Method rendererLastHitMethod;
 
     private static boolean dragSelecting = false;
     private static boolean penetrateSelect = false;
+    private static boolean suppressNextBlockSelection = false;
+    private static int suppressNextBlockSelectionTicks = 0;
     private static int dragStartX, dragStartY;
     private static int dragCurrentX, dragCurrentY;
     private static UIElement selectionRectOverlay;
@@ -257,6 +260,7 @@ public class ViewportFactory {
                 }
                 rendererEyePosMethod = findRendererVectorMethod(sceneRendererField.getType(), "getEyePos");
                 rendererLookAtMethod = findRendererVectorMethod(sceneRendererField.getType(), "getLookAt");
+                rendererLastHitMethod = findRendererVectorMethod(sceneRendererField.getType(), "getLastHit");
             }
         } catch (Exception e) {
             LOG.warn("Scene reflection failed", e);
@@ -679,6 +683,10 @@ public class ViewportFactory {
         if (currentScene == null) return;
         updateViewportInteractionState();
         tickProgressiveModelLoad();
+        stabilizeViewportEntities();
+        if (suppressNextBlockSelection && suppressNextBlockSelectionTicks-- <= 0) {
+            suppressNextBlockSelection = false;
+        }
         tickIrisViewportFailsafe();
         ensureIrisViewportFboSize();
         if (EditorUI.isTextFieldFocused()) return;
@@ -733,6 +741,15 @@ public class ViewportFactory {
 
         if (moved) {
             currentScene.setCenter(center);
+        }
+    }
+
+    private static void stabilizeViewportEntities() {
+        if (currentWorld == null) return;
+        for (var entity : currentWorld.getAllRenderedEntities()) {
+            if (ProjectionEntityTransforms.isAllowedDecorativeEntity(entity)) {
+                ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
+            }
         }
     }
 
@@ -1330,6 +1347,11 @@ public class ViewportFactory {
     }
 
     private static void handleBlockClick(BlockPos pos, net.minecraft.core.Direction face) {
+        if (suppressNextBlockSelection) {
+            suppressNextBlockSelection = false;
+            suppressNextBlockSelectionTicks = 0;
+            return;
+        }
         clearDecorativeEntitySelection();
         var state = EditorUI.getState();
         state.setCursorX(pos.getX());
@@ -1422,6 +1444,8 @@ public class ViewportFactory {
             if (selected == null) return;
 
             applyDecorativeEntitySelection(selected);
+            suppressNextBlockSelection = true;
+            suppressNextBlockSelectionTicks = 2;
             var stop = eventClass.getMethod("stopPropagation");
             stop.invoke(rawEvent);
         } catch (Exception e) {
@@ -1461,13 +1485,18 @@ public class ViewportFactory {
         var renderer = currentScene.getRenderer();
         if (renderer == null) return null;
         Vector3f eye = invokeRendererVector(renderer, rendererEyePosMethod, "getEyePos");
-        Vector3f lookAt = invokeRendererVector(renderer, rendererLookAtMethod, "getLookAt");
-        if (eye == null || lookAt == null) return null;
+        Vector3f lastHit = invokeRendererVector(renderer, rendererLastHitMethod, "getLastHit");
+        if (eye == null || lastHit == null) return null;
 
         Vec3 start = new Vec3(eye.x, eye.y, eye.z);
-        Vec3 direction = new Vec3(lookAt.x - eye.x, lookAt.y - eye.y, lookAt.z - eye.z);
+        Vec3 direction = new Vec3(lastHit.x - eye.x, lastHit.y - eye.y, lastHit.z - eye.z);
+        if (direction.lengthSqr() < 1.0E-6D) {
+            Vector3f lookAt = invokeRendererVector(renderer, rendererLookAtMethod, "getLookAt");
+            if (lookAt == null) return null;
+            direction = new Vec3(lookAt.x - eye.x, lookAt.y - eye.y, lookAt.z - eye.z);
+        }
         if (direction.lengthSqr() < 1.0E-6D) return null;
-        Vec3 end = start.add(direction.normalize().scale(128.0D));
+        Vec3 end = start.add(direction.normalize().scale(256.0D));
 
         double nearestBlockDistance = Double.POSITIVE_INFINITY;
         BlockHitResult blockHit = getCurrentBlockHitResult();
@@ -1538,13 +1567,7 @@ public class ViewportFactory {
     }
 
     private static void stabilizeDecorativeEntity(Entity entity) {
-        if (entity == null) return;
-        entity.xOld = entity.getX();
-        entity.yOld = entity.getY();
-        entity.zOld = entity.getZ();
-        entity.xRotO = entity.getXRot();
-        entity.yRotO = entity.getYRot();
-        entity.tickCount = Math.max(entity.tickCount, 1);
+        ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
     }
 
     public static void handleMiddleClick(BlockPos pos) {

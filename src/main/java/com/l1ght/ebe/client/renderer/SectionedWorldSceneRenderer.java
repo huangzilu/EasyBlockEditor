@@ -1,6 +1,7 @@
 package com.l1ght.ebe.client.renderer;
 
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneEntityRenderHook;
@@ -1388,24 +1389,18 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var entity : level.getAllRenderedEntities()) {
             poseStack.pushPose();
             try {
-                if (entity.tickCount == 0) {
-                    entity.xOld = entity.getX();
-                    entity.yOld = entity.getY();
-                    entity.zOld = entity.getZ();
-                    entity.xRotO = entity.getXRot();
-                    entity.yRotO = entity.getYRot();
-                    entity.tickCount = 1;
-                }
-                double d0 = Mth.lerp(partialTicks, entity.xOld, entity.getX());
-                double d1 = Mth.lerp(partialTicks, entity.yOld, entity.getY());
-                double d2 = Mth.lerp(partialTicks, entity.zOld, entity.getZ());
-                float f = Mth.lerp(partialTicks, entity.yRotO, entity.getYRot());
+                ProjectionEntityTransforms.stabilizeRenderableEntity(entity);
+                float stablePartialTicks = 0.0F;
+                double d0 = Mth.lerp(stablePartialTicks, entity.xOld, entity.getX());
+                double d1 = Mth.lerp(stablePartialTicks, entity.yOld, entity.getY());
+                double d2 = Mth.lerp(stablePartialTicks, entity.zOld, entity.getZ());
+                float f = Mth.lerp(stablePartialTicks, entity.yRotO, entity.getYRot());
                 var renderManager = Minecraft.getInstance().getEntityRenderDispatcher();
-                int light = renderManager.getRenderer(entity).getPackedLightCoords(entity, partialTicks);
+                int light = renderManager.getRenderer(entity).getPackedLightCoords(entity, stablePartialTicks);
                 if (hook != null) {
-                    hook.applyEntity(world, entity, poseStack, partialTicks);
+                    hook.applyEntity(world, entity, poseStack, stablePartialTicks);
                 }
-                renderManager.render(entity, d0, d1, d2, f, partialTicks, poseStack, buffer, light);
+                renderManager.render(entity, d0, d1, d2, f, stablePartialTicks, poseStack, buffer, light);
             } catch (Exception ex) {
                 LOG.debug("Skipping decorative entity render after failure", ex);
             }
