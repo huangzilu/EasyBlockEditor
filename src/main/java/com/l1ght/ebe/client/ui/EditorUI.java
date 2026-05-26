@@ -32,6 +32,7 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollerMode;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Tab;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TabView;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
@@ -154,7 +155,6 @@ public class EditorUI {
     private static BuildingModel convertProjectionModel;
     private static String convertProjectionName = "converted_projection";
     private static String convertProjectionFormat = ".ebe";
-    private static boolean convertProjectionFormatDropdownOpen = false;
     private static int convertAx = 0, convertAy = 0, convertAz = 0;
     private static int convertBx = 0, convertBy = 0, convertBz = 0;
     private static int convertPreviewYaw = -135;
@@ -4760,41 +4760,22 @@ public class EditorUI {
     }
 
     private static UIElement buildConvertFormatSelector() {
-        var wrapper = new UIElement();
-        wrapper.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2));
-        wrapper.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
-        wrapper.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        var selector = new Selector<String>();
+        selector.layout(l -> l.widthPercent(100).height(22));
+        selector.setCandidates(List.of(".ebe", ".litematic"));
+        selector.setSelected(normalizeConvertProjectionFormat(), false);
+        selector.setOnValueChanged(value -> convertProjectionFormat = normalizeConvertProjectionFormat(value));
+        protectSelectorEvents(selector);
+        return selector;
+    }
 
-        var current = normalizeConvertProjectionFormat();
-        var trigger = new Button();
-        trigger.setText(Component.literal(current + "  v"));
-        trigger.layout(l -> l.widthPercent(100).height(22));
-        trigger.style(s -> s.background(Sprites.RECT_RD_LIGHT));
-        trigger.setOnClick(e -> {
-            convertProjectionFormatDropdownOpen = !convertProjectionFormatDropdownOpen;
-            refreshConvertProjectionPanel();
-        });
-        wrapper.addChild(trigger);
-
-        if (convertProjectionFormatDropdownOpen) {
-            var menu = new UIElement();
-            menu.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2));
-            menu.style(s -> s.background(Sprites.RECT_DARK));
-            for (String option : List.of(".ebe", ".litematic")) {
-                var item = new Button();
-                item.setText(Component.literal(option));
-                item.layout(l -> l.widthPercent(100).height(20));
-                item.style(s -> s.background(option.equals(current) ? Sprites.RECT_RD_T_SOLID : Sprites.RECT_RD_DARK));
-                item.setOnClick(e -> {
-                    convertProjectionFormat = normalizeConvertProjectionFormat(option);
-                    convertProjectionFormatDropdownOpen = false;
-                    refreshConvertProjectionPanel();
-                });
-                menu.addChild(item);
-            }
-            wrapper.addChild(menu);
-        }
-        return wrapper;
+    private static void protectSelectorEvents(Selector<?> selector) {
+        selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        selector.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
     }
 
     private static String normalizeConvertProjectionFormat() {

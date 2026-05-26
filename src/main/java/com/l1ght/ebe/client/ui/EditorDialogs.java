@@ -7,9 +7,9 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Dialog;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay;
+import com.lowdragmc.lowdraglib2.gui.ui.elements.Selector;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.TextField;
 import com.lowdragmc.lowdraglib2.gui.ui.event.UIEvents;
-import com.lowdragmc.lowdraglib2.gui.ui.styletemplate.Sprites;
 import dev.vfyjxf.taffy.style.FlexDirection;
 import net.minecraft.network.chat.Component;
 
@@ -69,46 +69,12 @@ public class EditorDialogs {
         formatLabel.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(9).textShadow(false));
         content.addChild(formatLabel);
 
-        String[] selectedFormat = { normalizeFormat(defaultFormat) };
-        boolean[] dropdownOpen = { false };
-        var formatWrapper = new UIElement();
-        formatWrapper.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2));
-        formatWrapper.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
-        formatWrapper.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
-        Runnable[] refreshFormatSelector = new Runnable[1];
-        refreshFormatSelector[0] = () -> {
-            formatWrapper.clearAllChildren();
-            var trigger = new Button();
-            trigger.setText(Component.literal(selectedFormat[0] + "  v"));
-            trigger.layout(l -> l.widthPercent(100).height(22));
-            trigger.style(s -> s.background(Sprites.RECT_RD_LIGHT));
-            trigger.setOnClick(e -> {
-                dropdownOpen[0] = !dropdownOpen[0];
-                refreshFormatSelector[0].run();
-            });
-            formatWrapper.addChild(trigger);
-
-            if (dropdownOpen[0]) {
-                var menu = new UIElement();
-                menu.layout(l -> l.widthPercent(100).heightAuto().flexDirection(FlexDirection.COLUMN).gapAll(2).paddingAll(2));
-                menu.style(s -> s.background(Sprites.RECT_DARK));
-                for (String option : supportedOutputFormats()) {
-                    var item = new Button();
-                    item.setText(Component.literal(option));
-                    item.layout(l -> l.widthPercent(100).height(20));
-                    item.style(s -> s.background(option.equals(selectedFormat[0]) ? Sprites.RECT_RD_T_SOLID : Sprites.RECT_RD_DARK));
-                    item.setOnClick(e -> {
-                        selectedFormat[0] = normalizeFormat(option);
-                        dropdownOpen[0] = false;
-                        refreshFormatSelector[0].run();
-                    });
-                    menu.addChild(item);
-                }
-                formatWrapper.addChild(menu);
-            }
-        };
-        refreshFormatSelector[0].run();
-        content.addChild(formatWrapper);
+        var selector = new Selector<String>();
+        selector.layout(l -> l.widthPercent(100).height(22));
+        selector.setCandidates(supportedOutputFormats());
+        selector.setSelected(normalizeFormat(defaultFormat), false);
+        protectSelectorEvents(selector);
+        content.addChild(selector);
 
         var hint = new Label();
         hint.setText(Component.translatable("ebe.editor.output_format_hint"));
@@ -120,7 +86,7 @@ public class EditorDialogs {
         dialog.addButton(new Button()
                 .setText(Component.translatable("ebe.history.dialog.confirm"))
                 .setOnClick(e -> {
-                    String name = normalizeOutputName(nameField.getText(), selectedFormat[0]);
+                    String name = normalizeOutputName(nameField.getText(), selector.getValue());
                     if (name.isBlank() || name.matches(".*[\\\\/:*?\"<>|].*")) {
                         return;
                     }
@@ -133,6 +99,15 @@ public class EditorDialogs {
 
         dialog.show(parent);
         return dialog;
+    }
+
+    private static void protectSelectorEvents(Selector<?> selector) {
+        selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        selector.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        selector.dialog.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
     }
 
     private static String normalizeOutputName(String rawName, String selectedFormat) {
