@@ -201,6 +201,8 @@ public class ViewportFactory {
         final int maxExactBlocks;
         int exactBlocks;
         int tickCounter;
+        int coverageCursor;
+        int focusLoadsSinceCoverage;
 
         DynamicExactViewportWindow(BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
             this.model = model;
@@ -1593,6 +1595,12 @@ public class ViewportFactory {
     }
 
     private static ExactPatch selectNextExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
+        ExactPatch coveragePatch = selectCoverageExactPatch(window, focus);
+        if (coveragePatch != null && shouldLoadCoveragePatch(window)) {
+            window.focusLoadsSinceCoverage = 0;
+            return coveragePatch;
+        }
+
         ExactPatch best = null;
         double bestDistance = Double.MAX_VALUE;
         double farthestLoadedDistance = -1.0D;
@@ -1614,9 +1622,81 @@ public class ViewportFactory {
                 && window.exactBlocks >= (int) (window.maxExactBlocks * 0.95D)
                 && farthestLoadedDistance >= 0.0D
                 && bestDistance >= farthestLoadedDistance - 256.0D) {
+            if (coveragePatch != null && bestDistance > farthestLoadedDistance + 4096.0D) {
+                window.focusLoadsSinceCoverage = 0;
+                return coveragePatch;
+            }
             return null;
         }
+        if (best != null) {
+            window.focusLoadsSinceCoverage++;
+        }
         return best;
+    }
+
+    private static boolean shouldLoadCoveragePatch(DynamicExactViewportWindow window) {
+        if (window.exactBlocks < (int) (window.maxExactBlocks * 0.35D)) {
+            return false;
+        }
+        if (window.exactBlocks >= (int) (window.maxExactBlocks * 0.92D)) {
+            return window.focusLoadsSinceCoverage >= 6;
+        }
+        return window.focusLoadsSinceCoverage >= 2;
+    }
+
+    private static ExactPatch selectCoverageExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
+        if (window.patches.isEmpty()) return null;
+        int size = window.patches.size();
+        int start = Math.floorMod(window.coverageCursor, size);
+        int step = coverageStep(size);
+        ExactPatch best = null;
+        double farthestLoadedDistance = farthestLoadedDistance(window, focus);
+        for (int i = 0; i < size; i++) {
+            int index = Math.floorMod(start + i * step, size);
+            var patch = window.patches.get(index);
+            if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
+                continue;
+            }
+            if (window.exactBlocks >= (int) (window.maxExactBlocks * 0.92D)
+                    && farthestLoadedDistance >= 0.0D
+                    && patch.distanceSqr(focus) >= farthestLoadedDistance - 256.0D) {
+                continue;
+            }
+            best = patch;
+            window.coverageCursor = Math.floorMod(index + step, size);
+            break;
+        }
+        return best;
+    }
+
+    private static int coverageStep(int size) {
+        int[] candidates = {7919, 3571, 1543, 701, 313, 131, 53, 17, 5, 1};
+        for (int candidate : candidates) {
+            if (candidate < size && gcd(candidate, size) == 1) {
+                return candidate;
+            }
+        }
+        return 1;
+    }
+
+    private static int gcd(int a, int b) {
+        a = Math.abs(a);
+        b = Math.abs(b);
+        while (b != 0) {
+            int t = a % b;
+            a = b;
+            b = t;
+        }
+        return Math.max(1, a);
+    }
+
+    private static double farthestLoadedDistance(DynamicExactViewportWindow window, Vector3f focus) {
+        double farthest = -1.0D;
+        for (var loaded : window.loadedPatches.values()) {
+            if (loaded.size() <= 0) continue;
+            farthest = Math.max(farthest, loaded.patch().distanceSqr(focus));
+        }
+        return farthest;
     }
 
     private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus) {
