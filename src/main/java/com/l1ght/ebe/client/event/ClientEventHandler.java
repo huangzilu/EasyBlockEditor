@@ -26,6 +26,7 @@ public class ClientEventHandler {
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         ProjectionManager.loadPersistentStateIfNeeded();
+        ProjectionManager.tickPlaceAllUploads();
         com.l1ght.ebe.client.ui.EditorUI.pollFileTreeRefresh();
         PrinterController.tick();
         if (ProjectionController.isControlMode()) {

@@ -25,9 +25,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.Queue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProjectionManager {
@@ -47,10 +49,14 @@ public class ProjectionManager {
     private static boolean progressAuthoritative = false;
     private static boolean placeAllInProgress = false;
     private static boolean placementEntitiesQueued = false;
+    private static final Queue<PlaceAllUploadCursor> pendingPlaceAllUploads = new ArrayDeque<>();
     private static boolean persistentStateLoaded = false;
     private static boolean restoringPersistentState = false;
     private static long lastMissingPersistLogMs = 0L;
     private static final AtomicInteger PROJECTION_COMPUTE_SEQUENCE = new AtomicInteger();
+    private static boolean projectionTransformInFlight = false;
+    private static PendingProjectionTransform pendingProjectionTransform;
+    private static CompletionScanState completionScanState;
 
     public static void setProjection(BuildingModel model) {
         setProjection(model, null);
@@ -62,11 +68,15 @@ public class ProjectionManager {
             projectionLoaded = false;
             placeAllInProgress = false;
             placementEntitiesQueued = false;
+            pendingPlaceAllUploads.clear();
+            completionScanState = null;
             deletePersistentState();
             return;
         }
         placeAllInProgress = false;
         placementEntitiesQueued = false;
+        pendingPlaceAllUploads.clear();
+        completionScanState = null;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -85,6 +95,8 @@ public class ProjectionManager {
         if (model == null) return;
         placeAllInProgress = false;
         placementEntitiesQueued = false;
+        pendingPlaceAllUploads.clear();
+        completionScanState = null;
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -106,6 +118,8 @@ public class ProjectionManager {
         projectionLoaded = false;
         placeAllInProgress = false;
         placementEntitiesQueued = false;
+        pendingPlaceAllUploads.clear();
+        completionScanState = null;
         savePersistentState(false);
     }
 
@@ -114,6 +128,8 @@ public class ProjectionManager {
         projectionLoaded = false;
         placeAllInProgress = false;
         placementEntitiesQueued = false;
+        pendingPlaceAllUploads.clear();
+        completionScanState = null;
         deletePersistentState();
     }
 
@@ -210,22 +226,53 @@ public class ProjectionManager {
     private static void recomputeProjectionAsync(BlockPos origin, Rotation rotation, Mirror mirror, BlockPos center, boolean meshChanged) {
         ProjectionData projection = activeProjection;
         if (projection == null) return;
+        var request = new PendingProjectionTransform(projection, origin.immutable(), rotation, mirror, center.immutable(), meshChanged);
+        if (projectionTransformInFlight) {
+            pendingProjectionTransform = request;
+            return;
+        }
+        startProjectionTransform(request);
+    }
+
+    private static void startProjectionTransform(PendingProjectionTransform request) {
+        ProjectionData projection = request.projection();
+        if (projection == null || activeProjection != projection) return;
+        projectionTransformInFlight = true;
         int sequence = PROJECTION_COMPUTE_SEQUENCE.incrementAndGet();
         BuildingModel model = projection.getModel();
         String cacheKey = "projection:" + System.identityHashCode(model) + ":" + projection.getMeshVersion() + ":" + projection.getRenderVersion();
-        ProjectionComputePlanner.computeAsync(cacheKey, model, origin, rotation, mirror, center, false)
+        ProjectionComputePlanner.computeAsync(cacheKey, model, request.origin(), request.rotation(), request.mirror(), request.center(), false)
                 .whenComplete((computed, error) -> Minecraft.getInstance().execute(() -> {
-                    if (sequence != PROJECTION_COMPUTE_SEQUENCE.get() || activeProjection != projection) {
-                        return;
+                    try {
+                        if (sequence != PROJECTION_COMPUTE_SEQUENCE.get() || activeProjection != projection) {
+                            return;
+                        }
+                        if (error != null) {
+                            LOG.warn("Failed to recompute projection transform", error);
+                            return;
+                        }
+                        projectionOrigin = request.origin();
+                        projection.applyComputedTransform(computed, request.origin(), request.rotation(), request.mirror(), request.center(), request.meshChanged());
+                        savePersistentState(false);
+                    } finally {
+                        projectionTransformInFlight = false;
+                        var pending = pendingProjectionTransform;
+                        pendingProjectionTransform = null;
+                        if (pending != null && activeProjection == pending.projection()) {
+                            startProjectionTransform(pending);
+                        }
                     }
-                    if (error != null) {
-                        LOG.warn("Failed to recompute projection transform", error);
-                        return;
-                    }
-                    projectionOrigin = origin;
-                    projection.applyComputedTransform(computed, origin, rotation, mirror, center, meshChanged);
-                    savePersistentState(false);
                 }));
+    }
+
+    private record PendingProjectionTransform(
+            ProjectionData projection,
+            BlockPos origin,
+            Rotation rotation,
+            Mirror mirror,
+            BlockPos center,
+            boolean meshChanged
+    ) {
     }
 
     public static void loadPersistentStateIfNeeded() {
@@ -422,31 +469,68 @@ public class ProjectionManager {
 
         setProgress(0, sparseIndex.size());
         placeAllInProgress = true;
+        pendingPlaceAllUploads.clear();
         for (var byChunk : sparseIndex.entriesByPhaseAndChunk().values()) {
             for (var chunkEntries : byChunk.values()) {
-                sendPlaceAllPacketsFromSparse(chunkEntries);
+                queuePlaceAllPacketsFromSparse(chunkEntries);
             }
+        }
+        tickPlaceAllUploads();
+    }
+
+    public static void tickPlaceAllUploads() {
+        if (pendingPlaceAllUploads.isEmpty()) return;
+        int packets = 0;
+        while (packets < 2 && !pendingPlaceAllUploads.isEmpty()) {
+            var cursor = pendingPlaceAllUploads.peek();
+            if (cursor == null) {
+                pendingPlaceAllUploads.poll();
+                continue;
+            }
+            var batch = cursor.nextBatch(NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET, PLACE_ALL_MAX_NBT_CHARS_PER_PACKET);
+            if (cursor.isDone()) {
+                pendingPlaceAllUploads.poll();
+            }
+            if (batch == null || batch.isEmpty()) continue;
+            PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
+            packets++;
         }
     }
 
-    private static void sendPlaceAllPacketsFromSparse(List<ProjectionSparseIndex.Entry> entries) {
-        List<PlaceBlocksPayload.Entry> batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
-        int nbtChars = 0;
-        for (var entry : entries) {
-            String nbt = NetworkLimits.bounded(entry.nbtString(), NetworkLimits.MAX_BLOCK_NBT_CHARS);
-            int entryNbtChars = nbt.length();
-            boolean fullByCount = batch.size() >= NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET;
-            boolean fullByNbt = !batch.isEmpty() && nbtChars + entryNbtChars > PLACE_ALL_MAX_NBT_CHARS_PER_PACKET;
-            if (fullByCount || fullByNbt) {
-                PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
-                batch = new ArrayList<>(Math.min(entries.size(), NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET));
-                nbtChars = 0;
-            }
-            batch.add(new PlaceBlocksPayload.Entry(entry.pos(), entry.stateId(), nbt));
-            nbtChars += entryNbtChars;
+    private static void queuePlaceAllPacketsFromSparse(List<ProjectionSparseIndex.Entry> entries) {
+        if (entries != null && !entries.isEmpty()) {
+            pendingPlaceAllUploads.add(new PlaceAllUploadCursor(entries));
         }
-        if (!batch.isEmpty()) {
-            PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
+    }
+
+    private static final class PlaceAllUploadCursor {
+        private final List<ProjectionSparseIndex.Entry> entries;
+        private int index;
+
+        private PlaceAllUploadCursor(List<ProjectionSparseIndex.Entry> entries) {
+            this.entries = entries == null ? List.of() : entries;
+        }
+
+        private List<PlaceBlocksPayload.Entry> nextBatch(int maxCount, int maxNbtChars) {
+            if (isDone()) return List.of();
+            var batch = new ArrayList<PlaceBlocksPayload.Entry>(Math.min(entries.size() - index, maxCount));
+            int nbtChars = 0;
+            while (index < entries.size() && batch.size() < maxCount) {
+                var entry = entries.get(index);
+                String nbt = NetworkLimits.bounded(entry.nbtString(), NetworkLimits.MAX_BLOCK_NBT_CHARS);
+                int entryNbtChars = nbt.length();
+                if (!batch.isEmpty() && nbtChars + entryNbtChars > maxNbtChars) {
+                    break;
+                }
+                batch.add(new PlaceBlocksPayload.Entry(entry.pos(), entry.stateId(), nbt));
+                nbtChars += entryNbtChars;
+                index++;
+            }
+            return batch;
+        }
+
+        private boolean isDone() {
+            return index >= entries.size();
         }
     }
 
@@ -485,17 +569,56 @@ public class ProjectionManager {
         if (activeProjection == null || !projectionLoaded || activeProjection.getBlockCount() <= 0) {
             return false;
         }
+        if (placeAllInProgress && !pendingPlaceAllUploads.isEmpty()) {
+            return false;
+        }
 
         var mc = Minecraft.getInstance();
         var level = mc.level;
         if (level == null) return false;
 
-        for (var pb : activeProjection.getSparseIndex().blocks()) {
+        var blocks = activeProjection.getSparseIndex().blocks();
+        if (blocks.size() <= 100_000) {
+            for (var pb : blocks) {
+                if (!targetBlockPlaced(pb)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        if (completionScanState == null
+                || completionScanState.projection != activeProjection
+                || completionScanState.version != activeProjection.getRenderVersion()) {
+            completionScanState = new CompletionScanState(activeProjection, activeProjection.getRenderVersion());
+        }
+
+        int scanned = 0;
+        int budget = 8192;
+        while (completionScanState.index < blocks.size() && scanned < budget) {
+            var pb = blocks.get(completionScanState.index++);
+            scanned++;
             if (!targetBlockPlaced(pb)) {
+                completionScanState.index = 0;
                 return false;
             }
         }
-        return true;
+        if (completionScanState.index >= blocks.size()) {
+            completionScanState = null;
+            return true;
+        }
+        return false;
+    }
+
+    private static final class CompletionScanState {
+        private final ProjectionData projection;
+        private final int version;
+        private int index;
+
+        private CompletionScanState(ProjectionData projection, int version) {
+            this.projection = projection;
+            this.version = version;
+        }
     }
 
     public static void finishPlacementAndUnload() {

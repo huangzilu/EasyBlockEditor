@@ -3,6 +3,8 @@ package com.l1ght.ebe.client.renderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
+import com.l1ght.ebe.projection.mega.ProjectionShellMesh;
+import com.l1ght.ebe.projection.mega.ProjectionShellMeshBuilder;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneBlockRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ISceneEntityRenderHook;
 import com.lowdragmc.lowdraglib2.client.scene.ImmediateWorldSceneRenderer;
@@ -94,6 +96,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private final Set<SectionPos> dirtySections = new LinkedHashSet<>();
     private final Set<BlockPos> tileEntities = new LinkedHashSet<>();
     private ProjectionLodPyramid viewportLodPyramid = ProjectionLodPyramid.empty();
+    private ProjectionShellMesh viewportShellMesh = ProjectionShellMesh.empty();
     private List<BlockState> viewportLodPalette = List.of();
     private HeatmapMode fastHeatmapMode = HeatmapMode.OFF;
 
@@ -222,10 +225,13 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     public void setViewportLod(ProjectionLodPyramid pyramid, List<BlockState> palette) {
         this.viewportLodPyramid = pyramid == null ? ProjectionLodPyramid.empty() : pyramid;
         this.viewportLodPalette = palette == null ? List.of() : List.copyOf(palette);
+        var level = chooseShellLevel(this.viewportLodPyramid);
+        this.viewportShellMesh = level == null ? ProjectionShellMesh.empty() : ProjectionShellMeshBuilder.build(level);
     }
 
     public void clearViewportLod() {
         this.viewportLodPyramid = ProjectionLodPyramid.empty();
+        this.viewportShellMesh = ProjectionShellMesh.empty();
         this.viewportLodPalette = List.of();
     }
 
@@ -769,6 +775,49 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private void renderViewportLod(Vector3f eyePos, boolean cameraMoving) {
+        if (viewportShellMesh != null && !viewportShellMesh.isEmpty()) {
+            renderViewportShellMesh(eyePos, cameraMoving);
+            return;
+        }
+        renderViewportLodBoxes(eyePos, cameraMoving);
+    }
+
+    private void renderViewportShellMesh(Vector3f eyePos, boolean cameraMoving) {
+        int maxFaces = lodFaceBudget(cameraMoving);
+        var faces = viewportShellMesh.faces();
+        int stride = Math.max(1, faces.size() / Math.max(1, maxFaces));
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+
+        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        int drawn = 0;
+        int renderDistance = viewportRenderDistance();
+        for (int i = 0; i < faces.size() && drawn < maxFaces; i += stride) {
+            var face = faces.get(i);
+            if (renderDistance > 0 && faceDistanceSqr(face, eyePos) > (double) renderDistance * renderDistance) {
+                continue;
+            }
+            if (isShellFaceCoveredByCompiledSections(face)) {
+                continue;
+            }
+            addShellFace(buffer, face);
+            drawn++;
+        }
+
+        if (drawn > 0) {
+            BufferUploader.drawWithShader(buffer.buildOrThrow());
+        }
+        RenderSystem.enableCull();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+    }
+
+    private void renderViewportLodBoxes(Vector3f eyePos, boolean cameraMoving) {
         if (viewportLodPyramid == null || viewportLodPyramid.isEmpty()) return;
         ProjectionLodPyramid.LodLevel level = chooseViewportLodLevel(cameraMoving);
         if (level == null || level.isEmpty()) return;
@@ -814,6 +863,28 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return levels.get(Math.min(1, levels.size() - 1));
     }
 
+    private ProjectionLodPyramid.LodLevel chooseShellLevel(ProjectionLodPyramid pyramid) {
+        if (pyramid == null || pyramid.isEmpty()) return null;
+        var levels = pyramid.levels();
+        if (levels == null || levels.isEmpty()) return null;
+        if ("quality".equals(performanceMode()) && levels.size() > 1) {
+            return levels.get(1);
+        }
+        return levels.get(0);
+    }
+
+    private int lodFaceBudget(boolean cameraMoving) {
+        String mode = performanceMode();
+        if (cameraMoving) {
+            if ("performance".equals(mode)) return 8192;
+            if ("quality".equals(mode)) return 32768;
+            return 16384;
+        }
+        if ("performance".equals(mode)) return 16384;
+        if ("quality".equals(mode)) return 65536;
+        return 32768;
+    }
+
     private int lodBoxBudget(boolean cameraMoving) {
         String mode = performanceMode();
         if (cameraMoving) {
@@ -847,10 +918,47 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return true;
     }
 
+    private boolean isShellFaceCoveredByCompiledSections(ProjectionShellMesh.Face face) {
+        int minX = Math.min(face.minX(), face.maxX());
+        int minY = Math.min(face.minY(), face.maxY());
+        int minZ = Math.min(face.minZ(), face.maxZ());
+        int maxX = Math.max(face.minX(), face.maxX());
+        int maxY = Math.max(face.minY(), face.maxY());
+        int maxZ = Math.max(face.minZ(), face.maxZ());
+        int minSectionX = Math.floorDiv(minX, SECTION_SIZE);
+        int minSectionY = Math.floorDiv(minY, SECTION_SIZE);
+        int minSectionZ = Math.floorDiv(minZ, SECTION_SIZE);
+        int maxSectionX = Math.floorDiv(Math.max(minX, maxX - 1), SECTION_SIZE);
+        int maxSectionY = Math.floorDiv(Math.max(minY, maxY - 1), SECTION_SIZE);
+        int maxSectionZ = Math.floorDiv(Math.max(minZ, maxZ - 1), SECTION_SIZE);
+
+        for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+            for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
+                for (int sx = minSectionX; sx <= maxSectionX; sx++) {
+                    var data = sections.get(new SectionPos(sx, sy, sz));
+                    if (data == null || !data.compiled) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     private double boxDistanceSqr(ProjectionLodPyramid.LodBox box, Vector3f eyePos) {
         double cx = (box.minX() + box.maxX()) * 0.5D;
         double cy = (box.minY() + box.maxY()) * 0.5D;
         double cz = (box.minZ() + box.maxZ()) * 0.5D;
+        double dx = cx - eyePos.x();
+        double dy = cy - eyePos.y();
+        double dz = cz - eyePos.z();
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private double faceDistanceSqr(ProjectionShellMesh.Face face, Vector3f eyePos) {
+        double cx = (face.minX() + face.maxX()) * 0.5D;
+        double cy = (face.minY() + face.maxY()) * 0.5D;
+        double cz = (face.minZ() + face.maxZ()) * 0.5D;
         double dx = cx - eyePos.x();
         double dy = cy - eyePos.y();
         double dz = cz - eyePos.z();
@@ -874,6 +982,35 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, rgb[0], rgb[1], rgb[2], alpha);
         addQuad(buffer, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1, rgb[0], rgb[1], rgb[2], Math.min(150, alpha + 18));
         addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, rgb[0], rgb[1], rgb[2], Math.max(18, alpha / 2));
+    }
+
+    private void addShellFace(BufferBuilder buffer, ProjectionShellMesh.Face face) {
+        float x0 = face.minX();
+        float y0 = face.minY();
+        float z0 = face.minZ();
+        float x1 = face.maxX();
+        float y1 = face.maxY();
+        float z1 = face.maxZ();
+        int[] rgb = lodColor(face.stateId());
+        float shade = switch (face.direction()) {
+            case UP -> 1.18F;
+            case DOWN -> 0.62F;
+            case NORTH, SOUTH -> 0.86F;
+            case EAST, WEST -> 1.0F;
+        };
+        int r = Mth.clamp(Math.round(rgb[0] * shade), 0, 255);
+        int g = Mth.clamp(Math.round(rgb[1] * shade), 0, 255);
+        int b = Mth.clamp(Math.round(rgb[2] * shade), 0, 255);
+        int alpha = Mth.clamp((int) (92 + face.density() * 118), 86, 220);
+
+        switch (face.direction()) {
+            case NORTH -> addQuad(buffer, x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, r, g, b, alpha);
+            case SOUTH -> addQuad(buffer, x1, y0, z1, x0, y0, z1, x0, y1, z1, x1, y1, z1, r, g, b, alpha);
+            case WEST -> addQuad(buffer, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1, r, g, b, alpha);
+            case EAST -> addQuad(buffer, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0, r, g, b, alpha);
+            case UP -> addQuad(buffer, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, r, g, b, alpha);
+            case DOWN -> addQuad(buffer, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, r, g, b, Math.max(40, alpha - 42));
+        }
     }
 
     private int[] lodColor(int stateId) {

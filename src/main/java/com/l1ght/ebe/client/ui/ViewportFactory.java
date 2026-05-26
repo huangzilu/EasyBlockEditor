@@ -6,6 +6,7 @@ import com.l1ght.ebe.client.projection.ProjectionLoadProfile;
 import com.l1ght.ebe.client.renderer.CachedIrisWorldSceneRenderer;
 import com.l1ght.ebe.client.renderer.FastTrackedDummyWorld;
 import com.l1ght.ebe.projection.compute.ComputedProjection;
+import com.l1ght.ebe.projection.compute.ViewportEntry;
 import com.l1ght.ebe.client.renderer.HeatmapMode;
 import com.l1ght.ebe.client.renderer.HeatmapRenderHook;
 import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
@@ -59,6 +60,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -101,6 +103,7 @@ public class ViewportFactory {
     private static int pendingDeltaOverlayFrames = 0;
     private static ProgressiveModelLoad progressiveLoad;
     private static ProgressiveComputedLoad progressiveComputedLoad;
+    private static DynamicExactViewportWindow dynamicExactWindow;
     private static int progressiveStatusCooldown = 0;
     private static final List<BlockPos> progressiveLoadedScratch = new ArrayList<>(4096);
     private static boolean progressiveCoreAttached = false;
@@ -185,6 +188,93 @@ public class ViewportFactory {
 
         boolean hasExactCap() {
             return maxExactBlocks > 0;
+        }
+    }
+
+    private static class DynamicExactViewportWindow {
+        final BuildingModel model;
+        final ComputedProjection computed;
+        final ProjectionLoadProfile profile;
+        final List<ExactPatch> patches;
+        final Map<ExactPatchKey, LoadedPatch> loadedPatches = new HashMap<>();
+        final Set<ExactPatchKey> emptyPatches = new HashSet<>();
+        final int maxExactBlocks;
+        int exactBlocks;
+        int tickCounter;
+
+        DynamicExactViewportWindow(BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
+            this.model = model;
+            this.computed = computed;
+            this.profile = profile;
+            this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
+            this.patches = model != null ? createModelExactPatches(model) : createComputedExactPatches(computed);
+        }
+
+        boolean isActive() {
+            return maxExactBlocks > 0 && !patches.isEmpty();
+        }
+    }
+
+    private record ExactPatchKey(int source, int sectionX, int sectionY, int sectionZ) {
+    }
+
+    private static final class ExactPatch {
+        final ExactPatchKey key;
+        final int regionIndex;
+        final int startX;
+        final int startY;
+        final int startZ;
+        final int sizeX;
+        final int sizeY;
+        final int sizeZ;
+        final List<ViewportEntry> computedEntries;
+        final double centerX;
+        final double centerY;
+        final double centerZ;
+
+        private ExactPatch(ExactPatchKey key, int regionIndex, int startX, int startY, int startZ,
+                           int sizeX, int sizeY, int sizeZ, double centerX, double centerY, double centerZ) {
+            this.key = key;
+            this.regionIndex = regionIndex;
+            this.startX = startX;
+            this.startY = startY;
+            this.startZ = startZ;
+            this.sizeX = sizeX;
+            this.sizeY = sizeY;
+            this.sizeZ = sizeZ;
+            this.computedEntries = null;
+            this.centerX = centerX;
+            this.centerY = centerY;
+            this.centerZ = centerZ;
+        }
+
+        private ExactPatch(ExactPatchKey key, List<ViewportEntry> computedEntries,
+                           double centerX, double centerY, double centerZ) {
+            this.key = key;
+            this.regionIndex = -1;
+            this.startX = 0;
+            this.startY = 0;
+            this.startZ = 0;
+            this.sizeX = 0;
+            this.sizeY = 0;
+            this.sizeZ = 0;
+            this.computedEntries = computedEntries;
+            this.centerX = centerX;
+            this.centerY = centerY;
+            this.centerZ = centerZ;
+        }
+
+        double distanceSqr(Vector3f focus) {
+            double dx = centerX - focus.x();
+            double dy = centerY - focus.y();
+            double dz = centerZ - focus.z();
+            return dx * dx + dy * dy + dz * dz;
+        }
+    }
+
+    private record LoadedPatch(ExactPatch patch, List<BlockPos> blocks) {
+        int size() {
+            return blocks == null ? 0 : blocks.size();
         }
     }
 
@@ -562,6 +652,10 @@ public class ViewportFactory {
 
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
+        if (shouldUseDynamicExactViewport(profile)) {
+            beginDynamicExactViewport(model, null, autoCamera, profile);
+            return;
+        }
         progressiveLoad = new ProgressiveModelLoad(model, autoCamera, profile);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createModelOutlineSamples(model) : List.of();
         startViewportLodBuild(model, null, profile);
@@ -616,6 +710,10 @@ public class ViewportFactory {
 
         hasLoadedModel = false;
         shaderProbeSceneActive = false;
+        if (shouldUseDynamicExactViewport(profile)) {
+            beginDynamicExactViewport(null, computed, autoCamera, profile);
+            return;
+        }
         progressiveComputedLoad = new ProgressiveComputedLoad(computed, autoCamera, profile);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createComputedOutlineSamples(computed) : List.of();
         startViewportLodBuild(null, computed, profile);
@@ -704,6 +802,7 @@ public class ViewportFactory {
         if (currentScene == null) return;
         updateViewportInteractionState();
         tickProgressiveModelLoad();
+        tickDynamicExactViewport();
         stabilizeViewportEntities();
         if (suppressNextBlockSelection && suppressNextBlockSelectionTicks-- <= 0) {
             suppressNextBlockSelection = false;
@@ -1091,6 +1190,59 @@ public class ViewportFactory {
     private record ViewportLodBuildResult(ProjectionSparseStore store, ProjectionLodPyramid pyramid) {
     }
 
+    private static boolean shouldUseDynamicExactViewport(ProjectionLoadProfile profile) {
+        return profile != null
+                && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()
+                && sectionedRenderer != null
+                && !shouldUseIrisOffscreenRenderer();
+    }
+
+    private static void beginDynamicExactViewport(BuildingModel model, ComputedProjection computed,
+                                                  boolean autoCamera, ProjectionLoadProfile profile) {
+        dynamicExactWindow = new DynamicExactViewportWindow(model, computed, profile);
+        progressiveOutlineSamples = model != null && shouldShowProgressiveOutline(profile)
+                ? createModelOutlineSamples(model)
+                : computed != null && shouldShowProgressiveOutline(profile) ? createComputedOutlineSamples(computed) : List.of();
+        startViewportLodBuild(model, computed, profile);
+
+        var core = getSceneCore();
+        if (sectionedRenderer != null && core != null && !progressiveCoreAttached) {
+            sectionedRenderer.attachRenderedCore(core, createCombinedHook());
+            progressiveCoreAttached = true;
+        }
+
+        int entitiesAdded = model != null ? addModelEntitiesToViewportWorld(model)
+                : computed != null ? addModelEntitiesToViewportWorld(computed.getModel()) : 0;
+        currentScene.useCacheBuffer(true);
+        currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+        if (sectionedRenderer != null) {
+            sectionedRenderer.finishProgressiveLoad();
+            sectionedRenderer.rebuildTileEntities();
+        }
+        hasLoadedModel = true;
+        shaderProbeSceneActive = false;
+        activeLoadProfile = profile;
+        EditorUI.markMaterialListStale();
+        EditorUI.updateStatusBar();
+        EditorUI.setStatus(Component.translatable("ebe.editor.loading.dynamic_exact", dynamicExactWindow.maxExactBlocks));
+        LOG.info("Dynamic exact viewport started: patches={}, exactCap={}, entities={}, profile={}",
+                dynamicExactWindow.patches.size(), dynamicExactWindow.maxExactBlocks, entitiesAdded,
+                profile == null ? "none" : profile.risk());
+
+        if (autoCamera) {
+            if (computed != null) {
+                var fit = computed.getCameraFit();
+                savedYaw = fit.getYaw();
+                savedPitch = fit.getPitch();
+                savedZoom = fit.getZoom();
+                savedCenter = new Vector3f(fit.getCenterX(), fit.getCenterY(), fit.getCenterZ());
+            } else if (model != null) {
+                savedYaw = -135;
+                savedPitch = 25;
+            }
+        }
+    }
+
     private static void addSectionOutlineSample(Map<Long, BlockPos> samples, BlockPos pos) {
         addSectionOutlineSample(samples, pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
     }
@@ -1103,6 +1255,7 @@ public class ViewportFactory {
     private static void cancelProgressiveLoad() {
         progressiveLoad = null;
         progressiveComputedLoad = null;
+        dynamicExactWindow = null;
         progressiveStatusCooldown = 0;
         progressiveCoreAttached = false;
         progressiveOutlineSamples = List.of();
@@ -1321,6 +1474,271 @@ public class ViewportFactory {
         double dy = sy - centerY;
         double dz = sz - centerZ;
         return dx * dx + dy * dy + dz * dz;
+    }
+
+    private static List<ExactPatch> createModelExactPatches(BuildingModel model) {
+        if (model == null || model.getRegions().isEmpty()) return List.of();
+        var patches = new ArrayList<ExactPatch>();
+        for (int regionIndex = 0; regionIndex < model.getRegions().size(); regionIndex++) {
+            Region region = model.getRegions().get(regionIndex);
+            int sectionCountX = Math.max(1, (region.getSizeX() + 15) >> 4);
+            int sectionCountY = Math.max(1, (region.getSizeY() + 15) >> 4);
+            int sectionCountZ = Math.max(1, (region.getSizeZ() + 15) >> 4);
+            for (int sy = 0; sy < sectionCountY; sy++) {
+                for (int sz = 0; sz < sectionCountZ; sz++) {
+                    for (int sx = 0; sx < sectionCountX; sx++) {
+                        int startX = sx << 4;
+                        int startY = sy << 4;
+                        int startZ = sz << 4;
+                        int sizeX = Math.min(16, region.getSizeX() - startX);
+                        int sizeY = Math.min(16, region.getSizeY() - startY);
+                        int sizeZ = Math.min(16, region.getSizeZ() - startZ);
+                        int globalSectionX = Math.floorDiv(region.getOffsetX() + startX, 16);
+                        int globalSectionY = Math.floorDiv(region.getOffsetY() + startY, 16);
+                        int globalSectionZ = Math.floorDiv(region.getOffsetZ() + startZ, 16);
+                        patches.add(new ExactPatch(
+                                new ExactPatchKey(regionIndex, globalSectionX, globalSectionY, globalSectionZ),
+                                regionIndex,
+                                startX,
+                                startY,
+                                startZ,
+                                sizeX,
+                                sizeY,
+                                sizeZ,
+                                region.getOffsetX() + startX + sizeX * 0.5D,
+                                region.getOffsetY() + startY + sizeY * 0.5D,
+                                region.getOffsetZ() + startZ + sizeZ * 0.5D));
+                    }
+                }
+            }
+        }
+        return List.copyOf(patches);
+    }
+
+    private static List<ExactPatch> createComputedExactPatches(ComputedProjection computed) {
+        if (computed == null || computed.isEmpty()) return List.of();
+        var grouped = new LinkedHashMap<ExactPatchKey, List<ViewportEntry>>();
+        for (var batch : computed.getViewportBatches()) {
+            for (ViewportEntry entry : batch.getEntries()) {
+                BlockPos pos = entry.getPos();
+                var key = new ExactPatchKey(0, Math.floorDiv(pos.getX(), 16), Math.floorDiv(pos.getY(), 16), Math.floorDiv(pos.getZ(), 16));
+                grouped.computeIfAbsent(key, ignored -> new ArrayList<>()).add(entry);
+            }
+        }
+        if (grouped.isEmpty()) {
+            for (var entry : computed.getBlocks()) {
+                BlockPos pos = entry.getPos();
+                var key = new ExactPatchKey(0, Math.floorDiv(pos.getX(), 16), Math.floorDiv(pos.getY(), 16), Math.floorDiv(pos.getZ(), 16));
+                grouped.computeIfAbsent(key, ignored -> new ArrayList<>())
+                        .add(new ViewportEntry(pos, entry.getState(), entry));
+            }
+        }
+        var patches = new ArrayList<ExactPatch>(grouped.size());
+        for (var group : grouped.entrySet()) {
+            var key = group.getKey();
+            patches.add(new ExactPatch(
+                    key,
+                    List.copyOf(group.getValue()),
+                    (key.sectionX() << 4) + 8.0D,
+                    (key.sectionY() << 4) + 8.0D,
+                    (key.sectionZ() << 4) + 8.0D));
+        }
+        return List.copyOf(patches);
+    }
+
+    private static void tickDynamicExactViewport() {
+        var window = dynamicExactWindow;
+        if (window == null || !window.isActive() || currentWorld == null || currentScene == null) {
+            return;
+        }
+        if (viewportInteractionFrames > 0 && EBEClientConfig.viewportDegradeWhileMoving.get()) {
+            return;
+        }
+
+        long deadline = System.nanoTime() + progressiveLoadBudgetNanos();
+        int maxPatches = dynamicExactPatchesPerTick(window.profile);
+        int loaded = 0;
+        Vector3f focus = new Vector3f(currentScene.getCenter());
+        while (loaded < maxPatches && System.nanoTime() < deadline) {
+            ExactPatch patch = selectNextExactPatch(window, focus);
+            if (patch == null) {
+                break;
+            }
+            LoadedPatch loadedPatch = loadExactPatch(window, patch, focus);
+            if (loadedPatch == null) {
+                window.emptyPatches.add(patch.key);
+                continue;
+            }
+            loaded++;
+            if (loadedPatch.size() > 0) {
+                scheduleProgressiveLoadCompile(loadedPatch.blocks());
+            }
+        }
+
+        if (loaded > 0 && window.tickCounter++ % 10 == 0) {
+            EditorUI.setStatus(Component.translatable(
+                    "ebe.editor.loading.dynamic_exact_progress",
+                    window.exactBlocks,
+                    window.maxExactBlocks,
+                    window.loadedPatches.size(),
+                    window.patches.size()));
+        }
+    }
+
+    private static int dynamicExactPatchesPerTick(ProjectionLoadProfile profile) {
+        String mode = EBEClientConfig.viewportPerformanceMode.get();
+        if ("performance".equals(mode)) return 1;
+        if ("quality".equals(mode)) return profile != null && profile.risk() == ProjectionLoadProfile.Risk.EXTREME ? 2 : 3;
+        return 2;
+    }
+
+    private static ExactPatch selectNextExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
+        ExactPatch best = null;
+        double bestDistance = Double.MAX_VALUE;
+        double farthestLoadedDistance = -1.0D;
+        for (var loaded : window.loadedPatches.values()) {
+            if (loaded.size() <= 0) continue;
+            farthestLoadedDistance = Math.max(farthestLoadedDistance, loaded.patch().distanceSqr(focus));
+        }
+        for (var patch : window.patches) {
+            if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
+                continue;
+            }
+            double distance = patch.distanceSqr(focus);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = patch;
+            }
+        }
+        if (best != null
+                && window.exactBlocks >= (int) (window.maxExactBlocks * 0.95D)
+                && farthestLoadedDistance >= 0.0D
+                && bestDistance >= farthestLoadedDistance - 256.0D) {
+            return null;
+        }
+        return best;
+    }
+
+    private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus) {
+        var blocks = collectExactPatchBlocks(window, patch);
+        window.loadedPatches.put(patch.key, new LoadedPatch(patch, List.of()));
+        if (blocks.isEmpty()) {
+            window.loadedPatches.remove(patch.key);
+            return null;
+        }
+
+        ensureExactCapacity(window, blocks.size(), focus);
+        if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
+            window.loadedPatches.remove(patch.key);
+            return null;
+        }
+
+        var core = getSceneCore();
+        for (var entry : blocks) {
+            addBlockToViewportWorld(entry.pos(), entry.state());
+            if (core != null) {
+                core.add(entry.pos().immutable());
+            }
+        }
+        var positions = blocks.stream().map(ExactBlock::pos).map(BlockPos::immutable).toList();
+        var loaded = new LoadedPatch(patch, positions);
+        window.loadedPatches.put(patch.key, loaded);
+        window.exactBlocks += positions.size();
+        return loaded;
+    }
+
+    private static void ensureExactCapacity(DynamicExactViewportWindow window, int incomingBlocks, Vector3f focus) {
+        if (incomingBlocks <= 0) return;
+        while (window.exactBlocks + incomingBlocks > window.maxExactBlocks && !window.loadedPatches.isEmpty()) {
+            LoadedPatch farthest = null;
+            double farthestDistance = -1.0D;
+            for (var loaded : window.loadedPatches.values()) {
+                if (loaded.size() <= 0) continue;
+                double distance = loaded.patch().distanceSqr(focus);
+                if (distance > farthestDistance) {
+                    farthestDistance = distance;
+                    farthest = loaded;
+                }
+            }
+            if (farthest == null) {
+                break;
+            }
+            evictExactPatch(window, farthest);
+        }
+    }
+
+    private static void evictExactPatch(DynamicExactViewportWindow window, LoadedPatch loaded) {
+        if (loaded == null || loaded.blocks().isEmpty()) return;
+        var core = getSceneCore();
+        Map<BlockPos, Boolean> changed = new LinkedHashMap<>();
+        for (BlockPos pos : loaded.blocks()) {
+            currentWorld.removeBlock(pos);
+            if (core != null) {
+                core.remove(pos);
+            }
+            changed.put(pos, false);
+        }
+        if (sectionedRenderer != null) {
+            sectionedRenderer.applyBlockChanges(changed);
+        } else if (currentScene != null) {
+            currentScene.needCompileCache();
+        }
+        window.loadedPatches.remove(loaded.patch().key);
+        window.exactBlocks = Math.max(0, window.exactBlocks - loaded.size());
+    }
+
+    private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch) {
+        if (window.model != null) {
+            return collectModelExactPatchBlocks(window.model, patch);
+        }
+        if (window.computed != null) {
+            return collectComputedExactPatchBlocks(patch);
+        }
+        return List.of();
+    }
+
+    private static List<ExactBlock> collectModelExactPatchBlocks(BuildingModel model, ExactPatch patch) {
+        if (patch.regionIndex < 0 || patch.regionIndex >= model.getRegions().size()) return List.of();
+        Region region = model.getRegions().get(patch.regionIndex);
+        var container = region.getBlocks();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        var blocks = new ArrayList<ExactBlock>();
+        for (int y = 0; y < patch.sizeY; y++) {
+            for (int z = 0; z < patch.sizeZ; z++) {
+                for (int x = 0; x < patch.sizeX; x++) {
+                    int lx = patch.startX + x;
+                    int ly = patch.startY + y;
+                    int lz = patch.startZ + z;
+                    Object obj = container.get(lx, ly, lz);
+                    BlockState state = resolveBlockState(obj);
+                    if (state == null || state.isAir()) continue;
+                    int wx = lx + region.getOffsetX();
+                    int wy = ly + region.getOffsetY();
+                    int wz = lz + region.getOffsetZ();
+                    if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
+                    if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
+                    blocks.add(new ExactBlock(new BlockPos(wx, wy, wz), state));
+                }
+            }
+        }
+        return blocks;
+    }
+
+    private static List<ExactBlock> collectComputedExactPatchBlocks(ExactPatch patch) {
+        if (patch.computedEntries == null || patch.computedEntries.isEmpty()) return List.of();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        var blocks = new ArrayList<ExactBlock>(patch.computedEntries.size());
+        for (ViewportEntry entry : patch.computedEntries) {
+            BlockPos pos = entry.getPos();
+            BlockState state = entry.getState();
+            if (state == null || state.isAir()) continue;
+            if (!displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) continue;
+            blocks.add(new ExactBlock(pos.immutable(), state));
+        }
+        return blocks;
+    }
+
+    private record ExactBlock(BlockPos pos, BlockState state) {
     }
 
     private static void tickProgressiveComputedLoad() {

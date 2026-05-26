@@ -22,6 +22,7 @@ import java.util.Queue;
 
 public class PlaceAllQueue {
     private static final Queue<Job> JOBS = new ArrayDeque<>();
+    private static final int BULK_PLACE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE;
 
     public static synchronized void enqueue(ServerLevel level, ServerPlayer player, List<PlaceBlocksPayload.Entry> entries) {
         Map<ChunkPos, List<PlaceBlocksPayload.Entry>> byChunk = new LinkedHashMap<>();
@@ -76,7 +77,7 @@ public class PlaceAllQueue {
                     var state = Block.stateById(entry.stateId());
                     if (state != null && !state.isAir()) {
                         boolean placed = false;
-                        if (job.level.setBlock(entry.pos(), state, Block.UPDATE_ALL)) {
+                        if (job.level.setBlock(entry.pos(), state, BULK_PLACE_FLAGS)) {
                             job.placed++;
                             placed = true;
                         } else if (job.level.getBlockState(entry.pos()).equals(state) && blockEntityMatches(job.level, entry.pos(), entry.nbt())) {
@@ -139,7 +140,7 @@ public class PlaceAllQueue {
                 beNbt.putInt("z", pos.getZ());
                 be.loadWithComponents(beNbt, level.registryAccess());
                 be.setChanged();
-                level.sendBlockUpdated(pos, state, state, Block.UPDATE_ALL);
+                level.sendBlockUpdated(pos, state, state, BULK_PLACE_FLAGS);
             }
         } catch (Exception e) {
             EBEMod.LOGGER.warn("Failed to apply block entity NBT at {}", pos, e);
