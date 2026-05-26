@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.*;
 
 public class HistoryManager {
+    private static final long MODEL_SNAPSHOT_VOLUME_LIMIT = 1_000_000L;
 
     private final List<HistoryEntry> undoStack = new ArrayList<>();
     private final List<HistoryEntry> redoStack = new ArrayList<>();
@@ -145,7 +146,7 @@ public class HistoryManager {
         var branch = new Branch(name, headEntryId);
         branches.add(branch);
         branchStates.put(name, new BranchState(currentUndoIds(), currentRedoIds(),
-                model != null ? model.deepCopy() : currentBranchModel()));
+                snapshotForBranch(model, currentBranchModelRaw())));
         return branch;
     }
 
@@ -175,8 +176,28 @@ public class HistoryManager {
 
     private void saveBranchState(String branchName, BuildingModel model) {
         var existing = branchStates.get(branchName);
-        BuildingModel snapshot = model != null ? model.deepCopy() : existing != null ? existing.model() : null;
+        BuildingModel snapshot = model != null ? snapshotForBranch(model, null) : existing != null ? existing.model() : null;
         branchStates.put(branchName, new BranchState(currentUndoIds(), currentRedoIds(), snapshot));
+    }
+
+    private BuildingModel snapshotForBranch(BuildingModel preferred, BuildingModel fallback) {
+        BuildingModel source = preferred != null ? preferred : fallback;
+        if (source == null || !shouldStoreModelSnapshot(source)) {
+            return null;
+        }
+        return source.deepCopy();
+    }
+
+    private static boolean shouldStoreModelSnapshot(BuildingModel model) {
+        if (model == null) return false;
+        long volume = 0L;
+        for (var region : model.getRegions()) {
+            volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
+            if (volume > MODEL_SNAPSHOT_VOLUME_LIMIT) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private List<Integer> currentUndoIds() {
@@ -191,9 +212,9 @@ public class HistoryManager {
         return redoIds;
     }
 
-    private BuildingModel currentBranchModel() {
+    private BuildingModel currentBranchModelRaw() {
         var state = branchStates.get(currentBranch);
-        return state != null && state.model() != null ? state.model().deepCopy() : null;
+        return state != null ? state.model() : null;
     }
 
     private void restoreBranchState(String branchName) {
@@ -346,7 +367,7 @@ public class HistoryManager {
                 var rArr = new JsonArray();
                 for (int id : entry.getValue().redoEntryIds()) rArr.add(id);
                 bsObj.add("redoIds", rArr);
-                if (entry.getValue().model() != null) {
+                if (entry.getValue().model() != null && shouldStoreModelSnapshot(entry.getValue().model())) {
                     bsObj.add("model", EBEFormatIO.toJson(entry.getValue().model()));
                 }
                 bsArr.add(bsObj);
@@ -438,7 +459,7 @@ public class HistoryManager {
                     if (bsObj.has("model") && bsObj.get("model").isJsonObject()) {
                         model = EBEFormatIO.fromJson(bsObj.getAsJsonObject("model"));
                     } else if (branchName.equals(currentBranch) && currentModel != null) {
-                        model = currentModel.deepCopy();
+                        model = snapshotForBranch(currentModel, null);
                     }
                     branchStates.put(branchName, new BranchState(undoIds, redoIds, model));
                 }

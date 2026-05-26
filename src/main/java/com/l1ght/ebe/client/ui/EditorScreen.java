@@ -14,6 +14,7 @@ public class EditorScreen extends Screen {
     private final ModularUI modularUI;
     private long fpsWindowStart = System.nanoTime();
     private int fpsFrames = 0;
+    private boolean closeHandled = false;
 
     public EditorScreen() {
         super(Component.translatable("ebe.screen.editor"));
@@ -29,22 +30,26 @@ public class EditorScreen extends Screen {
 
     @Override
     public void onClose() {
-        EditorUI.resetMouseCursor();
-        ViewportFactory.saveCameraState();
-        ViewportFactory.releaseViewportSession("editor-close");
-        BlockPaletteUI.saveState();
-        saveHistory();
+        handleCloseOnce("editor-close");
         super.onClose();
     }
 
     @Override
     public void removed() {
+        handleCloseOnce("editor-removed");
+        super.removed();
+    }
+
+    private void handleCloseOnce(String stage) {
+        if (closeHandled) {
+            return;
+        }
+        closeHandled = true;
         EditorUI.resetMouseCursor();
         ViewportFactory.saveCameraState();
-        ViewportFactory.releaseViewportSession("editor-removed");
+        ViewportFactory.releaseViewportSession(stage);
         BlockPaletteUI.saveState();
         saveHistory();
-        super.removed();
     }
 
     private void saveHistory() {
