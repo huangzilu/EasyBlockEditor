@@ -89,8 +89,8 @@ public class ViewportFactory {
     private static final int PROGRESSIVE_OUTLINE_MOVING_CAP = 320;
     private static final int HUGE_LOD_SAMPLE_CAP = 120_000;
     private static final int EXTREME_LOD_SAMPLE_CAP = 60_000;
-    private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 120_000;
-    private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 60_000;
+    private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 320_000;
+    private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 240_000;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
