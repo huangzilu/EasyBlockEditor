@@ -60,6 +60,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -196,6 +197,7 @@ public class ViewportFactory {
         final ComputedProjection computed;
         final ProjectionLoadProfile profile;
         final List<ExactPatch> patches;
+        final List<ExactPatch> coveragePatches;
         final Map<ExactPatchKey, LoadedPatch> loadedPatches = new HashMap<>();
         final Set<ExactPatchKey> emptyPatches = new HashSet<>();
         final int maxExactBlocks;
@@ -203,6 +205,7 @@ public class ViewportFactory {
         int tickCounter;
         int coverageCursor;
         int focusLoadsSinceCoverage;
+        boolean capReached;
 
         DynamicExactViewportWindow(BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
             this.model = model;
@@ -210,6 +213,7 @@ public class ViewportFactory {
             this.profile = profile;
             this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
             this.patches = model != null ? createModelExactPatches(model) : createComputedExactPatches(computed);
+            this.coveragePatches = createRadialCoverageOrder(this.patches);
         }
 
         boolean isActive() {
@@ -270,6 +274,13 @@ public class ViewportFactory {
             double dx = centerX - focus.x();
             double dy = centerY - focus.y();
             double dz = centerZ - focus.z();
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        double distanceSqr(double x, double y, double z) {
+            double dx = centerX - x;
+            double dy = centerY - y;
+            double dz = centerZ - z;
             return dx * dx + dy * dy + dz * dz;
         }
     }
@@ -1548,6 +1559,27 @@ public class ViewportFactory {
         return List.copyOf(patches);
     }
 
+    private static List<ExactPatch> createRadialCoverageOrder(List<ExactPatch> patches) {
+        if (patches == null || patches.isEmpty()) return List.of();
+        double cx = 0.0D;
+        double cy = 0.0D;
+        double cz = 0.0D;
+        for (var patch : patches) {
+            cx += patch.centerX;
+            cy += patch.centerY;
+            cz += patch.centerZ;
+        }
+        double inv = 1.0D / patches.size();
+        double centerX = cx * inv;
+        double centerY = cy * inv;
+        double centerZ = cz * inv;
+        var ordered = new ArrayList<>(patches);
+        ordered.sort(Comparator
+                .comparingDouble((ExactPatch patch) -> patch.distanceSqr(centerX, centerY, centerZ))
+                .thenComparingInt(patch -> patch.key.hashCode()));
+        return List.copyOf(ordered);
+    }
+
     private static void tickDynamicExactViewport() {
         var window = dynamicExactWindow;
         if (window == null || !window.isActive() || currentWorld == null || currentScene == null) {
@@ -1561,13 +1593,16 @@ public class ViewportFactory {
         int maxPatches = dynamicExactPatchesPerTick(window.profile);
         int loaded = 0;
         Vector3f focus = new Vector3f(currentScene.getCenter());
-        while (loaded < maxPatches && System.nanoTime() < deadline) {
+        while (!window.capReached && loaded < maxPatches && System.nanoTime() < deadline) {
             ExactPatch patch = selectNextExactPatch(window, focus);
             if (patch == null) {
                 break;
             }
             LoadedPatch loadedPatch = loadExactPatch(window, patch, focus);
             if (loadedPatch == null) {
+                if (window.capReached) {
+                    break;
+                }
                 window.emptyPatches.add(patch.key);
                 continue;
             }
@@ -1584,6 +1619,9 @@ public class ViewportFactory {
                     window.maxExactBlocks,
                     window.loadedPatches.size(),
                     window.patches.size()));
+        } else if (window.capReached && window.tickCounter++ % 60 == 0) {
+            EditorUI.setStatus(Component.translatable(
+                    "ebe.editor.loading.preview_capped", window.exactBlocks));
         }
     }
 
@@ -1595,7 +1633,11 @@ public class ViewportFactory {
     }
 
     private static ExactPatch selectNextExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
-        ExactPatch coveragePatch = selectCoverageExactPatch(window, focus);
+        if (window.capReached) {
+            return null;
+        }
+
+        ExactPatch coveragePatch = selectCoverageExactPatch(window);
         if (coveragePatch != null && shouldLoadCoveragePatch(window)) {
             window.focusLoadsSinceCoverage = 0;
             return coveragePatch;
@@ -1603,11 +1645,6 @@ public class ViewportFactory {
 
         ExactPatch best = null;
         double bestDistance = Double.MAX_VALUE;
-        double farthestLoadedDistance = -1.0D;
-        for (var loaded : window.loadedPatches.values()) {
-            if (loaded.size() <= 0) continue;
-            farthestLoadedDistance = Math.max(farthestLoadedDistance, loaded.patch().distanceSqr(focus));
-        }
         for (var patch : window.patches) {
             if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
                 continue;
@@ -1618,85 +1655,34 @@ public class ViewportFactory {
                 best = patch;
             }
         }
-        if (best != null
-                && window.exactBlocks >= (int) (window.maxExactBlocks * 0.95D)
-                && farthestLoadedDistance >= 0.0D
-                && bestDistance >= farthestLoadedDistance - 256.0D) {
-            if (coveragePatch != null && bestDistance > farthestLoadedDistance + 4096.0D) {
-                window.focusLoadsSinceCoverage = 0;
-                return coveragePatch;
-            }
-            return null;
-        }
         if (best != null) {
             window.focusLoadsSinceCoverage++;
+            return best;
         }
-        return best;
+        return coveragePatch;
     }
 
     private static boolean shouldLoadCoveragePatch(DynamicExactViewportWindow window) {
-        if (window.exactBlocks < (int) (window.maxExactBlocks * 0.35D)) {
+        if (window.loadedPatches.size() < 4) {
             return false;
-        }
-        if (window.exactBlocks >= (int) (window.maxExactBlocks * 0.92D)) {
-            return window.focusLoadsSinceCoverage >= 6;
         }
         return window.focusLoadsSinceCoverage >= 2;
     }
 
-    private static ExactPatch selectCoverageExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
-        if (window.patches.isEmpty()) return null;
-        int size = window.patches.size();
+    private static ExactPatch selectCoverageExactPatch(DynamicExactViewportWindow window) {
+        if (window.coveragePatches.isEmpty()) return null;
+        int size = window.coveragePatches.size();
         int start = Math.floorMod(window.coverageCursor, size);
-        int step = coverageStep(size);
-        ExactPatch best = null;
-        double farthestLoadedDistance = farthestLoadedDistance(window, focus);
         for (int i = 0; i < size; i++) {
-            int index = Math.floorMod(start + i * step, size);
-            var patch = window.patches.get(index);
+            int index = Math.floorMod(start + i, size);
+            var patch = window.coveragePatches.get(index);
             if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
                 continue;
             }
-            if (window.exactBlocks >= (int) (window.maxExactBlocks * 0.92D)
-                    && farthestLoadedDistance >= 0.0D
-                    && patch.distanceSqr(focus) >= farthestLoadedDistance - 256.0D) {
-                continue;
-            }
-            best = patch;
-            window.coverageCursor = Math.floorMod(index + step, size);
-            break;
+            window.coverageCursor = Math.floorMod(index + 1, size);
+            return patch;
         }
-        return best;
-    }
-
-    private static int coverageStep(int size) {
-        int[] candidates = {7919, 3571, 1543, 701, 313, 131, 53, 17, 5, 1};
-        for (int candidate : candidates) {
-            if (candidate < size && gcd(candidate, size) == 1) {
-                return candidate;
-            }
-        }
-        return 1;
-    }
-
-    private static int gcd(int a, int b) {
-        a = Math.abs(a);
-        b = Math.abs(b);
-        while (b != 0) {
-            int t = a % b;
-            a = b;
-            b = t;
-        }
-        return Math.max(1, a);
-    }
-
-    private static double farthestLoadedDistance(DynamicExactViewportWindow window, Vector3f focus) {
-        double farthest = -1.0D;
-        for (var loaded : window.loadedPatches.values()) {
-            if (loaded.size() <= 0) continue;
-            farthest = Math.max(farthest, loaded.patch().distanceSqr(focus));
-        }
-        return farthest;
+        return null;
     }
 
     private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus) {
@@ -1707,9 +1693,9 @@ public class ViewportFactory {
             return null;
         }
 
-        ensureExactCapacity(window, blocks.size(), focus);
         if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
             window.loadedPatches.remove(patch.key);
+            window.capReached = true;
             return null;
         }
 
@@ -1725,46 +1711,6 @@ public class ViewportFactory {
         window.loadedPatches.put(patch.key, loaded);
         window.exactBlocks += positions.size();
         return loaded;
-    }
-
-    private static void ensureExactCapacity(DynamicExactViewportWindow window, int incomingBlocks, Vector3f focus) {
-        if (incomingBlocks <= 0) return;
-        while (window.exactBlocks + incomingBlocks > window.maxExactBlocks && !window.loadedPatches.isEmpty()) {
-            LoadedPatch farthest = null;
-            double farthestDistance = -1.0D;
-            for (var loaded : window.loadedPatches.values()) {
-                if (loaded.size() <= 0) continue;
-                double distance = loaded.patch().distanceSqr(focus);
-                if (distance > farthestDistance) {
-                    farthestDistance = distance;
-                    farthest = loaded;
-                }
-            }
-            if (farthest == null) {
-                break;
-            }
-            evictExactPatch(window, farthest);
-        }
-    }
-
-    private static void evictExactPatch(DynamicExactViewportWindow window, LoadedPatch loaded) {
-        if (loaded == null || loaded.blocks().isEmpty()) return;
-        var core = getSceneCore();
-        Map<BlockPos, Boolean> changed = new LinkedHashMap<>();
-        for (BlockPos pos : loaded.blocks()) {
-            currentWorld.removeBlock(pos);
-            if (core != null) {
-                core.remove(pos);
-            }
-            changed.put(pos, false);
-        }
-        if (sectionedRenderer != null) {
-            sectionedRenderer.applyBlockChanges(changed);
-        } else if (currentScene != null) {
-            currentScene.needCompileCache();
-        }
-        window.loadedPatches.remove(loaded.patch().key);
-        window.exactBlocks = Math.max(0, window.exactBlocks - loaded.size());
     }
 
     private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch) {
