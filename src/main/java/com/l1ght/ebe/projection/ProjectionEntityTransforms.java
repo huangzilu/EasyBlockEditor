@@ -1,6 +1,7 @@
 package com.l1ght.ebe.projection;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.DoubleTag;
@@ -39,15 +40,17 @@ public final class ProjectionEntityTransforms {
     public static CompoundTag prepareForProjection(CompoundTag source, ProjectionData projection) {
         if (source == null || projection == null || !isAllowedDecorativeEntityTag(source)) return null;
         Vec3 localPos = readPos(source);
-        if (localPos == null) return null;
 
         CompoundTag copy = source.copy();
         copy.remove("UUID");
         copy.remove("UUIDMost");
         copy.remove("UUIDLeast");
 
-        Vec3 transformed = transformPos(localPos, projection);
-        writePos(copy, transformed);
+        if (localPos != null) {
+            Vec3 transformed = transformPos(localPos, projection);
+            writePos(copy, transformed);
+        }
+        transformHangingAttachment(copy, projection);
         transformRotation(copy, projection.getRotation(), projection.getMirror());
         return copy;
     }
@@ -60,6 +63,9 @@ public final class ProjectionEntityTransforms {
     }
 
     public static BlockPos blockPos(CompoundTag tag) {
+        if (tag != null && tag.contains("TileX") && tag.contains("TileY") && tag.contains("TileZ")) {
+            return new BlockPos(tag.getInt("TileX"), tag.getInt("TileY"), tag.getInt("TileZ"));
+        }
         Vec3 pos = readPos(tag);
         return pos == null ? BlockPos.ZERO : BlockPos.containing(pos);
     }
@@ -112,6 +118,10 @@ public final class ProjectionEntityTransforms {
 
     public static void stabilizeRenderableEntity(Entity entity) {
         if (entity == null) return;
+        entity.setDeltaMovement(Vec3.ZERO);
+        entity.setNoGravity(true);
+        entity.noPhysics = true;
+        entity.setOnGround(true);
         entity.xOld = entity.getX();
         entity.yOld = entity.getY();
         entity.zOld = entity.getZ();
@@ -124,7 +134,23 @@ public final class ProjectionEntityTransforms {
         setFloatField(entity, "yHeadRotO", entity.getYRot());
         setFloatField(entity, "yBodyRot", entity.getYRot());
         setFloatField(entity, "yHeadRot", entity.getYRot());
-        entity.tickCount = Math.max(entity.tickCount, 1);
+        setFloatField(entity, "animationPosition", 0.0F);
+        setFloatField(entity, "animationSpeed", 0.0F);
+        setFloatField(entity, "animationSpeedOld", 0.0F);
+        setFloatField(entity, "bob", 0.0F);
+        setFloatField(entity, "oBob", 0.0F);
+        freezeWalkAnimation(entity);
+        entity.tickCount = 1;
+    }
+
+    private static void freezeWalkAnimation(Entity entity) {
+        Object walkAnimation = getFieldValue(entity, "walkAnimation");
+        if (walkAnimation == null) return;
+        invokeFloatMethod(walkAnimation, "setSpeed", 0.0F);
+        invokeFloatMethod(walkAnimation, "setPosition", 0.0F);
+        setFloatField(walkAnimation, "speed", 0.0F);
+        setFloatField(walkAnimation, "speedOld", 0.0F);
+        setFloatField(walkAnimation, "position", 0.0F);
     }
 
     private static Vec3 transformPos(Vec3 localPos, ProjectionData projection) {
@@ -142,6 +168,65 @@ public final class ProjectionEntityTransforms {
         Vec3 mirrored = mirror(rotated, mirror);
         BlockPos center = projection.getCenterPoint();
         return new Vec3(center.getX() + mirrored.x, center.getY() + mirrored.y, center.getZ() + mirrored.z);
+    }
+
+    private static BlockPos transformLocalBlockPos(BlockPos localPos, ProjectionData projection) {
+        Rotation rotation = projection.getRotation();
+        Mirror mirror = projection.getMirror();
+        if (rotation == Rotation.NONE && mirror == Mirror.NONE) {
+            BlockPos origin = projection.getOrigin();
+            return origin.offset(localPos);
+        }
+
+        BlockPos localCenterBlock = projection.getCenterPoint().subtract(projection.getOrigin());
+        BlockPos relativeBlock = localPos.subtract(localCenterBlock);
+        Vec3 relative = new Vec3(relativeBlock.getX(), relativeBlock.getY(), relativeBlock.getZ());
+        Vec3 rotated = rotate(relative, rotation);
+        Vec3 mirrored = mirror(rotated, mirror);
+        BlockPos center = projection.getCenterPoint();
+        return new BlockPos(center.getX() + (int) Math.round(mirrored.x),
+                center.getY() + (int) Math.round(mirrored.y),
+                center.getZ() + (int) Math.round(mirrored.z));
+    }
+
+    private static void transformHangingAttachment(CompoundTag tag, ProjectionData projection) {
+        if (tag == null || projection == null) return;
+        if (tag.contains("TileX") && tag.contains("TileY") && tag.contains("TileZ")) {
+            BlockPos transformed = transformLocalBlockPos(
+                    new BlockPos(tag.getInt("TileX"), tag.getInt("TileY"), tag.getInt("TileZ")),
+                    projection);
+            tag.putInt("TileX", transformed.getX());
+            tag.putInt("TileY", transformed.getY());
+            tag.putInt("TileZ", transformed.getZ());
+        }
+        if (tag.contains("Facing")) {
+            Direction direction = Direction.from3DDataValue(tag.getByte("Facing"));
+            direction = transformDirection(direction, projection.getRotation(), projection.getMirror());
+            tag.putByte("Facing", (byte) direction.get3DDataValue());
+        }
+        if (tag.contains("Direction")) {
+            Direction direction = Direction.from3DDataValue(tag.getByte("Direction"));
+            direction = transformDirection(direction, projection.getRotation(), projection.getMirror());
+            tag.putByte("Direction", (byte) direction.get3DDataValue());
+        }
+        if (tag.contains("facing")) {
+            Direction direction = Direction.byName(tag.getString("facing"));
+            if (direction != null) {
+                direction = transformDirection(direction, projection.getRotation(), projection.getMirror());
+                tag.putString("facing", direction.getSerializedName());
+            }
+        }
+    }
+
+    private static Direction transformDirection(Direction direction, Rotation rotation, Mirror mirror) {
+        if (direction == null) return Direction.NORTH;
+        Direction transformed = direction;
+        if (mirror == Mirror.LEFT_RIGHT && transformed.getAxis() == Direction.Axis.Z) {
+            transformed = transformed.getOpposite();
+        } else if (mirror == Mirror.FRONT_BACK && transformed.getAxis() == Direction.Axis.X) {
+            transformed = transformed.getOpposite();
+        }
+        return rotation == Rotation.NONE ? transformed : rotation.rotate(transformed);
     }
 
     private static Vec3 rotate(Vec3 pos, Rotation rotation) {
@@ -217,15 +302,48 @@ public final class ProjectionEntityTransforms {
     }
 
     private static void setFloatField(Entity entity, String name, float value) {
-        Field field = findField(entity.getClass(), name);
+        setFloatField((Object) entity, name, value);
+    }
+
+    private static void setFloatField(Object target, String name, float value) {
+        if (target == null) return;
+        Field field = findField(target.getClass(), name);
         if (field == null) return;
         try {
             if (field.getType() == float.class) {
-                field.setFloat(entity, value);
+                field.setFloat(target, value);
             } else if (field.getType() == double.class) {
-                field.setDouble(entity, value);
+                field.setDouble(target, value);
             }
         } catch (Exception ignored) {
+        }
+    }
+
+    private static Object getFieldValue(Object target, String name) {
+        if (target == null) return null;
+        Field field = findField(target.getClass(), name);
+        if (field == null) return null;
+        try {
+            return field.get(target);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static void invokeFloatMethod(Object target, String name, float value) {
+        if (target == null) return;
+        Class<?> current = target.getClass();
+        while (current != null) {
+            try {
+                var method = current.getDeclaredMethod(name, float.class);
+                method.setAccessible(true);
+                method.invoke(target, value);
+                return;
+            } catch (NoSuchMethodException ignored) {
+                current = current.getSuperclass();
+            } catch (Exception ignored) {
+                return;
+            }
         }
     }
 

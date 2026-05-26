@@ -45,6 +45,7 @@ import dev.vfyjxf.taffy.style.TaffyPosition;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -171,6 +172,9 @@ public class EditorUI {
 
     private static UIElement materialListContainer;
     private static UIElement propertiesContainer;
+    private static CompoundTag selectedDecorativeEntityNbt;
+    private static String selectedDecorativeEntityId = "";
+    private static String selectedDecorativeEntityName = "";
     private static int displayFilterMode = 0;
     private static UIElement displayFilterContentContainer;
     private static String selectedHeatmapBtnId = "heatmapBtn_0";
@@ -183,6 +187,7 @@ public class EditorUI {
     private static final ExecutorService FILE_LOAD_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "EBE File Loader");
         thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY);
         return thread;
     });
     private static final AtomicInteger FILE_LOAD_SEQUENCE = new AtomicInteger();
@@ -1948,6 +1953,30 @@ public class EditorUI {
         updateIndicatorRow("inspectedBlockIcon", "inspectedBlockLabel", "inspectedBlockNbtLabel", bs);
     }
 
+    public static void setSelectedDecorativeEntityInfo(Entity entity) {
+        if (entity == null) {
+            clearSelectedDecorativeEntityInfo();
+            return;
+        }
+        CompoundTag tag = new CompoundTag();
+        if (!entity.save(tag)) {
+            clearSelectedDecorativeEntityInfo();
+            return;
+        }
+        selectedDecorativeEntityNbt = tag.copy();
+        ResourceLocation id = EntityType.getKey(entity.getType());
+        selectedDecorativeEntityId = id == null ? entity.getType().toString() : id.toString();
+        selectedDecorativeEntityName = entity.getDisplayName().getString();
+        refreshPropertiesPanel();
+    }
+
+    public static void clearSelectedDecorativeEntityInfo() {
+        selectedDecorativeEntityNbt = null;
+        selectedDecorativeEntityId = "";
+        selectedDecorativeEntityName = "";
+        refreshPropertiesPanel();
+    }
+
     private static void updateIndicatorRow(String iconId, String nameId, String nbtId, net.minecraft.world.level.block.state.BlockState bs) {
         var iconWrap = UIUtils.findById(rootElement, iconId);
         var nameLabel = UIUtils.findById(rootElement, nameId);
@@ -3558,6 +3587,11 @@ public class EditorUI {
         if (propertiesContainer == null) return;
         propertiesContainer.clearAllChildren();
 
+        if (selectedDecorativeEntityNbt != null) {
+            buildDecorativeEntityProperties(propertiesContainer, selectedDecorativeEntityNbt);
+            return;
+        }
+
         var bs = state.getInspectedBlockState();
         if (bs == null || bs.isAir()) {
             var empty = new Label();
@@ -3690,6 +3724,100 @@ public class EditorUI {
                 refreshPropertiesPanel();
             });
             propertiesContainer.addChild(addNbtBtn);
+        }
+    }
+
+    private static void buildDecorativeEntityProperties(UIElement parent, CompoundTag tag) {
+        var title = new Label();
+        title.setText(Component.translatable("ebe.entity.properties.title"));
+        title.textStyle(ts -> ts.textColor(0xFFFFD166).fontSize(12).textShadow(false));
+        parent.addChild(title);
+
+        addPropField(parent,
+                Component.translatable("ebe.entity.properties.name").getString(),
+                selectedDecorativeEntityName == null || selectedDecorativeEntityName.isBlank()
+                        ? selectedDecorativeEntityId
+                        : selectedDecorativeEntityName,
+                0xFFEEEEEE);
+        addPropField(parent, "ID", selectedDecorativeEntityId, 0xFFCCCC88);
+
+        var pos = ProjectionEntityTransforms.readPos(tag);
+        if (pos != null) {
+            addPropField(parent,
+                    Component.translatable("ebe.entity.properties.position").getString(),
+                    "%.3f, %.3f, %.3f".formatted(Locale.ROOT, pos.x, pos.y, pos.z),
+                    0xFF88CCFF);
+        }
+        if (tag.contains("TileX") && tag.contains("TileY") && tag.contains("TileZ")) {
+            addPropField(parent,
+                    Component.translatable("ebe.entity.properties.attachment").getString(),
+                    tag.getInt("TileX") + ", " + tag.getInt("TileY") + ", " + tag.getInt("TileZ"),
+                    0xFF88CCFF);
+        }
+        if (tag.contains("Facing")) {
+            addPropField(parent,
+                    Component.translatable("ebe.entity.properties.facing").getString(),
+                    Direction.from3DDataValue(tag.getByte("Facing")).getSerializedName(),
+                    0xFFCCCCCC);
+        }
+        if (tag.contains("Item", 10)) {
+            addPropField(parent,
+                    Component.translatable("ebe.entity.properties.item").getString(),
+                    summarizeItemTag(tag.getCompound("Item")),
+                    0xFF88FF88);
+        }
+
+        var nbtLabel = new Label();
+        nbtLabel.setText(Component.translatable("ebe.entity.properties.nbt"));
+        nbtLabel.textStyle(ts -> ts.textColor(0xFFAAAAAA).fontSize(9));
+        nbtLabel.layout(l -> l.marginTop(4));
+        parent.addChild(nbtLabel);
+        addReadonlyNbtTree(parent, tag, 0);
+    }
+
+    private static String summarizeItemTag(CompoundTag itemTag) {
+        if (itemTag == null || itemTag.isEmpty()) return "-";
+        String id = itemTag.getString("id");
+        int count = itemTag.contains("count") ? itemTag.getInt("count") : itemTag.getInt("Count");
+        return id + (count > 0 ? " x" + count : "");
+    }
+
+    private static void addReadonlyNbtTree(UIElement parent, net.minecraft.nbt.CompoundTag tag, int depth) {
+        int indent = depth * 8;
+        for (var key : tag.getAllKeys()) {
+            var value = tag.get(key);
+            var row = new UIElement();
+            row.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW)
+                    .alignItems(AlignItems.CENTER).gapAll(2).paddingHorizontal(4).paddingVertical(1)
+                    .marginLeft(indent));
+            row.style(s -> s.background(Sprites.RECT_DARK));
+
+            var keyLbl = new Label();
+            keyLbl.setText(Component.literal(key + ":"));
+            keyLbl.textStyle(ts -> ts.textColor(0xFF88CCFF).fontSize(8).textShadow(false));
+            keyLbl.layout(l -> l.minWidth(30));
+            row.addChild(keyLbl);
+
+            var valueLbl = new Label();
+            valueLbl.setText(Component.literal(nbtValueToString(value)));
+            valueLbl.textStyle(ts -> ts.textColor(nbtValueColor(value)).fontSize(8).textShadow(false)
+                    .textWrap(com.lowdragmc.lowdraglib2.gui.ui.data.TextWrap.WRAP).adaptiveHeight(true));
+            valueLbl.layout(l -> l.flex(1));
+            row.addChild(valueLbl);
+            parent.addChild(row);
+
+            if (value instanceof net.minecraft.nbt.CompoundTag compound) {
+                addReadonlyNbtTree(parent, compound, depth + 1);
+            } else if (value instanceof net.minecraft.nbt.ListTag list) {
+                for (int i = 0; i < list.size(); i++) {
+                    var item = list.get(i);
+                    if (item instanceof net.minecraft.nbt.CompoundTag compoundItem) {
+                        addReadonlyNbtTree(parent, compoundItem, depth + 1);
+                    } else {
+                        addNbtValueRow(parent, "[" + i + "]", item, (depth + 1) * 8);
+                    }
+                }
+            }
         }
     }
 
@@ -4821,7 +4949,7 @@ public class EditorUI {
         }
         int copiedEntities = copyDecorativeEntitiesFromWorld(
                 model,
-                new AABB(occupied.minX(), occupied.minY(), occupied.minZ(), occupied.maxX() + 1, occupied.maxY() + 1, occupied.maxZ() + 1),
+                new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1),
                 occupied.minX(), occupied.minY(), occupied.minZ());
         convertProjectionModel = model;
         convertProjectionName = baseName;
@@ -4860,21 +4988,56 @@ public class EditorUI {
                 }
             }
         }
+        AABB selectedBounds = new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1);
+        for (Entity entity : level.getEntities((Entity) null, selectedBounds.inflate(1.0D), EditorUI::isSupportedDecorativeEntity)) {
+            CompoundTag tag = saveEntityForBounds(entity);
+            if (!decorativeEntityBelongsToBounds(tag, selectedBounds)) continue;
+            BlockPos pos = ProjectionEntityTransforms.blockPos(tag);
+            found = true;
+            actualMinX = Math.min(actualMinX, pos.getX());
+            actualMinY = Math.min(actualMinY, pos.getY());
+            actualMinZ = Math.min(actualMinZ, pos.getZ());
+            actualMaxX = Math.max(actualMaxX, pos.getX());
+            actualMaxY = Math.max(actualMaxY, pos.getY());
+            actualMaxZ = Math.max(actualMaxZ, pos.getZ());
+        }
         return found ? new WorldBounds(actualMinX, actualMinY, actualMinZ, actualMaxX, actualMaxY, actualMaxZ) : null;
+    }
+
+    private static CompoundTag saveEntityForBounds(Entity entity) {
+        CompoundTag tag = new CompoundTag();
+        if (entity != null && entity.save(tag)) {
+            return tag;
+        }
+        return new CompoundTag();
     }
 
     private static int copyDecorativeEntitiesFromWorld(BuildingModel model, AABB bounds, int minX, int minY, int minZ) {
         var level = Minecraft.getInstance().level;
         if (level == null || model == null) return 0;
         int copied = 0;
-        for (Entity entity : level.getEntities((Entity) null, bounds, EditorUI::isSupportedDecorativeEntity)) {
+        for (Entity entity : level.getEntities((Entity) null, bounds.inflate(1.0D), EditorUI::isSupportedDecorativeEntity)) {
             CompoundTag tag = new CompoundTag();
-            if (entity.save(tag)) {
+            if (entity.save(tag) && decorativeEntityBelongsToBounds(tag, bounds)) {
                 model.addEntity(toRelativeEntityTag(tag, minX, minY, minZ));
                 copied++;
             }
         }
         return copied;
+    }
+
+    private static boolean decorativeEntityBelongsToBounds(CompoundTag tag, AABB bounds) {
+        if (tag == null || bounds == null || tag.isEmpty()) return false;
+        BlockPos anchor = ProjectionEntityTransforms.blockPos(tag);
+        if (containsBlock(bounds, anchor)) return true;
+        var pos = ProjectionEntityTransforms.readPos(tag);
+        return pos != null && bounds.contains(pos);
+    }
+
+    private static boolean containsBlock(AABB bounds, BlockPos pos) {
+        return pos.getX() >= bounds.minX && pos.getX() < bounds.maxX
+                && pos.getY() >= bounds.minY && pos.getY() < bounds.maxY
+                && pos.getZ() >= bounds.minZ && pos.getZ() < bounds.maxZ;
     }
 
     private static CompoundTag toRelativeEntityTag(CompoundTag tag, int minX, int minY, int minZ) {
@@ -4888,6 +5051,9 @@ public class EditorUI {
             list.add(net.minecraft.nbt.DoubleTag.valueOf(pos.z - minZ));
             copy.put("Pos", list);
         }
+        if (copy.contains("TileX")) copy.putInt("TileX", copy.getInt("TileX") - minX);
+        if (copy.contains("TileY")) copy.putInt("TileY", copy.getInt("TileY") - minY);
+        if (copy.contains("TileZ")) copy.putInt("TileZ", copy.getInt("TileZ") - minZ);
         copy.remove("UUID");
         copy.remove("UUIDMost");
         copy.remove("UUIDLeast");

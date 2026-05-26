@@ -66,6 +66,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @OnlyIn(Dist.CLIENT)
@@ -107,6 +109,12 @@ public class ViewportFactory {
     private static boolean preferSectionedRendererForCurrentLoad = false;
     private static final AtomicInteger viewportLodBuildSequence = new AtomicInteger();
     private static CompletableFuture<?> viewportLodBuild;
+    private static final ExecutorService VIEWPORT_BACKGROUND_EXECUTOR = Executors.newFixedThreadPool(1, task -> {
+        Thread thread = new Thread(task, "EBE Viewport Worker");
+        thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY);
+        return thread;
+    });
 
     private static class PendingBlockDelta {
         final BlockPos pos;
@@ -128,12 +136,21 @@ public class ViewportFactory {
         long visited;
         int added;
         final int maxExactBlocks;
+        final boolean spatialSample;
         boolean exactCapped;
+        int spatialRegionIndex = -1;
+        long spatialRegionVolume;
+        long spatialRegionAttemptLimit;
+        long spatialSampleIndex;
+        long spatialSampleStep = 1L;
 
         ProgressiveModelLoad(BuildingModel model, boolean autoCamera, ProjectionLoadProfile profile) {
             this.model = model;
             this.autoCamera = autoCamera;
             this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
+            this.spatialSample = this.maxExactBlocks > 0
+                    && profile != null
+                    && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
             long volume = 0L;
             for (var region : model.getRegions()) {
                 volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
@@ -828,6 +845,9 @@ public class ViewportFactory {
     }
 
     private static boolean shouldUseSectionedRendererForSyncLoad(BuildingModel model, ProjectionLoadProfile profile) {
+        if (model != null && !model.getEntities().isEmpty()) {
+            return true;
+        }
         if (profile != null) {
             if (isUnderUserSyncThreshold(profile)) return false;
             if (profile.shouldPreferProgressiveViewport() || profile.isHugeOrAbove()) return true;
@@ -973,7 +993,7 @@ public class ViewportFactory {
                     : buildViewportSparseStore(model, profile);
             ProjectionLodPyramid pyramid = ProjectionLodPyramidBuilder.build(store);
             return new ViewportLodBuildResult(store, pyramid);
-        }).whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
+        }, VIEWPORT_BACKGROUND_EXECUTOR).whenComplete((result, error) -> Minecraft.getInstance().execute(() -> {
             if (sequence != viewportLodBuildSequence.get()) return;
             if (error != null) {
                 LOG.warn("Failed to build viewport LOD overlay", error);
@@ -1114,13 +1134,17 @@ public class ViewportFactory {
                 break;
             }
             var region = regions.get(load.regionIndex);
-            if (load.y >= region.getSizeY()) {
-                LOG.info("Progressive region loaded '{}' : visited={} added={}", region.getName(), load.visited, load.added);
-                load.regionIndex++;
-                load.x = 0;
-                load.y = 0;
-                load.z = 0;
+            if (load.spatialSample) {
+                prepareSpatialSampleRegion(load, region);
+            }
+            if ((!load.spatialSample && load.y >= region.getSizeY())
+                    || (load.spatialSample && load.spatialSampleIndex >= load.spatialRegionAttemptLimit)) {
+                advanceProgressiveRegion(load, region);
                 continue;
+            }
+
+            if (load.spatialSample) {
+                applySpatialSampleCursor(load, region);
             }
 
             var obj = region.getBlocks().get(load.x, load.y, load.z);
@@ -1141,13 +1165,15 @@ public class ViewportFactory {
                 load.added++;
             }
 
-            load.x++;
-            if (load.x >= region.getSizeX()) {
-                load.x = 0;
-                load.z++;
-                if (load.z >= region.getSizeZ()) {
-                    load.z = 0;
-                    load.y++;
+            if (!load.spatialSample) {
+                load.x++;
+                if (load.x >= region.getSizeX()) {
+                    load.x = 0;
+                    load.z++;
+                    if (load.z >= region.getSizeZ()) {
+                        load.z = 0;
+                        load.y++;
+                    }
                 }
             }
         }
@@ -1202,6 +1228,66 @@ public class ViewportFactory {
             }
             activeLoadProfile = null;
         }
+    }
+
+    private static void advanceProgressiveRegion(ProgressiveModelLoad load, Region region) {
+        LOG.info("Progressive region loaded '{}' : visited={} added={}", region.getName(), load.visited, load.added);
+        load.regionIndex++;
+        load.x = 0;
+        load.y = 0;
+        load.z = 0;
+        load.spatialRegionIndex = -1;
+        load.spatialRegionVolume = 0L;
+        load.spatialRegionAttemptLimit = 0L;
+        load.spatialSampleIndex = 0L;
+        load.spatialSampleStep = 1L;
+    }
+
+    private static void prepareSpatialSampleRegion(ProgressiveModelLoad load, Region region) {
+        if (load.spatialRegionIndex == load.regionIndex) {
+            return;
+        }
+        load.spatialRegionIndex = load.regionIndex;
+        load.spatialSampleIndex = 0L;
+        load.spatialRegionVolume = Math.max(1L,
+                (long) region.getSizeX() * Math.max(1, region.getSizeY()) * Math.max(1, region.getSizeZ()));
+        long targetSamples = Math.max(1L,
+                (long) Math.ceil(load.maxExactBlocks * (load.spatialRegionVolume / (double) load.totalVolume)));
+        load.spatialRegionAttemptLimit = Math.min(load.spatialRegionVolume, Math.max(targetSamples, targetSamples * 96L));
+        long baseStep = Math.max(1L, load.spatialRegionVolume / Math.max(1L, targetSamples));
+        load.spatialSampleStep = nearestCoprimeStep(baseStep, load.spatialRegionVolume);
+    }
+
+    private static void applySpatialSampleCursor(ProgressiveModelLoad load, Region region) {
+        long sampled = Math.floorMod(load.spatialSampleIndex * load.spatialSampleStep, load.spatialRegionVolume);
+        load.spatialSampleIndex++;
+        int sizeX = Math.max(1, region.getSizeX());
+        int sizeZ = Math.max(1, region.getSizeZ());
+        long layerSize = (long) sizeX * sizeZ;
+        load.y = (int) (sampled / layerSize);
+        long layerOffset = sampled % layerSize;
+        load.z = (int) (layerOffset / sizeX);
+        load.x = (int) (layerOffset % sizeX);
+    }
+
+    private static long nearestCoprimeStep(long candidate, long modulo) {
+        if (modulo <= 1L) return 1L;
+        long step = Math.max(1L, candidate);
+        while (gcd(step, modulo) != 1L) {
+            step++;
+        }
+        return step;
+    }
+
+    private static long gcd(long a, long b) {
+        a = Math.abs(a);
+        b = Math.abs(b);
+        while (b != 0L) {
+            long t = a % b;
+            a = b;
+            b = t;
+        }
+        return Math.max(1L, a);
     }
 
     private static void tickProgressiveComputedLoad() {
@@ -1468,6 +1554,7 @@ public class ViewportFactory {
         state.setSelectedBlock(entityLabel);
         state.setSelectedCount(1);
         state.setInspectedBlockState(currentWorld.getBlockState(pos));
+        EditorUI.setSelectedDecorativeEntityInfo(entity);
         EditorUI.updateBlockInspection();
         EditorUI.updateStatusBar();
     }
@@ -1478,6 +1565,7 @@ public class ViewportFactory {
             state.setSelectedBlock("");
             state.setSelectedCount(0);
         }
+        EditorUI.clearSelectedDecorativeEntityInfo();
     }
 
     private static Entity pickDecorativeEntityUnderCursor() {

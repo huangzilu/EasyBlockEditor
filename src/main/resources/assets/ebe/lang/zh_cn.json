@@ -709,6 +709,13 @@
   "ebe.help.manual.page.nbt_advanced.title": "NBT、模板与字段差异",
   "ebe.help.manual.page.nbt_advanced.summary": "处理容器、床、告示牌等带数据方块时，使用 NBT 面板、模板和字段级 diff。",
   "ebe.help.manual.page.nbt_advanced.body": "## NBT 面板|选中带方块实体数据的方块后，可以在 NBT 面板查看和编辑字段。|## NBT 模板|可以把当前 NBT 保存成模板，再应用到同类方块。适合批量处理容器名称、告示牌文本或装饰数据。|## 字段级 diff|模板差异功能会比较字段级内容，帮助确认到底是哪一个字段不同，而不是只看到整个 NBT 不一致。|## 装饰实体|转化、保存、打开和视口预览会尽量保留盔甲架、展示框、画、展示实体和模组装饰实体的完整 NBT。管理员一键放置会尝试按完整 NBT 生成；普通打印只放置实体本体，会剥离装备、展示物和容器物品，避免刷物品或误吞材料。|! 修改 NBT 前建议先保存版本标签。复杂数据一旦批量应用，撤销虽然可用，但确认成本会更高。",
+  "ebe.entity.properties.title": "装饰性实体",
+  "ebe.entity.properties.name": "名称",
+  "ebe.entity.properties.position": "位置",
+  "ebe.entity.properties.attachment": "挂载方块",
+  "ebe.entity.properties.facing": "朝向",
+  "ebe.entity.properties.item": "展示物品",
+  "ebe.entity.properties.nbt": "实体 NBT",
   "ebe.help.manual.page.troubleshooting.title": "常见问题",
   "ebe.help.manual.page.troubleshooting.summary": "加载慢、看不见方块、权限失败、材料不足、格式不兼容时的排查路线。",
   "ebe.help.manual.page.troubleshooting.body": "## 大投影加载慢|先切换到性能模式，开启移动降级和动态 FBO 缩放，降低每帧预算峰值。加载完成后再切回平衡或质量。|## 视口只显示一条区域|检查视口渲染距离。距离为 0 会尽量显示完整投影；具体数值会裁掉远处区域。|## 箱子和床可见但方块异常|这通常和视口渲染距离、区块构建进度或显示过滤有关。先重置显示过滤，再尝试把视口渲染距离设为 0 排查。|## 权限失败|确认服务器安装了 EBE，且管理员面板允许当前玩家使用对应功能。|## 材料不足|刷新材料清单，检查背包和材料源箱子范围。箱子距离超过设置范围时不会被打印机使用。|## 格式问题|如果外部文件导入失败，确认扩展名和实际内容一致。某些旧 .schematic 文件的数据可能不完整，需要先用其他工具转换。"
