@@ -15,6 +15,7 @@ import com.l1ght.ebe.data.Region;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramidBuilder;
 import com.l1ght.ebe.projection.mega.ProjectionSparseStore;
+import com.l1ght.ebe.projection.ProjectionEntityTransforms;
 import com.l1ght.ebe.util.PosKey;
 import com.lowdragmc.lowdraglib2.gui.ui.UIElement;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.Scene;
@@ -36,13 +37,16 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.ClipContext;
 import net.neoforged.api.distmarker.Dist;
@@ -53,12 +57,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -195,6 +201,8 @@ public class ViewportFactory {
     private static Field sceneRendererField;
     private static Field rendererTraceField;
     private static boolean sceneReflectionInit = false;
+    private static Method rendererEyePosMethod;
+    private static Method rendererLookAtMethod;
 
     private static boolean dragSelecting = false;
     private static boolean penetrateSelect = false;
@@ -247,6 +255,8 @@ public class ViewportFactory {
                         break;
                     }
                 }
+                rendererEyePosMethod = findRendererVectorMethod(sceneRendererField.getType(), "getEyePos");
+                rendererLookAtMethod = findRendererVectorMethod(sceneRendererField.getType(), "getLookAt");
             }
         } catch (Exception e) {
             LOG.warn("Scene reflection failed", e);
@@ -291,6 +301,7 @@ public class ViewportFactory {
         }
 
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
+        currentScene.addEventListener(UIEvents.MOUSE_DOWN, e -> handleDecorativeEntityMouseDown(e));
         setupSceneMiddleClick(currentScene);
         setupDragSelection(currentScene);
 
@@ -784,6 +795,7 @@ public class ViewportFactory {
                 var copy = tag.copy();
                 var entity = EntityType.loadEntityRecursive(copy, currentWorld, loaded -> loaded);
                 if (entity != null) {
+                    stabilizeDecorativeEntity(entity);
                     currentWorld.addEntity(entity);
                     added++;
                 }
@@ -1318,6 +1330,7 @@ public class ViewportFactory {
     }
 
     private static void handleBlockClick(BlockPos pos, net.minecraft.core.Direction face) {
+        clearDecorativeEntitySelection();
         var state = EditorUI.getState();
         state.setCursorX(pos.getX());
         state.setCursorY(pos.getY());
@@ -1388,6 +1401,150 @@ public class ViewportFactory {
             }
         }
         EditorUI.updateStatusBar();
+    }
+
+    private static void handleDecorativeEntityMouseDown(Object rawEvent) {
+        if (currentScene == null || currentWorld == null) return;
+        if (!sceneReflectionInit) initSceneReflection();
+        try {
+            if (rawEvent == null) return;
+            var eventClass = rawEvent.getClass();
+            var buttonField = eventClass.getField("button");
+            var button = buttonField.getInt(rawEvent);
+            if (button != 0) return;
+
+            long window = Minecraft.getInstance().getWindow().getWindow();
+            boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            if (shift) return;
+            if (EditorUI.getState().getActiveTool() != EditorTool.SELECT) return;
+
+            var selected = pickDecorativeEntityUnderCursor();
+            if (selected == null) return;
+
+            applyDecorativeEntitySelection(selected);
+            var stop = eventClass.getMethod("stopPropagation");
+            stop.invoke(rawEvent);
+        } catch (Exception e) {
+            LOG.debug("Decorative entity selection failed", e);
+        }
+    }
+
+    private static void applyDecorativeEntitySelection(Entity entity) {
+        if (entity == null) return;
+        var state = EditorUI.getState();
+        var pos = entity.blockPosition();
+        var entityId = EntityType.getKey(entity.getType());
+        String entityLabel = Component.translatable("ebe.status.entity").getString() + ": "
+                + (entityId == null ? entity.getType().toString() : entityId.toString())
+                + " @ " + pos.toShortString();
+        state.setCursorX(pos.getX());
+        state.setCursorY(pos.getY());
+        state.setCursorZ(pos.getZ());
+        state.setCursorPosition(pos.toShortString());
+        state.setSelectedBlock(entityLabel);
+        state.setSelectedCount(1);
+        state.setInspectedBlockState(currentWorld.getBlockState(pos));
+        EditorUI.updateBlockInspection();
+        EditorUI.updateStatusBar();
+    }
+
+    private static void clearDecorativeEntitySelection() {
+        var state = EditorUI.getState();
+        if (state.getSelectedBlock() != null && state.getSelectedBlock().startsWith(Component.translatable("ebe.status.entity").getString())) {
+            state.setSelectedBlock("");
+            state.setSelectedCount(0);
+        }
+    }
+
+    private static Entity pickDecorativeEntityUnderCursor() {
+        if (currentScene == null || currentWorld == null) return null;
+        var renderer = currentScene.getRenderer();
+        if (renderer == null) return null;
+        Vector3f eye = invokeRendererVector(renderer, rendererEyePosMethod, "getEyePos");
+        Vector3f lookAt = invokeRendererVector(renderer, rendererLookAtMethod, "getLookAt");
+        if (eye == null || lookAt == null) return null;
+
+        Vec3 start = new Vec3(eye.x, eye.y, eye.z);
+        Vec3 direction = new Vec3(lookAt.x - eye.x, lookAt.y - eye.y, lookAt.z - eye.z);
+        if (direction.lengthSqr() < 1.0E-6D) return null;
+        Vec3 end = start.add(direction.normalize().scale(128.0D));
+
+        double nearestBlockDistance = Double.POSITIVE_INFINITY;
+        BlockHitResult blockHit = getCurrentBlockHitResult();
+        if (blockHit != null && blockHit.getType() != HitResult.Type.MISS) {
+            nearestBlockDistance = start.distanceToSqr(blockHit.getLocation());
+        }
+
+        Entity best = null;
+        double bestDistance = nearestBlockDistance;
+        for (var entity : currentWorld.getAllRenderedEntities()) {
+            if (!ProjectionEntityTransforms.isAllowedDecorativeEntity(entity)) continue;
+            AABB box = entity.getBoundingBox().inflate(0.15D);
+            var hit = box.clip(start, end);
+            if (hit.isEmpty()) continue;
+            double distance = start.distanceToSqr(hit.get());
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = entity;
+            }
+        }
+        return best;
+    }
+
+    private static Vector3f invokeRendererVector(Object renderer, Method method, String fallbackMethodName) {
+        try {
+            Method resolved = method;
+            if (resolved == null && renderer != null) {
+                resolved = findRendererVectorMethod(renderer.getClass(), fallbackMethodName);
+            }
+            if (resolved == null || renderer == null) return null;
+            Object value = resolved.invoke(renderer);
+            if (value instanceof Vector3f vec) {
+                return new Vector3f(vec);
+            }
+            if (value instanceof Vec3 vec3) {
+                return new Vector3f((float) vec3.x, (float) vec3.y, (float) vec3.z);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static Method findRendererVectorMethod(Class<?> type, String name) {
+        Class<?> current = type;
+        while (current != null) {
+            try {
+                Method method = current.getDeclaredMethod(name);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException ignored) {
+                current = current.getSuperclass();
+            }
+        }
+        return null;
+    }
+
+    private static BlockHitResult getCurrentBlockHitResult() {
+        if (!sceneReflectionInit) initSceneReflection();
+        if (currentScene == null || sceneRendererField == null || rendererTraceField == null) return null;
+        try {
+            Object renderer = sceneRendererField.get(currentScene);
+            if (renderer == null) return null;
+            Object trace = rendererTraceField.get(renderer);
+            return trace instanceof BlockHitResult bhr ? bhr : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static void stabilizeDecorativeEntity(Entity entity) {
+        if (entity == null) return;
+        entity.xOld = entity.getX();
+        entity.yOld = entity.getY();
+        entity.zOld = entity.getZ();
+        entity.xRotO = entity.getXRot();
+        entity.yRotO = entity.getYRot();
+        entity.tickCount = Math.max(entity.tickCount, 1);
     }
 
     public static void handleMiddleClick(BlockPos pos) {

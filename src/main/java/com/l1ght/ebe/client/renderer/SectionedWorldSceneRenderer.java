@@ -1387,21 +1387,28 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                                          ISceneEntityRenderHook hook, float partialTicks) {
         for (var entity : level.getAllRenderedEntities()) {
             poseStack.pushPose();
-            if (entity.tickCount == 0) {
-                entity.xOld = entity.getX();
-                entity.yOld = entity.getY();
-                entity.zOld = entity.getZ();
+            try {
+                if (entity.tickCount == 0) {
+                    entity.xOld = entity.getX();
+                    entity.yOld = entity.getY();
+                    entity.zOld = entity.getZ();
+                    entity.xRotO = entity.getXRot();
+                    entity.yRotO = entity.getYRot();
+                    entity.tickCount = 1;
+                }
+                double d0 = Mth.lerp(partialTicks, entity.xOld, entity.getX());
+                double d1 = Mth.lerp(partialTicks, entity.yOld, entity.getY());
+                double d2 = Mth.lerp(partialTicks, entity.zOld, entity.getZ());
+                float f = Mth.lerp(partialTicks, entity.yRotO, entity.getYRot());
+                var renderManager = Minecraft.getInstance().getEntityRenderDispatcher();
+                int light = renderManager.getRenderer(entity).getPackedLightCoords(entity, partialTicks);
+                if (hook != null) {
+                    hook.applyEntity(world, entity, poseStack, partialTicks);
+                }
+                renderManager.render(entity, d0, d1, d2, f, partialTicks, poseStack, buffer, light);
+            } catch (Exception ex) {
+                LOG.debug("Skipping decorative entity render after failure", ex);
             }
-            double d0 = Mth.lerp(partialTicks, entity.xOld, entity.getX());
-            double d1 = Mth.lerp(partialTicks, entity.yOld, entity.getY());
-            double d2 = Mth.lerp(partialTicks, entity.zOld, entity.getZ());
-            float f = Mth.lerp(partialTicks, entity.yRotO, entity.getYRot());
-            var renderManager = Minecraft.getInstance().getEntityRenderDispatcher();
-            int light = renderManager.getRenderer(entity).getPackedLightCoords(entity, partialTicks);
-            if (hook != null) {
-                hook.applyEntity(world, entity, poseStack, partialTicks);
-            }
-            renderManager.render(entity, d0, d1, d2, f, partialTicks, poseStack, buffer, light);
             poseStack.popPose();
         }
     }

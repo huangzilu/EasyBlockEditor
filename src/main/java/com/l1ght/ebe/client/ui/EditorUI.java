@@ -4636,7 +4636,12 @@ public class EditorUI {
         selector.layout(l -> l.widthPercent(100).height(22));
         selector.setCandidates(List.of(".ebe", ".litematic"));
         selector.setSelected(normalizeConvertProjectionFormat(), false);
-        selector.setOnValueChanged(value -> convertProjectionFormat = normalizeConvertProjectionFormat(value));
+        selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
+        selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
+        selector.setOnValueChanged(value -> {
+            convertProjectionFormat = normalizeConvertProjectionFormat(value);
+            refreshConvertProjectionPanel();
+        });
         return selector;
     }
 
@@ -4692,6 +4697,7 @@ public class EditorUI {
             try {
                 var entity = EntityType.loadEntityRecursive(tag.copy(), world, loaded -> loaded);
                 if (entity != null) {
+                    stabilizeDecorativeEntityPreview(entity);
                     world.addEntity(entity);
                     added++;
                 }
@@ -4700,6 +4706,16 @@ public class EditorUI {
             }
         }
         return added;
+    }
+
+    private static void stabilizeDecorativeEntityPreview(Entity entity) {
+        if (entity == null) return;
+        entity.xOld = entity.getX();
+        entity.yOld = entity.getY();
+        entity.zOld = entity.getZ();
+        entity.xRotO = entity.getXRot();
+        entity.yRotO = entity.getYRot();
+        entity.tickCount = Math.max(entity.tickCount, 1);
     }
 
     private static int addPreviewBlocks(BuildingModel model, FastTrackedDummyWorld world, List<BlockPos> core) {
@@ -4750,16 +4766,25 @@ public class EditorUI {
             return;
         }
 
+        var occupied = findOccupiedWorldBounds(mc.level, minX, minY, minZ, maxX, maxY, maxZ);
+        if (occupied == null) {
+            setStatus(Component.translatable("ebe.convert.no_blocks_found"));
+            return;
+        }
+
         var model = new BuildingModel();
         String baseName = EditorSession.sanitizeFileBaseName(convertProjectionName);
+        int actualSx = occupied.sizeX();
+        int actualSy = occupied.sizeY();
+        int actualSz = occupied.sizeZ();
         model.getMetadata().setName(baseName);
-        model.getMetadata().setSize(sx, sy, sz);
-        var region = model.addRegion("converted", minX, minY, minZ, sx, sy, sz);
+        model.getMetadata().setSize(actualSx, actualSy, actualSz);
+        var region = model.addRegion("converted", occupied.minX(), occupied.minY(), occupied.minZ(), actualSx, actualSy, actualSz);
         var mutable = new BlockPos.MutableBlockPos();
         int copied = 0;
-        for (int y = minY; y <= maxY; y++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                for (int x = minX; x <= maxX; x++) {
+        for (int y = occupied.minY(); y <= occupied.maxY(); y++) {
+            for (int z = occupied.minZ(); z <= occupied.maxZ(); z++) {
+                for (int x = occupied.minX(); x <= occupied.maxX(); x++) {
                     mutable.set(x, y, z);
                     if (!mc.level.hasChunkAt(mutable)) continue;
                     BlockState state = mc.level.getBlockState(mutable);
@@ -4776,12 +4801,47 @@ public class EditorUI {
                 }
             }
         }
-        int copiedEntities = copyDecorativeEntitiesFromWorld(model, new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1));
+        int copiedEntities = copyDecorativeEntitiesFromWorld(
+                model,
+                new AABB(occupied.minX(), occupied.minY(), occupied.minZ(), occupied.maxX() + 1, occupied.maxY() + 1, occupied.maxZ() + 1));
         convertProjectionModel = model;
         convertProjectionName = baseName;
         convertProjectionTab = 1;
-        setStatus(Component.translatable("ebe.convert.created", copied, copiedEntities, volume));
+        setStatus(Component.translatable("ebe.convert.created", copied, copiedEntities,
+                (long) actualSx * actualSy * actualSz));
         refreshConvertProjectionPanel();
+    }
+
+    private static WorldBounds findOccupiedWorldBounds(net.minecraft.world.level.Level level,
+                                                      int minX, int minY, int minZ,
+                                                      int maxX, int maxY, int maxZ) {
+        if (level == null) return null;
+        boolean found = false;
+        int actualMinX = Integer.MAX_VALUE;
+        int actualMinY = Integer.MAX_VALUE;
+        int actualMinZ = Integer.MAX_VALUE;
+        int actualMaxX = Integer.MIN_VALUE;
+        int actualMaxY = Integer.MIN_VALUE;
+        int actualMaxZ = Integer.MIN_VALUE;
+        var mutable = new BlockPos.MutableBlockPos();
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    mutable.set(x, y, z);
+                    if (!level.hasChunkAt(mutable)) continue;
+                    BlockState state = level.getBlockState(mutable);
+                    if (state == null || state.isAir()) continue;
+                    found = true;
+                    actualMinX = Math.min(actualMinX, x);
+                    actualMinY = Math.min(actualMinY, y);
+                    actualMinZ = Math.min(actualMinZ, z);
+                    actualMaxX = Math.max(actualMaxX, x);
+                    actualMaxY = Math.max(actualMaxY, y);
+                    actualMaxZ = Math.max(actualMaxZ, z);
+                }
+            }
+        }
+        return found ? new WorldBounds(actualMinX, actualMinY, actualMinZ, actualMaxX, actualMaxY, actualMaxZ) : null;
     }
 
     private static int copyDecorativeEntitiesFromWorld(BuildingModel model, AABB bounds) {
@@ -4800,6 +4860,20 @@ public class EditorUI {
 
     private static boolean isSupportedDecorativeEntity(Entity entity) {
         return ProjectionEntityTransforms.isAllowedDecorativeEntity(entity);
+    }
+
+    private record WorldBounds(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+        int sizeX() {
+            return maxX - minX + 1;
+        }
+
+        int sizeY() {
+            return maxY - minY + 1;
+        }
+
+        int sizeZ() {
+            return maxZ - minZ + 1;
+        }
     }
 
     private static void saveConvertedProjection() {
