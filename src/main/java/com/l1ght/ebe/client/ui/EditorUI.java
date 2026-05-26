@@ -4773,9 +4773,6 @@ public class EditorUI {
         selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
         selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
         selector.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
     }
 
     private static String normalizeConvertProjectionFormat() {

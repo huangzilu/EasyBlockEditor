@@ -48,6 +48,7 @@ public class EditorDialogs {
                                             String defaultFormat, Consumer<String> onConfirm) {
         var dialog = new Dialog();
         dialog.setTitle(Component.translatable(titleKey).getString());
+        dialog.setAutoClose(false);
         dialog.setClickOutsideClose(false);
         dialog.overlay.layout(l -> l.width(300).maxHeight(245));
 
@@ -105,9 +106,6 @@ public class EditorDialogs {
         selector.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
         selector.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
         selector.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_DOWN, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_UP, e -> e.stopPropagation());
-        selector.dialog.addEventListener(UIEvents.MOUSE_WHEEL, e -> e.stopPropagation());
     }
 
     private static String normalizeOutputName(String rawName, String selectedFormat) {
