@@ -136,19 +136,19 @@ public class ViewportFactory {
         long visited;
         int added;
         final int maxExactBlocks;
-        final boolean spatialSample;
+        final boolean sectionPatchLoad;
+        final List<SectionPatch> sectionPatches;
+        int sectionPatchIndex;
+        int patchX;
+        int patchY;
+        int patchZ;
         boolean exactCapped;
-        int spatialRegionIndex = -1;
-        long spatialRegionVolume;
-        long spatialRegionAttemptLimit;
-        long spatialSampleIndex;
-        long spatialSampleStep = 1L;
 
         ProgressiveModelLoad(BuildingModel model, boolean autoCamera, ProjectionLoadProfile profile) {
             this.model = model;
             this.autoCamera = autoCamera;
             this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
-            this.spatialSample = this.maxExactBlocks > 0
+            this.sectionPatchLoad = this.maxExactBlocks > 0
                     && profile != null
                     && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
             long volume = 0L;
@@ -156,11 +156,15 @@ public class ViewportFactory {
                 volume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
             }
             this.totalVolume = Math.max(1, volume);
+            this.sectionPatches = sectionPatchLoad ? createSectionPatches(model) : List.of();
         }
 
         boolean hasExactCap() {
             return maxExactBlocks > 0;
         }
+    }
+
+    private record SectionPatch(int regionIndex, int startX, int startY, int startZ, int sizeX, int sizeY, int sizeZ) {
     }
 
     private static class ProgressiveComputedLoad {
@@ -1133,18 +1137,16 @@ public class ViewportFactory {
                 load.exactCapped = true;
                 break;
             }
-            var region = regions.get(load.regionIndex);
-            if (load.spatialSample) {
-                prepareSpatialSampleRegion(load, region);
+            if (load.sectionPatchLoad) {
+                if (!advanceSectionPatchCursor(load)) {
+                    load.exactCapped = true;
+                    break;
+                }
             }
-            if ((!load.spatialSample && load.y >= region.getSizeY())
-                    || (load.spatialSample && load.spatialSampleIndex >= load.spatialRegionAttemptLimit)) {
+            var region = regions.get(load.regionIndex);
+            if (!load.sectionPatchLoad && load.y >= region.getSizeY()) {
                 advanceProgressiveRegion(load, region);
                 continue;
-            }
-
-            if (load.spatialSample) {
-                applySpatialSampleCursor(load, region);
             }
 
             var obj = region.getBlocks().get(load.x, load.y, load.z);
@@ -1165,7 +1167,9 @@ public class ViewportFactory {
                 load.added++;
             }
 
-            if (!load.spatialSample) {
+            if (load.sectionPatchLoad) {
+                advanceWithinSectionPatch(load);
+            } else {
                 load.x++;
                 if (load.x >= region.getSizeX()) {
                     load.x = 0;
@@ -1236,58 +1240,87 @@ public class ViewportFactory {
         load.x = 0;
         load.y = 0;
         load.z = 0;
-        load.spatialRegionIndex = -1;
-        load.spatialRegionVolume = 0L;
-        load.spatialRegionAttemptLimit = 0L;
-        load.spatialSampleIndex = 0L;
-        load.spatialSampleStep = 1L;
     }
 
-    private static void prepareSpatialSampleRegion(ProgressiveModelLoad load, Region region) {
-        if (load.spatialRegionIndex == load.regionIndex) {
-            return;
+    private static boolean advanceSectionPatchCursor(ProgressiveModelLoad load) {
+        while (load.sectionPatchIndex < load.sectionPatches.size()) {
+            SectionPatch patch = load.sectionPatches.get(load.sectionPatchIndex);
+            if (load.patchY < patch.sizeY()) {
+                load.regionIndex = patch.regionIndex();
+                load.x = patch.startX() + load.patchX;
+                load.y = patch.startY() + load.patchY;
+                load.z = patch.startZ() + load.patchZ;
+                return true;
+            }
+            load.sectionPatchIndex++;
+            load.patchX = 0;
+            load.patchY = 0;
+            load.patchZ = 0;
         }
-        load.spatialRegionIndex = load.regionIndex;
-        load.spatialSampleIndex = 0L;
-        load.spatialRegionVolume = Math.max(1L,
-                (long) region.getSizeX() * Math.max(1, region.getSizeY()) * Math.max(1, region.getSizeZ()));
-        long targetSamples = Math.max(1L,
-                (long) Math.ceil(load.maxExactBlocks * (load.spatialRegionVolume / (double) load.totalVolume)));
-        load.spatialRegionAttemptLimit = Math.min(load.spatialRegionVolume, Math.max(targetSamples, targetSamples * 96L));
-        long baseStep = Math.max(1L, load.spatialRegionVolume / Math.max(1L, targetSamples));
-        load.spatialSampleStep = nearestCoprimeStep(baseStep, load.spatialRegionVolume);
+        return false;
     }
 
-    private static void applySpatialSampleCursor(ProgressiveModelLoad load, Region region) {
-        long sampled = Math.floorMod(load.spatialSampleIndex * load.spatialSampleStep, load.spatialRegionVolume);
-        load.spatialSampleIndex++;
-        int sizeX = Math.max(1, region.getSizeX());
-        int sizeZ = Math.max(1, region.getSizeZ());
-        long layerSize = (long) sizeX * sizeZ;
-        load.y = (int) (sampled / layerSize);
-        long layerOffset = sampled % layerSize;
-        load.z = (int) (layerOffset / sizeX);
-        load.x = (int) (layerOffset % sizeX);
-    }
-
-    private static long nearestCoprimeStep(long candidate, long modulo) {
-        if (modulo <= 1L) return 1L;
-        long step = Math.max(1L, candidate);
-        while (gcd(step, modulo) != 1L) {
-            step++;
+    private static void advanceWithinSectionPatch(ProgressiveModelLoad load) {
+        if (load.sectionPatchIndex >= load.sectionPatches.size()) return;
+        SectionPatch patch = load.sectionPatches.get(load.sectionPatchIndex);
+        load.patchX++;
+        if (load.patchX >= patch.sizeX()) {
+            load.patchX = 0;
+            load.patchZ++;
+            if (load.patchZ >= patch.sizeZ()) {
+                load.patchZ = 0;
+                load.patchY++;
+            }
         }
-        return step;
     }
 
-    private static long gcd(long a, long b) {
-        a = Math.abs(a);
-        b = Math.abs(b);
-        while (b != 0L) {
-            long t = a % b;
-            a = b;
-            b = t;
+    private static List<SectionPatch> createSectionPatches(BuildingModel model) {
+        if (model == null || model.getRegions().isEmpty()) return List.of();
+        var patches = new ArrayList<SectionPatch>();
+        for (int regionIndex = 0; regionIndex < model.getRegions().size(); regionIndex++) {
+            Region region = model.getRegions().get(regionIndex);
+            int sectionCountX = Math.max(1, (region.getSizeX() + 15) >> 4);
+            int sectionCountY = Math.max(1, (region.getSizeY() + 15) >> 4);
+            int sectionCountZ = Math.max(1, (region.getSizeZ() + 15) >> 4);
+            double centerX = (sectionCountX - 1) * 0.5D;
+            double centerY = (sectionCountY - 1) * 0.5D;
+            double centerZ = (sectionCountZ - 1) * 0.5D;
+            var regionPatches = new ArrayList<SectionPatch>(sectionCountX * sectionCountY * sectionCountZ);
+            for (int sy = 0; sy < sectionCountY; sy++) {
+                for (int sz = 0; sz < sectionCountZ; sz++) {
+                    for (int sx = 0; sx < sectionCountX; sx++) {
+                        int startX = sx << 4;
+                        int startY = sy << 4;
+                        int startZ = sz << 4;
+                        regionPatches.add(new SectionPatch(
+                                regionIndex,
+                                startX,
+                                startY,
+                                startZ,
+                                Math.min(16, region.getSizeX() - startX),
+                                Math.min(16, region.getSizeY() - startY),
+                                Math.min(16, region.getSizeZ() - startZ)));
+                    }
+                }
+            }
+            regionPatches.sort(java.util.Comparator
+                    .comparingDouble((SectionPatch patch) -> sectionPatchDistanceSqr(patch, centerX, centerY, centerZ))
+                    .thenComparingInt(SectionPatch::startY)
+                    .thenComparingInt(SectionPatch::startZ)
+                    .thenComparingInt(SectionPatch::startX));
+            patches.addAll(regionPatches);
         }
-        return Math.max(1L, a);
+        return List.copyOf(patches);
+    }
+
+    private static double sectionPatchDistanceSqr(SectionPatch patch, double centerX, double centerY, double centerZ) {
+        double sx = patch.startX() / 16.0D;
+        double sy = patch.startY() / 16.0D;
+        double sz = patch.startZ() / 16.0D;
+        double dx = sx - centerX;
+        double dy = sy - centerY;
+        double dz = sz - centerZ;
+        return dx * dx + dy * dy + dz * dz;
     }
 
     private static void tickProgressiveComputedLoad() {
