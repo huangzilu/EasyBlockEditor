@@ -94,6 +94,7 @@ public class ViewportFactory {
     private static final int EXTREME_LOD_SAMPLE_CAP = 60_000;
     private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 320_000;
     private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 240_000;
+    private static final double MESH_ONLY_SOURCE_RELEASE_TARGET = 0.65D;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -285,9 +286,17 @@ public class ViewportFactory {
         }
     }
 
-    private record LoadedPatch(ExactPatch patch, List<BlockPos> blocks) {
+    private record LoadedPatch(ExactPatch patch, List<BlockPos> blocks, int blockCount, boolean sourceReleased) {
         int size() {
-            return blocks == null ? 0 : blocks.size();
+            return blockCount;
+        }
+
+        int sourceBlocks() {
+            return sourceReleased ? 0 : blockCount;
+        }
+
+        boolean hasSourceBlocks() {
+            return !sourceReleased && blocks != null && !blocks.isEmpty();
         }
     }
 
@@ -1593,6 +1602,7 @@ public class ViewportFactory {
         int maxPatches = dynamicExactPatchesPerTick(window.profile);
         int loaded = 0;
         Vector3f focus = new Vector3f(currentScene.getCenter());
+        releaseCompiledPatchSources(window, focus, 0);
         while (!window.capReached && loaded < maxPatches && System.nanoTime() < deadline) {
             ExactPatch patch = selectNextExactPatch(window, focus);
             if (patch == null) {
@@ -1611,6 +1621,7 @@ public class ViewportFactory {
                 scheduleProgressiveLoadCompile(loadedPatch.blocks());
             }
         }
+        releaseCompiledPatchSources(window, focus, 0);
 
         if (loaded > 0 && window.tickCounter++ % 10 == 0) {
             EditorUI.setStatus(Component.translatable(
@@ -1687,12 +1698,13 @@ public class ViewportFactory {
 
     private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus) {
         var blocks = collectExactPatchBlocks(window, patch);
-        window.loadedPatches.put(patch.key, new LoadedPatch(patch, List.of()));
+        window.loadedPatches.put(patch.key, new LoadedPatch(patch, List.of(), 0, false));
         if (blocks.isEmpty()) {
             window.loadedPatches.remove(patch.key);
             return null;
         }
 
+        releaseCompiledPatchSources(window, focus, blocks.size());
         if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
             window.loadedPatches.remove(patch.key);
             window.capReached = true;
@@ -1707,10 +1719,71 @@ public class ViewportFactory {
             }
         }
         var positions = blocks.stream().map(ExactBlock::pos).map(BlockPos::immutable).toList();
-        var loaded = new LoadedPatch(patch, positions);
+        var loaded = new LoadedPatch(patch, positions, positions.size(), false);
         window.loadedPatches.put(patch.key, loaded);
         window.exactBlocks += positions.size();
         return loaded;
+    }
+
+    private static void releaseCompiledPatchSources(DynamicExactViewportWindow window, Vector3f focus, int incomingBlocks) {
+        if (window == null || currentWorld == null || sectionedRenderer == null || window.loadedPatches.isEmpty()) {
+            return;
+        }
+        if (window.capReached && window.exactBlocks + incomingBlocks <= window.maxExactBlocks) {
+            window.capReached = false;
+        }
+        int releaseTarget = Math.max(0, (int) (window.maxExactBlocks * MESH_ONLY_SOURCE_RELEASE_TARGET));
+        if (window.exactBlocks + incomingBlocks <= window.maxExactBlocks && window.exactBlocks <= releaseTarget) {
+            return;
+        }
+
+        var candidates = new ArrayList<LoadedPatch>();
+        for (var loaded : window.loadedPatches.values()) {
+            if (!loaded.hasSourceBlocks()) {
+                continue;
+            }
+            if (!sectionedRenderer.areSectionsCompiled(loaded.blocks())) {
+                continue;
+            }
+            if (containsBlockEntity(loaded.blocks())) {
+                continue;
+            }
+            candidates.add(loaded);
+        }
+        if (candidates.isEmpty()) {
+            return;
+        }
+
+        candidates.sort(Comparator
+                .comparingDouble((LoadedPatch loaded) -> loaded.patch().distanceSqr(focus))
+                .reversed());
+
+        for (var loaded : candidates) {
+            if (window.exactBlocks + incomingBlocks <= releaseTarget) {
+                break;
+            }
+            for (var pos : loaded.blocks()) {
+                currentWorld.removeBlock(pos);
+            }
+            window.loadedPatches.put(loaded.patch().key,
+                    new LoadedPatch(loaded.patch(), List.of(), loaded.blockCount(), true));
+            window.exactBlocks = Math.max(0, window.exactBlocks - loaded.sourceBlocks());
+        }
+        if (window.capReached && window.exactBlocks + incomingBlocks <= window.maxExactBlocks) {
+            window.capReached = false;
+        }
+    }
+
+    private static boolean containsBlockEntity(List<BlockPos> blocks) {
+        if (blocks == null || blocks.isEmpty() || currentWorld == null) {
+            return false;
+        }
+        for (var pos : blocks) {
+            if (currentWorld.getBlockEntity(pos) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch) {
@@ -2193,6 +2266,7 @@ public class ViewportFactory {
     public static void placeBlock(BlockPos pos, BlockState blockState,
                                   com.l1ght.ebe.editor.history.HistoryManager history) {
         if (currentWorld == null) return;
+        restoreViewportSectionSource(pos);
         var oldState = currentWorld.getBlockState(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
         incrementalUpdateCore(pos, true);
@@ -2215,6 +2289,7 @@ public class ViewportFactory {
     public static void deleteBlock(BlockPos pos,
                                    com.l1ght.ebe.editor.history.HistoryManager history) {
         if (currentWorld == null) return;
+        restoreViewportSectionSource(pos);
         var oldState = currentWorld.getBlockState(pos);
         currentWorld.removeBlock(pos);
         incrementalUpdateCore(pos, false);
@@ -2237,6 +2312,7 @@ public class ViewportFactory {
     public static void replaceBlock(BlockPos pos, BlockState blockState,
                                     com.l1ght.ebe.editor.history.HistoryManager history) {
         if (currentWorld == null) return;
+        restoreViewportSectionSource(pos);
         var oldState = currentWorld.getBlockState(pos);
         currentWorld.removeBlock(pos);
         currentWorld.addBlock(pos, new BlockInfo(blockState));
@@ -2255,6 +2331,54 @@ public class ViewportFactory {
                     com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
                     new Object[][]{{pos.getX(), pos.getY(), pos.getZ(), oldState, blockState, oldNbt, null}},
                     pos.getX(), pos.getY(), pos.getZ(), blockState, 1));
+        }
+    }
+
+    private static void restoreViewportSectionSource(BlockPos anchor) {
+        var session = EditorUI.getSession();
+        if (currentWorld == null || session == null || session.getModel() == null || anchor == null) {
+            return;
+        }
+        int sectionMinX = Math.floorDiv(anchor.getX(), 16) << 4;
+        int sectionMinY = Math.floorDiv(anchor.getY(), 16) << 4;
+        int sectionMinZ = Math.floorDiv(anchor.getZ(), 16) << 4;
+        int sectionMaxX = sectionMinX + 15;
+        int sectionMaxY = sectionMinY + 15;
+        int sectionMaxZ = sectionMinZ + 15;
+
+        var model = session.getModel();
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        var core = getSceneCore();
+        var restored = new ArrayList<BlockPos>();
+        for (var region : model.getRegions()) {
+            int minX = Math.max(sectionMinX, region.getOffsetX());
+            int minY = Math.max(sectionMinY, region.getOffsetY());
+            int minZ = Math.max(sectionMinZ, region.getOffsetZ());
+            int maxX = Math.min(sectionMaxX, region.getOffsetX() + region.getSizeX() - 1);
+            int maxY = Math.min(sectionMaxY, region.getOffsetY() + region.getSizeY() - 1);
+            int maxZ = Math.min(sectionMaxZ, region.getOffsetZ() + region.getSizeZ() - 1);
+            if (minX > maxX || minY > maxY || minZ > maxZ) {
+                continue;
+            }
+            for (int wy = minY; wy <= maxY; wy++) {
+                for (int wz = minZ; wz <= maxZ; wz++) {
+                    for (int wx = minX; wx <= maxX; wx++) {
+                        Object obj = region.getWorldBlock(wx, wy, wz);
+                        BlockState state = resolveBlockState(obj);
+                        if (state == null || state.isAir()) continue;
+                        if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
+                        if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
+                        var pos = new BlockPos(wx, wy, wz);
+                        if (!currentWorld.getBlockState(pos).isAir()) continue;
+                        addBlockToViewportWorld(pos, state);
+                        if (core != null) core.add(pos.immutable());
+                        restored.add(pos.immutable());
+                    }
+                }
+            }
+        }
+        if (!restored.isEmpty() && sectionedRenderer != null) {
+            sectionedRenderer.applyLoadedBlocks(restored);
         }
     }
 

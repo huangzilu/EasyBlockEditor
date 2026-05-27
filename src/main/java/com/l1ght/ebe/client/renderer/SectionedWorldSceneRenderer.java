@@ -222,6 +222,24 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         rebuildAllTileEntities();
     }
 
+    public boolean areSectionsCompiled(Collection<BlockPos> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return false;
+        }
+        Set<SectionPos> checked = new HashSet<>();
+        for (var pos : blocks) {
+            var sp = SectionPos.fromBlock(pos);
+            if (!checked.add(sp)) {
+                continue;
+            }
+            var data = sections.get(sp);
+            if (data == null || !data.compiled) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public void setViewportLod(ProjectionLodPyramid pyramid, List<BlockState> palette) {
         this.viewportLodPyramid = pyramid == null ? ProjectionLodPyramid.empty() : pyramid;
         this.viewportLodPalette = palette == null ? List.of() : List.copyOf(palette);
