@@ -41,6 +41,7 @@ public class ProjectionManager {
     private static final String PERSIST_MODEL_FILE_NAME = "projection_snapshot.ebe";
 
     private static ProjectionData activeProjection;
+    private static String projectionSourceName = "";
     private static boolean projectionVisible = true;
     private static boolean projectionLoaded = false;
     private static BlockPos projectionOrigin = BlockPos.ZERO;
@@ -65,6 +66,7 @@ public class ProjectionManager {
     public static void setProjection(BuildingModel model, ComputedProjection computed) {
         if (model == null) {
             activeProjection = null;
+            projectionSourceName = "";
             projectionLoaded = false;
             placeAllInProgress = false;
             placementEntitiesQueued = false;
@@ -77,6 +79,7 @@ public class ProjectionManager {
         placementEntitiesQueued = false;
         pendingPlaceAllUploads.clear();
         completionScanState = null;
+        projectionSourceName = "";
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -97,6 +100,7 @@ public class ProjectionManager {
         placementEntitiesQueued = false;
         pendingPlaceAllUploads.clear();
         completionScanState = null;
+        projectionSourceName = "";
         if (computed != null) {
             projectionOrigin = computed.getOrigin();
             activeProjection = new ProjectionData(model, projectionOrigin, computed);
@@ -125,6 +129,7 @@ public class ProjectionManager {
 
     public static void removeProjection() {
         activeProjection = null;
+        projectionSourceName = "";
         projectionLoaded = false;
         placeAllInProgress = false;
         placementEntitiesQueued = false;
@@ -139,6 +144,15 @@ public class ProjectionManager {
 
     public static ProjectionData getProjection() {
         return activeProjection;
+    }
+
+    public static String getProjectionSourceName() {
+        return projectionSourceName == null || projectionSourceName.isBlank() ? "" : projectionSourceName;
+    }
+
+    public static void setProjectionSourceName(String sourceName) {
+        projectionSourceName = sourceName == null ? "" : sourceName;
+        savePersistentState(false);
     }
 
     public static boolean isProjectionVisible() {
@@ -318,6 +332,7 @@ public class ProjectionManager {
 
             projectionVisible = Boolean.parseBoolean(properties.getProperty("visible", "true"));
             projectionLoaded = Boolean.parseBoolean(properties.getProperty("loaded", "true"));
+            projectionSourceName = properties.getProperty("sourceName", "");
             persistentStateLoaded = true;
             LOG.info("Restored persisted projection: {} blocks, loaded={}, visible={}, origin={}, stateFile={}, modelFile={}",
                     activeProjection.getBlockCount(),
@@ -328,6 +343,7 @@ public class ProjectionManager {
                     modelFile.toAbsolutePath());
         } catch (Exception e) {
             activeProjection = null;
+            projectionSourceName = "";
             projectionLoaded = false;
             persistentStateLoaded = false;
             LOG.warn("Failed to restore persisted projection", e);
@@ -365,6 +381,7 @@ public class ProjectionManager {
             properties.setProperty("centerX", Integer.toString(activeProjection.getCenterPoint().getX()));
             properties.setProperty("centerY", Integer.toString(activeProjection.getCenterPoint().getY()));
             properties.setProperty("centerZ", Integer.toString(activeProjection.getCenterPoint().getZ()));
+            properties.setProperty("sourceName", projectionSourceName == null ? "" : projectionSourceName);
 
             try (OutputStream out = Files.newOutputStream(persistStateFile())) {
                 properties.store(out, "EasyBlockEditor persisted projection state");

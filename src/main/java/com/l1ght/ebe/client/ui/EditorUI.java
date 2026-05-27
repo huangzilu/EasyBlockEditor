@@ -191,6 +191,7 @@ public class EditorUI {
         return thread;
     });
     private static final AtomicInteger FILE_LOAD_SEQUENCE = new AtomicInteger();
+    private static final AtomicInteger PROJECTION_SELECT_SEQUENCE = new AtomicInteger();
     private static final long LARGE_PROJECTION_WARNING_BYTES = 512L * 1024L;
 
     public static ModularUI createModularUI() {
@@ -603,6 +604,35 @@ public class EditorUI {
                     ViewportFactory.loadFromModel(session.getModel(), loaded.profile());
                 }
             }
+        }));
+    }
+
+    private static void selectFileForProjection(Path file) {
+        if (file == null) return;
+        int sequence = PROJECTION_SELECT_SEQUENCE.incrementAndGet();
+        setStatus(Component.translatable("ebe.projection.selecting_file", file.getFileName().toString()));
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return EditorSession.readFileWithComputed(file);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }, FILE_LOAD_EXECUTOR).whenComplete((loaded, error) -> Minecraft.getInstance().execute(() -> {
+            if (sequence != PROJECTION_SELECT_SEQUENCE.get()) return;
+            if (error != null) {
+                setStatus(Component.translatable("ebe.editor.loading.failed", rootCauseMessage(error)));
+                EBEMod.LOGGER.warn("Failed to select projection file {}", file, error);
+                return;
+            }
+            ProjectionManager.selectProjection(loaded.model(), loaded.computed());
+            ProjectionManager.setProjectionSourceName(loaded.file().getFileName().toString());
+            currentProjectionTab = 0;
+            if (projectionPanelVisible && projectionPanel != null) {
+                switchProjectionTab(0);
+            } else {
+                showProjectionPanel();
+            }
+            setStatus(Component.translatable("ebe.projection.selected_file", loaded.file().getFileName().toString()));
         }));
     }
 
@@ -1062,7 +1092,8 @@ public class EditorUI {
         container.addChild(statusRow);
 
         var nameLabel = new Label();
-        var projName = session != null ? session.getCurrentName() : "Unknown";
+        String selectedSourceName = ProjectionManager.getProjectionSourceName();
+        var projName = !selectedSourceName.isBlank() ? selectedSourceName : session != null ? session.getCurrentName() : "Unknown";
         nameLabel.setText(Component.literal(projName));
         nameLabel.textStyle(ts -> ts.textColor(0xFFFFD700).fontSize(10).textShadow(false));
         container.addChild(nameLabel);
@@ -4282,6 +4313,10 @@ public class EditorUI {
                     setStatus(Component.translatable("ebe.error.save_failed"));
                 }
             });
+        }));
+        dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.output_to_projection")).setOnClick(e -> {
+            dialog.close();
+            selectFileForProjection(file);
         }));
         dialog.addButton(new Button().setText(Component.translatable("ebe.editor.files.delete")).setOnClick(e -> {
             dialog.close();

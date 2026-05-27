@@ -125,18 +125,18 @@ public record ProjectionLoadProfile(
 
     public double steadyLoadBudgetFloorMs() {
         return switch (risk) {
-            case EXTREME -> 5.0D;
-            case HUGE -> 4.0D;
-            case LARGE -> 2.5D;
+            case EXTREME -> 6.5D;
+            case HUGE -> 5.0D;
+            case LARGE -> 3.0D;
             case NORMAL -> 0.0D;
         };
     }
 
     public int steadyBlockLimitFloor() {
         return switch (risk) {
-            case EXTREME -> 8192;
-            case HUGE -> 6144;
-            case LARGE -> 3072;
+            case EXTREME -> 12288;
+            case HUGE -> 8192;
+            case LARGE -> 4096;
             case NORMAL -> 0;
         };
     }

@@ -52,7 +52,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/SectionedRenderer");
     private static final int SECTION_SIZE = 16;
-    private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 6;
+    private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 8;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
     private static final int QUALITY_STEADY_SECTION_LIMIT = 4096;
     private static final int BALANCED_STEADY_SECTION_LIMIT = 1024;
@@ -654,8 +654,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if ("performance".equals(mode)) return 1;
             return 2;
         }
-        if ("quality".equals(mode)) return 10;
-        if ("performance".equals(mode)) return 4;
+        if ("quality".equals(mode)) return 14;
+        if ("performance".equals(mode)) return 5;
         return DEFAULT_SECTION_COMPILE_BATCH_SIZE;
     }
 

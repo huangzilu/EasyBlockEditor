@@ -1641,8 +1641,8 @@ public class ViewportFactory {
     private static int dynamicExactPatchesPerTick(ProjectionLoadProfile profile) {
         String mode = EBEClientConfig.viewportPerformanceMode.get();
         if ("performance".equals(mode)) return 1;
-        if ("quality".equals(mode)) return profile != null && profile.risk() == ProjectionLoadProfile.Risk.EXTREME ? 2 : 3;
-        return 2;
+        if ("quality".equals(mode)) return profile != null && profile.risk() == ProjectionLoadProfile.Risk.EXTREME ? 3 : 4;
+        return 3;
     }
 
     private static ExactPatch selectNextExactPatch(DynamicExactViewportWindow window, Vector3f focus) {
