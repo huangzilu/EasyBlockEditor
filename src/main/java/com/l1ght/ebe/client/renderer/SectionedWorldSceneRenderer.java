@@ -54,6 +54,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private static final int SECTION_SIZE = 16;
     private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 6;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
+    private static final int QUALITY_STEADY_SECTION_LIMIT = 4096;
+    private static final int BALANCED_STEADY_SECTION_LIMIT = 1024;
+    private static final int PERFORMANCE_STEADY_SECTION_LIMIT = 512;
     private static final int BALANCED_MOVING_SECTION_LIMIT = 384;
     private static final int PERFORMANCE_MOVING_SECTION_LIMIT = 192;
     private static final double CAMERA_EPSILON_SQR = 0.0001D;
@@ -106,6 +109,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private Vector3f lastEyePos;
     private Vector3f lastLookAt;
     private int cameraMovingFrames;
+    private Set<SectionPos> exactSectionsThisFrame = Set.of();
 
     public record SectionPos(int x, int y, int z) {
         public static SectionPos fromBlock(BlockPos pos) {
@@ -718,7 +722,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         boolean cameraMoving = updateCameraMoving(eyePos);
         boolean sortVisibleSections = !cameraMoving || "quality".equals(performanceMode());
         List<SectionPos> visibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
-        visibleSections = limitVisibleSectionsWhileMoving(visibleSections, cameraMoving, eyePos);
+        visibleSections = limitExactSectionsForFrame(visibleSections, cameraMoving, eyePos);
+        exactSectionsThisFrame = visibleSections.isEmpty() ? Set.of() : new HashSet<>(visibleSections);
         Set<BlockPos> visibleTileEntities = collectVisibleTileEntities(visibleSections);
 
         compileDirtySections(eyePos, focusPos, cameraMoving);
@@ -790,6 +795,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (afterWR != null) {
             afterWR.accept(this);
         }
+        exactSectionsThisFrame = Set.of();
     }
 
     private void renderViewportLod(Vector3f eyePos, boolean cameraMoving) {
@@ -926,8 +932,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (int sy = minSectionY; sy <= maxSectionY; sy++) {
             for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
                 for (int sx = minSectionX; sx <= maxSectionX; sx++) {
-                    var data = sections.get(new SectionPos(sx, sy, sz));
-                    if (data == null || !data.compiled) {
+                    if (!isExactSectionDrawn(new SectionPos(sx, sy, sz))) {
                         return false;
                     }
                 }
@@ -953,14 +958,21 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (int sy = minSectionY; sy <= maxSectionY; sy++) {
             for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
                 for (int sx = minSectionX; sx <= maxSectionX; sx++) {
-                    var data = sections.get(new SectionPos(sx, sy, sz));
-                    if (data == null || !data.compiled) {
+                    if (!isExactSectionDrawn(new SectionPos(sx, sy, sz))) {
                         return false;
                     }
                 }
             }
         }
         return true;
+    }
+
+    private boolean isExactSectionDrawn(SectionPos sp) {
+        if (exactSectionsThisFrame == null || !exactSectionsThisFrame.contains(sp)) {
+            return false;
+        }
+        var data = sections.get(sp);
+        return data != null && data.compiled;
     }
 
     private double boxDistanceSqr(ProjectionLodPyramid.LodBox box, Vector3f eyePos) {
@@ -1360,20 +1372,25 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return visible;
     }
 
-    private List<SectionPos> limitVisibleSectionsWhileMoving(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
-        if (!cameraMoving || visibleSections.isEmpty()) return visibleSections;
-        int limit = movingSectionLimit();
+    private List<SectionPos> limitExactSectionsForFrame(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
+        if (visibleSections.isEmpty()) return visibleSections;
+        int limit = exactSectionDrawLimit(cameraMoving);
         if (limit <= 0 || visibleSections.size() <= limit) return visibleSections;
         var nearest = new ArrayList<>(visibleSections);
         nearest.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
         return new ArrayList<>(nearest.subList(0, limit));
     }
 
-    private int movingSectionLimit() {
+    private int exactSectionDrawLimit(boolean cameraMoving) {
         String mode = performanceMode();
-        if ("quality".equals(mode)) return 0;
-        if ("performance".equals(mode)) return PERFORMANCE_MOVING_SECTION_LIMIT;
-        return BALANCED_MOVING_SECTION_LIMIT;
+        if (cameraMoving) {
+            if ("quality".equals(mode)) return QUALITY_STEADY_SECTION_LIMIT / 2;
+            if ("performance".equals(mode)) return PERFORMANCE_MOVING_SECTION_LIMIT;
+            return BALANCED_MOVING_SECTION_LIMIT;
+        }
+        if ("quality".equals(mode)) return QUALITY_STEADY_SECTION_LIMIT;
+        if ("performance".equals(mode)) return PERFORMANCE_STEADY_SECTION_LIMIT;
+        return BALANCED_STEADY_SECTION_LIMIT;
     }
 
     private boolean isSectionVisible(SectionPos sp, Vector3f focusPos) {
