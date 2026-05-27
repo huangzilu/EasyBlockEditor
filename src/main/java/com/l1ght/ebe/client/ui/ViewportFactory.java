@@ -95,6 +95,7 @@ public class ViewportFactory {
     private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 320_000;
     private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 240_000;
     private static final double MESH_ONLY_SOURCE_RELEASE_TARGET = 0.65D;
+    private static final double MESH_ONLY_SOURCE_REHYDRATE_TARGET = 0.85D;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
     private static final int IRIS_VIEWPORT_FBO_MIN_SIZE = 64;
     private static final int IRIS_VIEWPORT_RESIZE_STABLE_FRAMES = 8;
@@ -1603,6 +1604,7 @@ public class ViewportFactory {
         int loaded = 0;
         Vector3f focus = new Vector3f(currentScene.getCenter());
         releaseCompiledPatchSources(window, focus, 0);
+        rehydrateNearestReleasedPatchSources(window, focus, deadline);
         while (!window.capReached && loaded < maxPatches && System.nanoTime() < deadline) {
             ExactPatch patch = selectNextExactPatch(window, focus);
             if (patch == null) {
@@ -1772,6 +1774,63 @@ public class ViewportFactory {
         if (window.capReached && window.exactBlocks + incomingBlocks <= window.maxExactBlocks) {
             window.capReached = false;
         }
+    }
+
+    private static void rehydrateNearestReleasedPatchSources(DynamicExactViewportWindow window, Vector3f focus, long deadline) {
+        if (window == null || currentWorld == null || currentScene == null || window.loadedPatches.isEmpty()) {
+            return;
+        }
+        if (System.nanoTime() >= deadline) {
+            return;
+        }
+        int rehydrateTarget = Math.max(0, (int) (window.maxExactBlocks * MESH_ONLY_SOURCE_REHYDRATE_TARGET));
+        if (window.exactBlocks >= rehydrateTarget) {
+            return;
+        }
+
+        LoadedPatch nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        for (var loaded : window.loadedPatches.values()) {
+            if (!loaded.sourceReleased()) {
+                continue;
+            }
+            double distance = loaded.patch().distanceSqr(focus);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearest = loaded;
+            }
+        }
+        if (nearest == null) {
+            return;
+        }
+
+        var blocks = collectExactPatchBlocks(window, nearest.patch());
+        if (blocks.isEmpty()) {
+            return;
+        }
+        if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
+            releaseCompiledPatchSources(window, focus, blocks.size());
+        }
+        if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
+            return;
+        }
+
+        var core = getSceneCore();
+        var positions = new ArrayList<BlockPos>(blocks.size());
+        for (var entry : blocks) {
+            addBlockToViewportWorld(entry.pos(), entry.state());
+            var immutable = entry.pos().immutable();
+            if (core != null) {
+                core.add(immutable);
+            }
+            positions.add(immutable);
+        }
+        if (positions.isEmpty()) {
+            return;
+        }
+        window.loadedPatches.put(nearest.patch().key,
+                new LoadedPatch(nearest.patch(), List.copyOf(positions), nearest.blockCount(), false));
+        window.exactBlocks += positions.size();
     }
 
     private static boolean containsBlockEntity(List<BlockPos> blocks) {
