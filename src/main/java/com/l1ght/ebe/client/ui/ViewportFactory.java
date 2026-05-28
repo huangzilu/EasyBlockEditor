@@ -13,7 +13,6 @@ import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.data.Region;
-import com.l1ght.ebe.editor.selection.DisplayFilter;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramidBuilder;
 import com.l1ght.ebe.projection.mega.ProjectionSparseStore;
@@ -35,7 +34,6 @@ import dev.vfyjxf.taffy.style.TaffyPosition;
 import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -206,12 +204,9 @@ public class ViewportFactory {
         final List<ExactPatch> coveragePatches;
         final Set<ExactPatchKey> exteriorShellPatchKeys;
         final List<ExactPatch> exteriorShellPatches;
-        final Map<ExactPatchKey, ExactPatch> patchesByKey;
-        final Map<ExactPatchKey, LongOpenHashSet> computedPatchOccupancy = new HashMap<>();
         final Map<ExactPatchKey, LoadedPatch> loadedPatches = new HashMap<>();
         final Set<ExactPatchKey> emptyPatches = new HashSet<>();
         final int maxExactBlocks;
-        final boolean shellExactMode;
         int exactBlocks;
         int tickCounter;
         int coverageCursor;
@@ -224,12 +219,10 @@ public class ViewportFactory {
             this.computed = computed;
             this.profile = profile;
             this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
-            this.shellExactMode = profile != null && profile.isHugeOrAbove();
             this.patches = model != null ? createModelExactPatches(model) : createComputedExactPatches(computed);
             this.coveragePatches = createRadialCoverageOrder(this.patches);
             this.exteriorShellPatchKeys = createExteriorShellPatchKeys(this.patches, profile);
             this.exteriorShellPatches = createRadialCoverageOrder(filterExactPatches(this.patches, this.exteriorShellPatchKeys));
-            this.patchesByKey = createExactPatchLookup(this.patches);
         }
 
         boolean isActive() {
@@ -1269,9 +1262,9 @@ public class ViewportFactory {
         EditorUI.markMaterialListStale();
         EditorUI.updateStatusBar();
         EditorUI.setStatus(Component.translatable("ebe.editor.loading.dynamic_exact", dynamicExactWindow.maxExactBlocks));
-        LOG.info("Dynamic exact viewport started: patches={}, exteriorShellPatches={}, exactCap={}, shellExactMode={}, entities={}, profile={}",
+        LOG.info("Dynamic exact viewport started: patches={}, exteriorShellPatches={}, exactCap={}, entities={}, profile={}",
                 dynamicExactWindow.patches.size(), dynamicExactWindow.exteriorShellPatches.size(),
-                dynamicExactWindow.maxExactBlocks, dynamicExactWindow.shellExactMode, entitiesAdded,
+                dynamicExactWindow.maxExactBlocks, entitiesAdded,
                 profile == null ? "none" : profile.risk());
 
         if (autoCamera) {
@@ -1623,15 +1616,6 @@ public class ViewportFactory {
         return List.copyOf(filtered);
     }
 
-    private static Map<ExactPatchKey, ExactPatch> createExactPatchLookup(List<ExactPatch> patches) {
-        if (patches == null || patches.isEmpty()) return Map.of();
-        var lookup = new HashMap<ExactPatchKey, ExactPatch>();
-        for (var patch : patches) {
-            lookup.putIfAbsent(patch.key, patch);
-        }
-        return Map.copyOf(lookup);
-    }
-
     private static Set<ExactPatchKey> createExteriorShellPatchKeys(List<ExactPatch> patches, ProjectionLoadProfile profile) {
         if (patches == null || patches.isEmpty()
                 || profile == null
@@ -1841,9 +1825,6 @@ public class ViewportFactory {
         ExactPatch best = null;
         double bestDistance = Double.MAX_VALUE;
         for (var patch : window.patches) {
-            if (window.shellExactMode && !window.exteriorShellPatchKeys.contains(patch.key)) {
-                continue;
-            }
             if (isPatchComplete(window, patch.key) || window.emptyPatches.contains(patch.key)) {
                 continue;
             }
@@ -2095,19 +2076,16 @@ public class ViewportFactory {
     }
 
     private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch) {
-        if (window.shellExactMode && !window.exteriorShellPatchKeys.contains(patch.key)) {
-            return List.of();
-        }
         if (window.model != null) {
-            return collectModelExactPatchBlocks(window.model, patch, window.shellExactMode);
+            return collectModelExactPatchBlocks(window.model, patch);
         }
         if (window.computed != null) {
-            return collectComputedExactPatchBlocks(window, patch, window.shellExactMode);
+            return collectComputedExactPatchBlocks(patch);
         }
         return List.of();
     }
 
-    private static List<ExactBlock> collectModelExactPatchBlocks(BuildingModel model, ExactPatch patch, boolean shellOnly) {
+    private static List<ExactBlock> collectModelExactPatchBlocks(BuildingModel model, ExactPatch patch) {
         if (patch.regionIndex < 0 || patch.regionIndex >= model.getRegions().size()) return List.of();
         Region region = model.getRegions().get(patch.regionIndex);
         var container = region.getBlocks();
@@ -2127,7 +2105,6 @@ public class ViewportFactory {
                     int wz = lz + region.getOffsetZ();
                     if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                     if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
-                    if (shellOnly && !isExteriorModelBlock(model, region, displayFilter, lx, ly, lz, wx, wy, wz)) continue;
                     blocks.add(new ExactBlock(new BlockPos(wx, wy, wz), state));
                 }
             }
@@ -2135,8 +2112,7 @@ public class ViewportFactory {
         return blocks;
     }
 
-    private static List<ExactBlock> collectComputedExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch,
-                                                                    boolean shellOnly) {
+    private static List<ExactBlock> collectComputedExactPatchBlocks(ExactPatch patch) {
         if (patch.computedEntries == null || patch.computedEntries.isEmpty()) return List.of();
         var displayFilter = EditorUI.getState().getDisplayFilter();
         var blocks = new ArrayList<ExactBlock>(patch.computedEntries.size());
@@ -2145,86 +2121,9 @@ public class ViewportFactory {
             BlockState state = entry.getState();
             if (state == null || state.isAir()) continue;
             if (!displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) continue;
-            if (shellOnly && !isExteriorComputedBlock(window, pos)) continue;
             blocks.add(new ExactBlock(pos.immutable(), state));
         }
         return blocks;
-    }
-
-    private static boolean isExteriorModelBlock(BuildingModel model, Region region, DisplayFilter displayFilter,
-                                                int lx, int ly, int lz, int wx, int wy, int wz) {
-        return !hasVisibleModelNeighbor(model, region, displayFilter, lx + 1, ly, lz, wx + 1, wy, wz)
-                || !hasVisibleModelNeighbor(model, region, displayFilter, lx - 1, ly, lz, wx - 1, wy, wz)
-                || !hasVisibleModelNeighbor(model, region, displayFilter, lx, ly + 1, lz, wx, wy + 1, wz)
-                || !hasVisibleModelNeighbor(model, region, displayFilter, lx, ly - 1, lz, wx, wy - 1, wz)
-                || !hasVisibleModelNeighbor(model, region, displayFilter, lx, ly, lz + 1, wx, wy, wz + 1)
-                || !hasVisibleModelNeighbor(model, region, displayFilter, lx, ly, lz - 1, wx, wy, wz - 1);
-    }
-
-    private static boolean hasVisibleModelNeighbor(BuildingModel model, Region region, DisplayFilter displayFilter,
-                                                   int lx, int ly, int lz, int wx, int wy, int wz) {
-        if (lx >= 0 && lx < region.getSizeX()
-                && ly >= 0 && ly < region.getSizeY()
-                && lz >= 0 && lz < region.getSizeZ()) {
-            Object obj = region.getBlocks().get(lx, ly, lz);
-            BlockState state = resolveBlockState(obj);
-            if (state == null || state.isAir()) return false;
-            if (!model.isLayerVisibleAt(region, wx, wy, wz)) return false;
-            return displayFilter.shouldDisplay(wx, wy, wz, obj);
-        }
-        return hasVisibleModelBlockAt(model, displayFilter, wx, wy, wz);
-    }
-
-    private static boolean hasVisibleModelBlockAt(BuildingModel model, DisplayFilter displayFilter, int wx, int wy, int wz) {
-        if (model == null) return false;
-        for (var region : model.getRegions()) {
-            if (!region.containsWorldPos(wx, wy, wz)) {
-                continue;
-            }
-            Object obj = region.getWorldBlock(wx, wy, wz);
-            BlockState state = resolveBlockState(obj);
-            if (state == null || state.isAir()) return false;
-            if (!model.isLayerVisibleAt(region, wx, wy, wz)) return false;
-            return displayFilter.shouldDisplay(wx, wy, wz, obj);
-        }
-        return false;
-    }
-
-    private static boolean isExteriorComputedBlock(DynamicExactViewportWindow window, BlockPos pos) {
-        return !hasVisibleComputedBlockAt(window, pos.getX() + 1, pos.getY(), pos.getZ())
-                || !hasVisibleComputedBlockAt(window, pos.getX() - 1, pos.getY(), pos.getZ())
-                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY() + 1, pos.getZ())
-                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY() - 1, pos.getZ())
-                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY(), pos.getZ() + 1)
-                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY(), pos.getZ() - 1);
-    }
-
-    private static boolean hasVisibleComputedBlockAt(DynamicExactViewportWindow window, int x, int y, int z) {
-        if (window == null || window.computed == null) return false;
-        var key = new ExactPatchKey(0, Math.floorDiv(x, 16), Math.floorDiv(y, 16), Math.floorDiv(z, 16));
-        ExactPatch patch = window.patchesByKey.get(key);
-        if (patch == null) {
-            return false;
-        }
-        LongOpenHashSet occupied = window.computedPatchOccupancy.computeIfAbsent(key,
-                ignored -> buildComputedPatchOccupancy(patch));
-        return occupied.contains(BlockPos.asLong(x, y, z));
-    }
-
-    private static LongOpenHashSet buildComputedPatchOccupancy(ExactPatch patch) {
-        var occupied = new LongOpenHashSet(patch.computedEntries == null ? 0 : patch.computedEntries.size());
-        if (patch.computedEntries == null || patch.computedEntries.isEmpty()) {
-            return occupied;
-        }
-        var displayFilter = EditorUI.getState().getDisplayFilter();
-        for (ViewportEntry entry : patch.computedEntries) {
-            BlockPos pos = entry.getPos();
-            BlockState state = entry.getState();
-            if (state == null || state.isAir()) continue;
-            if (!displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) continue;
-            occupied.add(pos.asLong());
-        }
-        return occupied;
     }
 
     private record ExactBlock(BlockPos pos, BlockState state) {
