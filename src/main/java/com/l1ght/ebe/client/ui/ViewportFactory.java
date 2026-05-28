@@ -665,7 +665,10 @@ public class ViewportFactory {
     }
 
     public static boolean shouldLoadModelProgressively(BuildingModel model, ProjectionLoadProfile profile) {
-        if (profile != null) return profile.shouldPreferProgressiveViewport();
+        if (profile != null) {
+            if (isUnderUserSyncThreshold(profile)) return false;
+            return profile.shouldPreferProgressiveViewport();
+        }
         if (model == null) return false;
         long volume = 0L;
         for (var region : model.getRegions()) {
@@ -680,7 +683,10 @@ public class ViewportFactory {
     }
 
     public static boolean shouldLoadComputedProgressively(ComputedProjection computed, ProjectionLoadProfile profile) {
-        if (profile != null) return profile.shouldPreferProgressiveViewport();
+        if (profile != null) {
+            if (isUnderUserSyncThreshold(profile)) return false;
+            return profile.shouldPreferProgressiveViewport();
+        }
         return computed != null && computed.blockCount() > SYNC_COMPUTED_LOAD_BLOCK_LIMIT;
     }
 
@@ -1007,11 +1013,9 @@ public class ViewportFactory {
     }
 
     private static boolean shouldUseSectionedRendererForSyncLoad(BuildingModel model, ProjectionLoadProfile profile) {
-        if (model != null && !model.getEntities().isEmpty()) {
-            return true;
-        }
         if (profile != null) {
             if (isUnderUserSyncThreshold(profile)) return false;
+            if (model != null && !model.getEntities().isEmpty()) return true;
             if (profile.shouldPreferProgressiveViewport() || profile.isHugeOrAbove()) return true;
             return profile.nonAirBlocks() >= SECTIONED_RENDERER_BLOCK_THRESHOLD
                     || profile.totalVolume() >= SECTIONED_RENDERER_VOLUME_THRESHOLD;
@@ -1879,9 +1883,6 @@ public class ViewportFactory {
     private static void tickDynamicExactViewport() {
         var window = dynamicExactWindow;
         if (window == null || !window.isActive() || currentWorld == null || currentScene == null) {
-            return;
-        }
-        if (viewportInteractionFrames > 0 && EBEClientConfig.viewportDegradeWhileMoving.get()) {
             return;
         }
 
