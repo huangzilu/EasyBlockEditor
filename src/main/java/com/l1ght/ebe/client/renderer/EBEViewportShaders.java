@@ -42,4 +42,15 @@ public final class EBEViewportShaders {
     public static boolean hasProjectionLodShader() {
         return projectionLodShader != null;
     }
+
+    public static void configureProjectionLod(float gridScale, float gridStrength,
+                                              float depthFadeDistance, float alphaMultiplier) {
+        if (projectionLodShader == null) {
+            return;
+        }
+        projectionLodShader.safeGetUniform("LodGridScale").set(gridScale);
+        projectionLodShader.safeGetUniform("LodGridStrength").set(gridStrength);
+        projectionLodShader.safeGetUniform("LodDepthFadeDistance").set(depthFadeDistance);
+        projectionLodShader.safeGetUniform("LodAlphaMultiplier").set(alphaMultiplier);
+    }
 }

@@ -12,11 +12,14 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -31,6 +34,9 @@ public final class MegaProjectionRenderer {
     private static ProjectionSparseStore cachedStore = ProjectionSparseStore.empty();
     private static ProjectionLodPyramid cachedPyramid = ProjectionLodPyramid.empty();
     private static ProjectionShellMesh cachedShellMesh = ProjectionShellMesh.empty();
+    private static VertexBuffer cachedShellVbo;
+    private static boolean cachedShellVboDirty = true;
+    private static boolean cachedShellVboHasData;
 
     private MegaProjectionRenderer() {
     }
@@ -81,28 +87,32 @@ public final class MegaProjectionRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        if (EBEViewportShaders.hasProjectionLodShader()) {
-            RenderSystem.setShader(EBEViewportShaders::projectionLodShader);
+        if (renderDistance <= 0) {
+            useProjectionLodShader(32.0F, 0.28F, 520.0F, opacity);
         } else {
-            RenderSystem.setShader(GameRenderer::getPositionColorShader);
+            useProjectionLodShader(32.0F, 0.28F, 520.0F, 1.0F);
         }
 
-        BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-        int drawn = 0;
-        for (var face : cachedShellMesh.faces()) {
-            AABB bounds = faceBounds(face, origin);
-            if (bounds.distanceToSqr(camPos) > maxDistanceSq) {
-                continue;
+        if (renderDistance <= 0 && renderCachedShellVbo()) {
+            // Full cached shell draw: trades a little GPU overdraw for much lower CPU cost on mega projections.
+        } else {
+            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            int drawn = 0;
+            for (var face : cachedShellMesh.faces()) {
+                AABB bounds = faceBounds(face, origin);
+                if (bounds.distanceToSqr(camPos) > maxDistanceSq) {
+                    continue;
+                }
+                if (frustum != null && !frustum.isVisible(bounds)) {
+                    continue;
+                }
+                addFace(buffer, face, colorForState(face.stateId()), alphaFor(face, opacity));
+                drawn++;
             }
-            if (frustum != null && !frustum.isVisible(bounds)) {
-                continue;
-            }
-            addFace(buffer, face, colorForState(face.stateId()), alphaFor(face, opacity));
-            drawn++;
-        }
 
-        if (drawn > 0) {
-            BufferUploader.drawWithShader(buffer.buildOrThrow());
+            if (drawn > 0) {
+                BufferUploader.drawWithShader(buffer.buildOrThrow());
+            }
         }
 
         RenderSystem.enableCull();
@@ -120,6 +130,7 @@ public final class MegaProjectionRenderer {
         cachedStore = ProjectionSparseStore.empty();
         cachedPyramid = ProjectionLodPyramid.empty();
         cachedShellMesh = ProjectionShellMesh.empty();
+        closeCachedShellVbo();
     }
 
     private static void ensureCache(ProjectionData projection) {
@@ -131,6 +142,99 @@ public final class MegaProjectionRenderer {
         cachedStore = buildSampledStore(projection);
         cachedPyramid = ProjectionLodPyramidBuilder.build(cachedStore);
         cachedShellMesh = ProjectionShellMeshBuilder.build(cachedPyramid.coarsestLevel());
+        closeCachedShellVbo();
+    }
+
+    private static void useProjectionLodShader(float gridScale, float gridStrength,
+                                               float depthFadeDistance, float alphaMultiplier) {
+        if (EBEViewportShaders.hasProjectionLodShader()) {
+            RenderSystem.setShader(EBEViewportShaders::projectionLodShader);
+            EBEViewportShaders.configureProjectionLod(gridScale, gridStrength, depthFadeDistance, alphaMultiplier);
+        } else {
+            RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        }
+    }
+
+    private static boolean renderCachedShellVbo() {
+        ensureCachedShellVbo();
+        if (!cachedShellVboHasData || cachedShellVbo == null || cachedShellVbo.isInvalid() || cachedShellVbo.getFormat() == null) {
+            return false;
+        }
+        setupVBODrawState();
+        cachedShellVbo.bind();
+        cachedShellVbo.draw();
+        ShaderInstance shader = RenderSystem.getShader();
+        if (shader != null) {
+            shader.clear();
+        }
+        VertexBuffer.unbind();
+        return true;
+    }
+
+    private static void ensureCachedShellVbo() {
+        if (!cachedShellVboDirty) {
+            return;
+        }
+        closeCachedShellVbo();
+        cachedShellVboDirty = false;
+        cachedShellVboHasData = false;
+        if (cachedShellMesh == null || cachedShellMesh.isEmpty()) {
+            return;
+        }
+        try {
+            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            int faces = 0;
+            for (var face : cachedShellMesh.faces()) {
+                addFace(buffer, face, colorForState(face.stateId()), alphaFor(face, 1.0F));
+                faces++;
+            }
+            if (faces <= 0) {
+                return;
+            }
+            MeshData meshData = buffer.build();
+            if (meshData == null) {
+                return;
+            }
+            cachedShellVbo = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            cachedShellVbo.bind();
+            cachedShellVbo.upload(meshData);
+            VertexBuffer.unbind();
+            cachedShellVboHasData = true;
+        } catch (Exception ignored) {
+            closeCachedShellVbo();
+        }
+    }
+
+    private static void closeCachedShellVbo() {
+        if (cachedShellVbo != null) {
+            cachedShellVbo.close();
+            cachedShellVbo = null;
+        }
+        cachedShellVboHasData = false;
+        cachedShellVboDirty = true;
+    }
+
+    private static void setupVBODrawState() {
+        ShaderInstance shader = RenderSystem.getShader();
+        if (shader == null) return;
+
+        for (int j = 0; j < 12; ++j) {
+            int tex = RenderSystem.getShaderTexture(j);
+            shader.setSampler("Sampler" + j, tex);
+        }
+
+        if (shader.MODEL_VIEW_MATRIX != null) {
+            shader.MODEL_VIEW_MATRIX.set(RenderSystem.getModelViewMatrix());
+        }
+        if (shader.PROJECTION_MATRIX != null) {
+            shader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
+        }
+        if (shader.COLOR_MODULATOR != null) {
+            shader.COLOR_MODULATOR.set(RenderSystem.getShaderColor());
+        }
+
+        RenderSystem.setupShaderLights(shader);
+        shader.apply();
     }
 
     private static ProjectionSparseStore buildSampledStore(ProjectionData projection) {
