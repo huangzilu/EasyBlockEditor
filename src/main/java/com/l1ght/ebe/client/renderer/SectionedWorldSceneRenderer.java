@@ -59,6 +59,12 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private static final int PERFORMANCE_STEADY_SECTION_LIMIT = 320;
     private static final int BALANCED_MOVING_SECTION_LIMIT = 384;
     private static final int PERFORMANCE_MOVING_SECTION_LIMIT = 192;
+    private static final long VIEWPORT_TARGET_FRAME_NANOS = 45_000_000L;
+    private static final long VIEWPORT_HARD_FRAME_NANOS = 85_000_000L;
+    private static final int ADAPTIVE_SCALE_MAX = 1000;
+    private static final int ADAPTIVE_DRAW_SCALE_MIN = 180;
+    private static final int ADAPTIVE_COMPILE_SCALE_MIN = 125;
+    private static final int ADAPTIVE_LOD_SCALE_MIN = 500;
     private static final double CAMERA_EPSILON_SQR = 0.0001D;
     private static final List<RenderType> LAYERS = RenderType.chunkBufferLayers();
     private static final Map<RenderType, Integer> LAYER_INDICES = createLayerIndices();
@@ -110,6 +116,11 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private Vector3f lastLookAt;
     private int cameraMovingFrames;
     private Set<SectionPos> exactSectionsThisFrame = Set.of();
+    private long smoothedFrameNanos = 16_666_667L;
+    private int adaptiveDrawScale = ADAPTIVE_SCALE_MAX;
+    private int adaptiveCompileScale = ADAPTIVE_SCALE_MAX;
+    private int adaptiveLodScale = ADAPTIVE_SCALE_MAX;
+    private int adaptiveRecoveryFrames;
 
     public record SectionPos(int x, int y, int z) {
         public static SectionPos fromBlock(BlockPos pos) {
@@ -649,14 +660,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private int sectionCompileBatchSize(boolean cameraMoving) {
         String mode = performanceMode();
+        int base;
         if (cameraMoving) {
-            if ("quality".equals(mode)) return Math.max(2, DEFAULT_SECTION_COMPILE_BATCH_SIZE / 2);
-            if ("performance".equals(mode)) return 1;
-            return 2;
+            if ("quality".equals(mode)) base = Math.max(2, DEFAULT_SECTION_COMPILE_BATCH_SIZE / 2);
+            else if ("performance".equals(mode)) base = 1;
+            else base = 2;
+            return Math.max(1, (base * adaptiveCompileScale) / ADAPTIVE_SCALE_MAX);
         }
-        if ("quality".equals(mode)) return 14;
-        if ("performance".equals(mode)) return 5;
-        return DEFAULT_SECTION_COMPILE_BATCH_SIZE;
+        if ("quality".equals(mode)) base = 14;
+        else if ("performance".equals(mode)) base = 5;
+        else base = DEFAULT_SECTION_COMPILE_BATCH_SIZE;
+        return Math.max(1, (base * adaptiveCompileScale) / ADAPTIVE_SCALE_MAX);
     }
 
     private int compareCompilePriority(SectionPos a, SectionPos b, Vector3f eyePos, Vector3f focusPos) {
@@ -693,6 +707,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     @SuppressWarnings("unchecked")
     @Override
     protected void drawWorld() {
+        long frameStarted = System.nanoTime();
         Consumer<WorldSceneRenderer> beforeWR = null;
         Consumer<WorldSceneRenderer> afterWR = null;
         BiConsumer<MultiBufferSource, Float> beforeBE = null;
@@ -795,6 +810,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (afterWR != null) {
             afterWR.accept(this);
         }
+        recordViewportFrameCost(System.nanoTime() - frameStarted, visibleSections.size());
         exactSectionsThisFrame = Set.of();
     }
 
@@ -899,26 +915,32 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private int lodFaceBudget(boolean cameraMoving) {
         String mode = performanceMode();
+        int base;
         if (cameraMoving) {
-            if ("performance".equals(mode)) return 8192;
-            if ("quality".equals(mode)) return 32768;
-            return 16384;
+            if ("performance".equals(mode)) base = 8192;
+            else if ("quality".equals(mode)) base = 32768;
+            else base = 16384;
+            return Math.max(4096, (base * adaptiveLodScale) / ADAPTIVE_SCALE_MAX);
         }
-        if ("performance".equals(mode)) return 16384;
-        if ("quality".equals(mode)) return 65536;
-        return 32768;
+        if ("performance".equals(mode)) base = 16384;
+        else if ("quality".equals(mode)) base = 65536;
+        else base = 32768;
+        return Math.max(8192, (base * adaptiveLodScale) / ADAPTIVE_SCALE_MAX);
     }
 
     private int lodBoxBudget(boolean cameraMoving) {
         String mode = performanceMode();
+        int base;
         if (cameraMoving) {
-            if ("performance".equals(mode)) return 1024;
-            if ("quality".equals(mode)) return 4096;
-            return 2048;
+            if ("performance".equals(mode)) base = 1024;
+            else if ("quality".equals(mode)) base = 4096;
+            else base = 2048;
+            return Math.max(512, (base * adaptiveLodScale) / ADAPTIVE_SCALE_MAX);
         }
-        if ("performance".equals(mode)) return 4096;
-        if ("quality".equals(mode)) return 12288;
-        return 8192;
+        if ("performance".equals(mode)) base = 4096;
+        else if ("quality".equals(mode)) base = 12288;
+        else base = 8192;
+        return Math.max(1024, (base * adaptiveLodScale) / ADAPTIVE_SCALE_MAX);
     }
 
     private boolean isLodBoxCoveredByCompiledSections(ProjectionLodPyramid.LodBox box) {
@@ -1384,14 +1406,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private int exactSectionDrawLimit(boolean cameraMoving, int visibleSectionCount) {
         String mode = performanceMode();
         int adaptiveCap = adaptiveExactSectionCap(visibleSectionCount, mode);
+        int base;
         if (cameraMoving) {
-            if ("quality".equals(mode)) return Math.min(QUALITY_STEADY_SECTION_LIMIT / 2, adaptiveCap);
-            if ("performance".equals(mode)) return Math.min(PERFORMANCE_MOVING_SECTION_LIMIT, adaptiveCap);
-            return Math.min(BALANCED_MOVING_SECTION_LIMIT, adaptiveCap);
+            if ("quality".equals(mode)) base = Math.min(QUALITY_STEADY_SECTION_LIMIT / 2, adaptiveCap);
+            else if ("performance".equals(mode)) base = Math.min(PERFORMANCE_MOVING_SECTION_LIMIT, adaptiveCap);
+            else base = Math.min(BALANCED_MOVING_SECTION_LIMIT, adaptiveCap);
+            return scaleExactSectionLimit(base, true);
         }
-        if ("quality".equals(mode)) return Math.min(QUALITY_STEADY_SECTION_LIMIT, adaptiveCap);
-        if ("performance".equals(mode)) return Math.min(PERFORMANCE_STEADY_SECTION_LIMIT, adaptiveCap);
-        return Math.min(BALANCED_STEADY_SECTION_LIMIT, adaptiveCap);
+        if ("quality".equals(mode)) base = Math.min(QUALITY_STEADY_SECTION_LIMIT, adaptiveCap);
+        else if ("performance".equals(mode)) base = Math.min(PERFORMANCE_STEADY_SECTION_LIMIT, adaptiveCap);
+        else base = Math.min(BALANCED_STEADY_SECTION_LIMIT, adaptiveCap);
+        return scaleExactSectionLimit(base, false);
     }
 
     private int adaptiveExactSectionCap(int visibleSectionCount, String mode) {
@@ -1434,7 +1459,57 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         } else if ("performance".equals(mode) && cameraMoving) {
             budgetMs = Math.min(budgetMs, 0.1D);
         }
-        return Math.max(0L, (long) (budgetMs * 1_000_000L));
+        long base = Math.max(0L, (long) (budgetMs * 1_000_000L));
+        return Math.max(0L, (base * adaptiveCompileScale) / ADAPTIVE_SCALE_MAX);
+    }
+
+    private int scaleExactSectionLimit(int base, boolean cameraMoving) {
+        if (base <= 0) {
+            return 0;
+        }
+        int min = cameraMoving ? 48 : 96;
+        return Math.max(min, (base * adaptiveDrawScale) / ADAPTIVE_SCALE_MAX);
+    }
+
+    private void recordViewportFrameCost(long frameNanos, int exactSectionCount) {
+        if (sectionBlocks.size() < 512) {
+            recoverAdaptiveScale(30);
+            return;
+        }
+        smoothedFrameNanos = (smoothedFrameNanos * 7L + Math.max(1L, frameNanos)) / 8L;
+
+        if (frameNanos >= VIEWPORT_HARD_FRAME_NANOS || smoothedFrameNanos >= VIEWPORT_HARD_FRAME_NANOS) {
+            adaptiveDrawScale = Math.max(ADAPTIVE_DRAW_SCALE_MIN, (adaptiveDrawScale * 72) / 100);
+            adaptiveCompileScale = Math.max(ADAPTIVE_COMPILE_SCALE_MIN, (adaptiveCompileScale * 70) / 100);
+            adaptiveLodScale = Math.max(ADAPTIVE_LOD_SCALE_MIN, (adaptiveLodScale * 86) / 100);
+            adaptiveRecoveryFrames = 0;
+            return;
+        }
+
+        if (frameNanos >= VIEWPORT_TARGET_FRAME_NANOS || smoothedFrameNanos >= VIEWPORT_TARGET_FRAME_NANOS) {
+            adaptiveDrawScale = Math.max(ADAPTIVE_DRAW_SCALE_MIN, (adaptiveDrawScale * 88) / 100);
+            adaptiveCompileScale = Math.max(ADAPTIVE_COMPILE_SCALE_MIN, (adaptiveCompileScale * 85) / 100);
+            if (exactSectionCount > 512) {
+                adaptiveLodScale = Math.max(ADAPTIVE_LOD_SCALE_MIN, (adaptiveLodScale * 94) / 100);
+            }
+            adaptiveRecoveryFrames = 0;
+            return;
+        }
+
+        if (smoothedFrameNanos < VIEWPORT_TARGET_FRAME_NANOS * 2L / 3L) {
+            recoverAdaptiveScale(1);
+        }
+    }
+
+    private void recoverAdaptiveScale(int frames) {
+        adaptiveRecoveryFrames += frames;
+        if (adaptiveRecoveryFrames < 20) {
+            return;
+        }
+        adaptiveDrawScale = Math.min(ADAPTIVE_SCALE_MAX, adaptiveDrawScale + 40);
+        adaptiveCompileScale = Math.min(ADAPTIVE_SCALE_MAX, adaptiveCompileScale + 35);
+        adaptiveLodScale = Math.min(ADAPTIVE_SCALE_MAX, adaptiveLodScale + 25);
+        adaptiveRecoveryFrames = 0;
     }
 
     private int fallbackBlockLimit(boolean cameraMoving) {
