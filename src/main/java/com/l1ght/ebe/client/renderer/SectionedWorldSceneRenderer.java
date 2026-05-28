@@ -1003,11 +1003,13 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         var focusPos = safeFocusPos();
         boolean cameraMoving = updateCameraMoving(eyePos);
         boolean sortVisibleSections = !cameraMoving || "quality".equals(performanceMode());
-        List<SectionPos> visibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
-        visibleSections = limitExactSectionsForFrame(visibleSections, cameraMoving, eyePos);
-        exactSectionsThisFrame = visibleSections.isEmpty() ? Set.of() : new HashSet<>(visibleSections);
-        List<ClusterPos> visibleClusters = collectDrawableClusters(visibleSections, focusPos, eyePos, sortVisibleSections);
+        List<SectionPos> allVisibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
+        List<SectionPos> visibleSections = limitExactSectionsForFrame(allVisibleSections, cameraMoving, eyePos);
+        List<ClusterPos> visibleClusters = collectDrawableClusters(allVisibleSections, focusPos, eyePos, sortVisibleSections);
         clusterCoveredSectionsThisFrame = collectClusterCoveredSections(visibleClusters);
+        exactSectionsThisFrame = visibleSections.isEmpty() && clusterCoveredSectionsThisFrame.isEmpty()
+                ? Set.of()
+                : collectDrawnExactSections(visibleSections, clusterCoveredSectionsThisFrame);
         Set<BlockPos> visibleTileEntities = collectVisibleTileEntities(visibleSections);
 
         compileDirtySections(eyePos, focusPos, cameraMoving);
@@ -1080,7 +1082,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (afterWR != null) {
             afterWR.accept(this);
         }
-        recordViewportFrameCost(System.nanoTime() - frameStarted, visibleSections.size());
+        recordViewportFrameCost(System.nanoTime() - frameStarted, allVisibleSections.size());
         exactSectionsThisFrame = Set.of();
         clusterCoveredSectionsThisFrame = Set.of();
     }
@@ -1660,6 +1662,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
         }
         return covered;
+    }
+
+    private Set<SectionPos> collectDrawnExactSections(List<SectionPos> visibleSections, Set<SectionPos> clusterCoveredSections) {
+        Set<SectionPos> drawn = new HashSet<>();
+        if (visibleSections != null) {
+            drawn.addAll(visibleSections);
+        }
+        if (clusterCoveredSections != null) {
+            drawn.addAll(clusterCoveredSections);
+        }
+        return drawn;
     }
 
     private void drawCompiledClusterVBOs(int layerIndex, List<ClusterPos> visibleClusters) {
