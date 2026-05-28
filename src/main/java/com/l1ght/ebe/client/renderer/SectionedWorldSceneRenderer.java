@@ -167,16 +167,6 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
         }
 
-        public void releaseBuffers() {
-            for (int i = 0; i < vertexBuffers.length; i++) {
-                if (vertexBuffers[i] != null) {
-                    vertexBuffers[i].close();
-                    vertexBuffers[i] = null;
-                }
-                hasData[i] = false;
-            }
-        }
-
         public VertexBuffer vertexBuffer(int layerIndex) {
             VertexBuffer vb = vertexBuffers[layerIndex];
             if (vb == null) {
@@ -191,7 +181,6 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private static class ClusterData extends MeshBucket {
-        private boolean releasedSectionBuffers;
     }
 
     public SectionedWorldSceneRenderer(Level world) {
@@ -235,18 +224,6 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         var data = clusters.get(cp);
         if (data != null) {
             data.compiled = false;
-            if (data.releasedSectionBuffers) {
-                for (var sp : clusterSections(cp)) {
-                    if (sectionBlocks.containsKey(sp)) {
-                        dirtySections.add(sp);
-                        var sectionData = sections.get(sp);
-                        if (sectionData != null && !meshBucketHasRenderableLayer(sectionData)) {
-                            sectionData.compiled = false;
-                        }
-                    }
-                }
-                data.releasedSectionBuffers = false;
-            }
         }
     }
 
@@ -768,42 +745,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (activeChildren < CLUSTER_SECTION_MIN || totalBlocks <= 0) {
             clearMeshBucket(data);
             data.compiled = false;
-            data.releasedSectionBuffers = false;
             return;
         }
 
         compileMeshBucket(data, childSections, brd, randomSource, "cluster " + cp);
-        if (data.compiled && meshBucketHasRenderableLayer(data)) {
-            releaseClusterCoveredSectionBuffers(cp, data);
-        }
-    }
-
-    private void releaseClusterCoveredSectionBuffers(ClusterPos cp, ClusterData clusterData) {
-        boolean releasedAny = false;
-        for (var sp : clusterSections(cp)) {
-            var section = sections.get(sp);
-            if (section == null || !section.compiled || !meshBucketHasRenderableLayer(section)) {
-                continue;
-            }
-            if (sectionContainsBlockEntity(sp)) {
-                continue;
-            }
-            section.releaseBuffers();
-            section.compiled = true;
-            releasedAny = true;
-        }
-        if (releasedAny) {
-            clusterData.releasedSectionBuffers = true;
-        }
-    }
-
-    private boolean sectionContainsBlockEntity(SectionPos sp) {
-        for (var pos : tileEntities) {
-            if (SectionPos.fromBlock(pos).equals(sp)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private void compileMeshBucket(MeshBucket data, Collection<SectionPos> sourceSections,
