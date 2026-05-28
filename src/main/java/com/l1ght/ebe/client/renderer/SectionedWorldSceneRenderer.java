@@ -130,6 +130,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private int adaptiveLodScale = ADAPTIVE_SCALE_MAX;
     private int adaptiveRecoveryFrames;
     private Set<SectionPos> clusterCoveredSectionsThisFrame = Set.of();
+    private boolean topDownCompilePriority;
 
     public record SectionPos(int x, int y, int z) {
         public static SectionPos fromBlock(BlockPos pos) {
@@ -308,6 +309,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     public void setFastHeatmapMode(HeatmapMode mode) {
         this.fastHeatmapMode = mode == null ? HeatmapMode.OFF : mode;
+    }
+
+    public void setTopDownCompilePriority(boolean topDownCompilePriority) {
+        this.topDownCompilePriority = topDownCompilePriority;
     }
 
     public int sectionCount() {
@@ -921,10 +926,16 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private boolean shouldPrioritizeClusterMeshes() {
+        if (topDownCompilePriority) {
+            return false;
+        }
         return sectionBlocks.size() >= 512 && !dirtyClusters.isEmpty();
     }
 
     private boolean shouldSkipSectionCompileForCluster(SectionPos sp) {
+        if (topDownCompilePriority) {
+            return false;
+        }
         if (sectionBlocks.size() < 512) {
             return false;
         }
@@ -960,6 +971,14 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private int compareCompilePriority(SectionPos a, SectionPos b, Vector3f eyePos, Vector3f focusPos) {
+        if (topDownCompilePriority) {
+            int yCompare = Integer.compare(b.y(), a.y());
+            if (yCompare != 0) return yCompare;
+            boolean av = isSectionVisible(a, focusPos);
+            boolean bv = isSectionVisible(b, focusPos);
+            if (av != bv) return av ? -1 : 1;
+            return Double.compare(horizontalDistanceToSectionSqr(a, focusPos), horizontalDistanceToSectionSqr(b, focusPos));
+        }
         boolean av = isSectionVisible(a, focusPos);
         boolean bv = isSectionVisible(b, focusPos);
         if (av != bv) return av ? -1 : 1;
@@ -967,6 +986,14 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private int compareClusterCompilePriority(ClusterPos a, ClusterPos b, Vector3f eyePos, Vector3f focusPos) {
+        if (topDownCompilePriority) {
+            int yCompare = Integer.compare(b.y(), a.y());
+            if (yCompare != 0) return yCompare;
+            boolean av = isClusterVisible(a, focusPos);
+            boolean bv = isClusterVisible(b, focusPos);
+            if (av != bv) return av ? -1 : 1;
+            return Double.compare(horizontalDistanceToClusterSqr(a, focusPos), horizontalDistanceToClusterSqr(b, focusPos));
+        }
         boolean av = isClusterVisible(a, focusPos);
         boolean bv = isClusterVisible(b, focusPos);
         if (av != bv) return av ? -1 : 1;
