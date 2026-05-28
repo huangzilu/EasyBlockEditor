@@ -1862,12 +1862,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private List<SectionPos> limitExactSectionsForFrame(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
-        if (visibleSections.isEmpty()) return visibleSections;
-        int limit = exactSectionDrawLimit(cameraMoving, visibleSections.size());
-        if (limit <= 0 || visibleSections.size() <= limit) return visibleSections;
-        var nearest = new ArrayList<>(visibleSections);
-        nearest.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
-        return new ArrayList<>(nearest.subList(0, limit));
+        return visibleSections;
     }
 
     private int exactSectionDrawLimit(boolean cameraMoving, int visibleSectionCount) {
