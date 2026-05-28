@@ -1887,9 +1887,6 @@ public class ViewportFactory {
 
         long deadline = System.nanoTime() + progressiveLoadBudgetNanos();
         int maxPatches = dynamicExactPatchesPerTick(window.profile);
-        if (window.shellExactMode) {
-            maxPatches = Math.max(maxPatches, Math.min(8, maxPatches * 2));
-        }
         int loaded = 0;
         Vector3f focus = viewportExactLoadFocus();
         releaseCompiledPatchSources(window, focus, 0);
@@ -1954,7 +1951,7 @@ public class ViewportFactory {
         }
 
         if (window.shellExactMode) {
-            return selectRainShellPatch(window);
+            return selectCameraFacingShellPatch(window);
         }
 
         ExactPatch shellPatch = shouldLoadCoveragePatch(window) ? selectExteriorShellPatch(window) : null;
@@ -1991,9 +1988,30 @@ public class ViewportFactory {
         return coveragePatch;
     }
 
-    private static ExactPatch selectRainShellPatch(DynamicExactViewportWindow window) {
+    private static ExactPatch selectCameraFacingShellPatch(DynamicExactViewportWindow window) {
         if (window.exteriorShellPatches.isEmpty()) {
             return null;
+        }
+        Vector3f origin = viewportExternalScanOrigin(window);
+        double axisX = origin.x() - window.centerX;
+        double axisY = origin.y() - window.centerY;
+        double axisZ = origin.z() - window.centerZ;
+        double axisLength = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
+        if (axisLength < 1.0E-3D) {
+            axisX = 1.0D;
+            axisY = 0.0D;
+            axisZ = 0.0D;
+            axisLength = 1.0D;
+        }
+        axisX /= axisLength;
+        axisY /= axisLength;
+        axisZ /= axisLength;
+        axisY = Math.max(-0.15D, Math.min(0.65D, axisY));
+        double clampedLength = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
+        if (clampedLength > 1.0E-3D) {
+            axisX /= clampedLength;
+            axisY /= clampedLength;
+            axisZ /= clampedLength;
         }
 
         ExactPatch best = null;
@@ -2003,17 +2021,61 @@ public class ViewportFactory {
                 continue;
             }
             double dx = patch.centerX - window.centerX;
+            double dy = patch.centerY - window.centerY;
             double dz = patch.centerZ - window.centerZ;
-            double horizontalDistance = dx * dx + dz * dz;
-            double score = -patch.centerY * 1_000_000.0D
-                    + horizontalDistance
-                    + Math.floorMod(patch.key.hashCode(), 1024) * 0.0001D;
+            double projection = dx * axisX + dy * axisY + dz * axisZ;
+            double radialX = dx - projection * axisX;
+            double radialY = dy - projection * axisY;
+            double radialZ = dz - projection * axisZ;
+            double radialDistance = radialX * radialX + radialY * radialY + radialZ * radialZ;
+            double verticalCenterPenalty = Math.abs(patch.centerY - window.centerY) * 0.35D;
+            double bottomPenalty = patch.centerY < window.centerY ? (window.centerY - patch.centerY) * 0.85D : 0.0D;
+            double score = -projection * 4096.0D + radialDistance + verticalCenterPenalty + bottomPenalty;
             if (score < bestScore) {
                 bestScore = score;
                 best = patch;
             }
         }
         return best;
+    }
+
+    private static Vector3f viewportExternalScanOrigin(DynamicExactViewportWindow window) {
+        if (currentScene != null) {
+            var renderer = currentScene.getRenderer();
+            if (renderer != null) {
+                Vector3f eye = invokeRendererVector(renderer, rendererEyePosMethod, "getEyePos");
+                if (eye != null) {
+                    double dx = eye.x() - window.centerX;
+                    double dy = eye.y() - window.centerY;
+                    double dz = eye.z() - window.centerZ;
+                    if (dx * dx + dy * dy + dz * dz > 16.0D) {
+                        return eye;
+                    }
+                }
+            }
+            Vector3f synthetic = syntheticViewportEye(window);
+            if (synthetic != null) {
+                return synthetic;
+            }
+        }
+        return new Vector3f((float) window.centerX + 256.0F, (float) window.centerY, (float) window.centerZ);
+    }
+
+    private static Vector3f syntheticViewportEye(DynamicExactViewportWindow window) {
+        if (currentScene == null) {
+            return null;
+        }
+        double yaw = Math.toRadians(currentScene.getRotationYaw());
+        double pitch = Math.toRadians(currentScene.getRotationPitch());
+        double distance = Math.max(128.0D, Math.min(2048.0D, Math.abs(currentScene.getZoom()) * 256.0D));
+        double cosPitch = Math.cos(pitch);
+        double forwardX = -Math.sin(yaw) * cosPitch;
+        double forwardY = -Math.sin(pitch);
+        double forwardZ = Math.cos(yaw) * cosPitch;
+        return new Vector3f(
+                (float) (window.centerX - forwardX * distance),
+                (float) (window.centerY - forwardY * distance),
+                (float) (window.centerZ - forwardZ * distance));
     }
 
     private static ExactPatch selectExteriorShellPatch(DynamicExactViewportWindow window) {
