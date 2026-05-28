@@ -1396,18 +1396,22 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private double boxDistanceSqr(ProjectionLodPyramid.LodBox box, Vector3f eyePos) {
         double cx = (box.minX() + box.maxX()) * 0.5D;
+        double cy = (box.minY() + box.maxY()) * 0.5D;
         double cz = (box.minZ() + box.maxZ()) * 0.5D;
         double dx = cx - eyePos.x();
+        double dy = cy - eyePos.y();
         double dz = cz - eyePos.z();
-        return dx * dx + dz * dz;
+        return dx * dx + dy * dy + dz * dz;
     }
 
     private double faceDistanceSqr(ProjectionShellMesh.Face face, Vector3f eyePos) {
         double cx = (face.minX() + face.maxX()) * 0.5D;
+        double cy = (face.minY() + face.maxY()) * 0.5D;
         double cz = (face.minZ() + face.maxZ()) * 0.5D;
         double dx = cx - eyePos.x();
+        double dy = cy - eyePos.y();
         double dz = cz - eyePos.z();
-        return dx * dx + dz * dz;
+        return dx * dx + dy * dy + dz * dz;
     }
 
     private void addLodBox(BufferBuilder buffer, ProjectionLodPyramid.LodBox box) {
@@ -1921,7 +1925,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private boolean isSectionVisible(SectionPos sp, Vector3f focusPos) {
         int renderDistance = viewportRenderDistance();
-        if (renderDistance > 0 && horizontalDistanceToSectionSqr(sp, focusPos) > (double) renderDistance * renderDistance) {
+        if (renderDistance > 0 && distanceToSectionSqr(sp, focusPos) > (double) renderDistance * renderDistance) {
             return false;
         }
         return true;
@@ -1929,27 +1933,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private boolean isClusterVisible(ClusterPos cp, Vector3f focusPos) {
         int renderDistance = viewportRenderDistance();
-        if (renderDistance > 0 && horizontalDistanceToClusterSqr(cp, focusPos) > (double) renderDistance * renderDistance) {
+        if (renderDistance > 0 && distanceToClusterSqr(cp, focusPos) > (double) renderDistance * renderDistance) {
             return false;
         }
         return true;
-    }
-
-    private double horizontalDistanceToSectionSqr(SectionPos sp, Vector3f focusPos) {
-        double cx = sp.x() * SECTION_SIZE + SECTION_SIZE * 0.5D;
-        double cz = sp.z() * SECTION_SIZE + SECTION_SIZE * 0.5D;
-        double dx = cx - focusPos.x;
-        double dz = cz - focusPos.z;
-        return dx * dx + dz * dz;
-    }
-
-    private double horizontalDistanceToClusterSqr(ClusterPos cp, Vector3f focusPos) {
-        double size = SECTION_SIZE * CLUSTER_SECTION_SPAN;
-        double cx = cp.x() * size + size * 0.5D;
-        double cz = cp.z() * size + size * 0.5D;
-        double dx = cx - focusPos.x;
-        double dz = cz - focusPos.z;
-        return dx * dx + dz * dz;
     }
 
     private double distanceToSectionSqr(SectionPos sp, Vector3f eyePos) {
