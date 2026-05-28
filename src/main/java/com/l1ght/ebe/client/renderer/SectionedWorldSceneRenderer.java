@@ -111,6 +111,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private final Set<BlockPos> tileEntities = new LinkedHashSet<>();
     private ProjectionLodPyramid viewportLodPyramid = ProjectionLodPyramid.empty();
     private ProjectionShellMesh viewportShellMesh = ProjectionShellMesh.empty();
+    private VertexBuffer viewportShellVbo;
+    private boolean viewportShellVboDirty = true;
+    private boolean viewportShellVboHasData;
     private List<BlockState> viewportLodPalette = List.of();
     private HeatmapMode fastHeatmapMode = HeatmapMode.OFF;
 
@@ -315,12 +318,15 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         this.viewportLodPalette = palette == null ? List.of() : List.copyOf(palette);
         var level = chooseShellLevel(this.viewportLodPyramid);
         this.viewportShellMesh = level == null ? ProjectionShellMesh.empty() : ProjectionShellMeshBuilder.build(level);
+        this.viewportShellVboDirty = true;
+        this.viewportShellVboHasData = false;
     }
 
     public void clearViewportLod() {
         this.viewportLodPyramid = ProjectionLodPyramid.empty();
         this.viewportShellMesh = ProjectionShellMesh.empty();
         this.viewportLodPalette = List.of();
+        closeViewportShellVbo();
     }
 
     public void setFastHeatmapMode(HeatmapMode mode) {
@@ -416,6 +422,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var data : clusters.values()) {
             data.close();
         }
+        closeViewportShellVbo();
         sections.clear();
         clusters.clear();
         sectionBlocks.clear();
@@ -477,6 +484,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var data : clusters.values()) {
             data.close();
         }
+        closeViewportShellVbo();
         sections.clear();
         clusters.clear();
         return super.removeAllRenderedBlocks();
@@ -1149,6 +1157,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private void renderViewportShellMesh(Vector3f eyePos, boolean cameraMoving) {
+        if (shouldUseCachedViewportShell(cameraMoving) && renderCachedViewportShell()) {
+            return;
+        }
+
         int maxFaces = lodFaceBudget(cameraMoving);
         var faces = viewportShellMesh.faces();
         int stride = Math.max(1, faces.size() / Math.max(1, maxFaces));
@@ -1181,6 +1193,89 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         RenderSystem.enableCull();
         RenderSystem.depthMask(true);
         RenderSystem.disableBlend();
+    }
+
+    private boolean shouldUseCachedViewportShell(boolean cameraMoving) {
+        if (viewportRenderDistance() > 0) {
+            return false;
+        }
+        if (viewportShellMesh == null || viewportShellMesh.isEmpty()) {
+            return false;
+        }
+        return cameraMoving || adaptiveDrawScale < 700 || sectionBlocks.size() > 2_048;
+    }
+
+    private boolean renderCachedViewportShell() {
+        ensureViewportShellVbo();
+        if (!viewportShellVboHasData || viewportShellVbo == null || viewportShellVbo.isInvalid() || viewportShellVbo.getFormat() == null) {
+            return false;
+        }
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.disableCull();
+        setProjectionLodShader();
+        setupVBODrawState();
+
+        viewportShellVbo.bind();
+        viewportShellVbo.draw();
+        ShaderInstance shader = RenderSystem.getShader();
+        if (shader != null) {
+            shader.clear();
+        }
+        VertexBuffer.unbind();
+
+        RenderSystem.enableCull();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+        return true;
+    }
+
+    private void ensureViewportShellVbo() {
+        if (!viewportShellVboDirty) {
+            return;
+        }
+        closeViewportShellVbo();
+        viewportShellVboDirty = false;
+        viewportShellVboHasData = false;
+        if (viewportShellMesh == null || viewportShellMesh.isEmpty()) {
+            return;
+        }
+
+        try {
+            BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            int faces = 0;
+            for (var face : viewportShellMesh.faces()) {
+                addShellFace(buffer, face);
+                faces++;
+            }
+            if (faces <= 0) {
+                return;
+            }
+            MeshData meshData = buffer.build();
+            if (meshData == null) {
+                return;
+            }
+            viewportShellVbo = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            viewportShellVbo.bind();
+            viewportShellVbo.upload(meshData);
+            VertexBuffer.unbind();
+            viewportShellVboHasData = true;
+        } catch (Exception e) {
+            LOG.warn("Failed to build cached viewport LOD shell VBO", e);
+            closeViewportShellVbo();
+        }
+    }
+
+    private void closeViewportShellVbo() {
+        if (viewportShellVbo != null) {
+            viewportShellVbo.close();
+            viewportShellVbo = null;
+        }
+        viewportShellVboHasData = false;
+        viewportShellVboDirty = true;
     }
 
     private void renderViewportLodBoxes(Vector3f eyePos, boolean cameraMoving) {
