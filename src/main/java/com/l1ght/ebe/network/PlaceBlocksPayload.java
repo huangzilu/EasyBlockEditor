@@ -78,7 +78,12 @@ public class PlaceBlocksPayload implements CustomPacketPayload {
             var player = context.player();
             if (!(player instanceof ServerPlayer serverPlayer)) return;
             if (!PermissionManager.canUse(serverPlayer, PermissionFeature.PLACE_ALL)) return;
-            if (!PlaceAllQueue.withinMaxEditSize(payload.entries)) return;
+            if (payload.entries.isEmpty()) return;
+            if (payload.entries.size() > NetworkLimits.MAX_PLACE_BLOCKS) {
+                EBEMod.LOGGER.warn("Rejected oversized place-all payload from {}: {} entries",
+                        serverPlayer.getGameProfile().getName(), payload.entries.size());
+                return;
+            }
             if (payload.entries.size() > NetworkLimits.MAX_PLACE_BLOCKS_PER_PACKET) {
                 EBEMod.LOGGER.warn("Received legacy oversized place-all payload from {}: {} entries; accepting with server tick queue",
                         serverPlayer.getGameProfile().getName(), payload.entries.size());

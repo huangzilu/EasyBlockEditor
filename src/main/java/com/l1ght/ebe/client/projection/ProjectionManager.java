@@ -458,8 +458,24 @@ public class ProjectionManager {
     }
 
     public static void setProgress(int placed, int total) {
-        progressPlaced = placed;
-        progressTotal = total;
+        if (placeAllInProgress && activeProjection != null) {
+            int expectedTotal = activeProjection.getSparseIndex().size();
+            progressPlaced = Math.max(progressPlaced, Math.max(0, placed));
+            progressTotal = Math.max(expectedTotal, Math.max(progressTotal, total));
+            if (progressTotal > 0) {
+                progressPlaced = Math.min(progressPlaced, progressTotal);
+            }
+            progressAuthoritative = true;
+            if (pendingPlaceAllUploads.isEmpty()
+                    && total >= expectedTotal
+                    && placed >= total
+                    && placeAllInProgress) {
+                finishPlacementAndUnload();
+            }
+            return;
+        }
+        progressPlaced = Math.max(0, placed);
+        progressTotal = Math.max(0, total);
         progressAuthoritative = true;
         if (total > 0 && placed >= total && placeAllInProgress) {
             finishPlacementAndUnload();
@@ -496,7 +512,12 @@ public class ProjectionManager {
     }
 
     public static void tickPlaceAllUploads() {
-        if (pendingPlaceAllUploads.isEmpty()) return;
+        if (pendingPlaceAllUploads.isEmpty()) {
+            if (placeAllInProgress && isPlacementComplete()) {
+                finishPlacementAndUnload();
+            }
+            return;
+        }
         int packets = 0;
         while (packets < 2 && !pendingPlaceAllUploads.isEmpty()) {
             var cursor = pendingPlaceAllUploads.peek();
@@ -511,6 +532,9 @@ public class ProjectionManager {
             if (batch == null || batch.isEmpty()) continue;
             PacketDistributor.sendToServer(new PlaceBlocksPayload(batch));
             packets++;
+        }
+        if (pendingPlaceAllUploads.isEmpty() && placeAllInProgress && isPlacementComplete()) {
+            finishPlacementAndUnload();
         }
     }
 

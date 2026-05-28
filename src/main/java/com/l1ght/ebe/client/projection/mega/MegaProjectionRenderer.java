@@ -22,8 +22,8 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 
 public final class MegaProjectionRenderer {
-    private static final int MEGA_BLOCK_THRESHOLD = 50_000;
-    private static final int MEGA_SECTION_THRESHOLD = 384;
+    private static final int MEGA_BLOCK_THRESHOLD = 750_000;
+    private static final int MEGA_SECTION_THRESHOLD = 8_192;
     private static final int WORLD_SHELL_SAMPLE_CAP = 160_000;
     private static ProjectionData cachedProjection;
     private static int cachedMeshVersion = -1;

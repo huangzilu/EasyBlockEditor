@@ -54,9 +54,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private static final int SECTION_SIZE = 16;
     private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 8;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
-    private static final int QUALITY_STEADY_SECTION_LIMIT = 4096;
-    private static final int BALANCED_STEADY_SECTION_LIMIT = 1024;
-    private static final int PERFORMANCE_STEADY_SECTION_LIMIT = 512;
+    private static final int QUALITY_STEADY_SECTION_LIMIT = 2048;
+    private static final int BALANCED_STEADY_SECTION_LIMIT = 640;
+    private static final int PERFORMANCE_STEADY_SECTION_LIMIT = 320;
     private static final int BALANCED_MOVING_SECTION_LIMIT = 384;
     private static final int PERFORMANCE_MOVING_SECTION_LIMIT = 192;
     private static final double CAMERA_EPSILON_SQR = 0.0001D;
@@ -1374,23 +1374,37 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private List<SectionPos> limitExactSectionsForFrame(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
         if (visibleSections.isEmpty()) return visibleSections;
-        int limit = exactSectionDrawLimit(cameraMoving);
+        int limit = exactSectionDrawLimit(cameraMoving, visibleSections.size());
         if (limit <= 0 || visibleSections.size() <= limit) return visibleSections;
         var nearest = new ArrayList<>(visibleSections);
         nearest.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
         return new ArrayList<>(nearest.subList(0, limit));
     }
 
-    private int exactSectionDrawLimit(boolean cameraMoving) {
+    private int exactSectionDrawLimit(boolean cameraMoving, int visibleSectionCount) {
         String mode = performanceMode();
+        int adaptiveCap = adaptiveExactSectionCap(visibleSectionCount, mode);
         if (cameraMoving) {
-            if ("quality".equals(mode)) return QUALITY_STEADY_SECTION_LIMIT / 2;
-            if ("performance".equals(mode)) return PERFORMANCE_MOVING_SECTION_LIMIT;
-            return BALANCED_MOVING_SECTION_LIMIT;
+            if ("quality".equals(mode)) return Math.min(QUALITY_STEADY_SECTION_LIMIT / 2, adaptiveCap);
+            if ("performance".equals(mode)) return Math.min(PERFORMANCE_MOVING_SECTION_LIMIT, adaptiveCap);
+            return Math.min(BALANCED_MOVING_SECTION_LIMIT, adaptiveCap);
         }
-        if ("quality".equals(mode)) return QUALITY_STEADY_SECTION_LIMIT;
-        if ("performance".equals(mode)) return PERFORMANCE_STEADY_SECTION_LIMIT;
-        return BALANCED_STEADY_SECTION_LIMIT;
+        if ("quality".equals(mode)) return Math.min(QUALITY_STEADY_SECTION_LIMIT, adaptiveCap);
+        if ("performance".equals(mode)) return Math.min(PERFORMANCE_STEADY_SECTION_LIMIT, adaptiveCap);
+        return Math.min(BALANCED_STEADY_SECTION_LIMIT, adaptiveCap);
+    }
+
+    private int adaptiveExactSectionCap(int visibleSectionCount, String mode) {
+        if (visibleSectionCount > 8_000) {
+            return "quality".equals(mode) ? 768 : "performance".equals(mode) ? 160 : 256;
+        }
+        if (visibleSectionCount > 4_000) {
+            return "quality".equals(mode) ? 1024 : "performance".equals(mode) ? 224 : 384;
+        }
+        if (visibleSectionCount > 2_000) {
+            return "quality".equals(mode) ? 1536 : "performance".equals(mode) ? 288 : 512;
+        }
+        return Integer.MAX_VALUE;
     }
 
     private boolean isSectionVisible(SectionPos sp, Vector3f focusPos) {
