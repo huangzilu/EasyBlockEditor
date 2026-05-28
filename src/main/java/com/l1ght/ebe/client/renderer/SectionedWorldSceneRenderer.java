@@ -550,19 +550,24 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
         long deadline = System.nanoTime() + budgetNanos;
 
-        List<SectionPos> toCompile = dirtySections.isEmpty()
-                ? List.of()
-                : selectDirtySectionsForCompile(eyePos, focusPos, deadline, cameraMoving);
-        if (toCompile.isEmpty() && dirtyClusters.isEmpty()) return;
-
-        dirtySections.removeAll(toCompile);
+        var mc = Minecraft.getInstance();
+        var brd = mc.getBlockRenderer();
+        var randomSource = RandomSource.createNewThreadLocalInstance();
 
         compiling.set(true);
         try {
             ModelBlockRenderer.enableCaching();
-            var mc = Minecraft.getInstance();
-            var brd = mc.getBlockRenderer();
-            var randomSource = RandomSource.createNewThreadLocalInstance();
+            boolean clusterFirst = shouldPrioritizeClusterMeshes();
+            if (clusterFirst) {
+                compileDirtyClusters(eyePos, focusPos, deadline, cameraMoving, brd, randomSource);
+            }
+
+            List<SectionPos> toCompile = dirtySections.isEmpty()
+                    ? List.of()
+                    : selectDirtySectionsForCompile(eyePos, focusPos, deadline, cameraMoving);
+            if (toCompile.isEmpty() && (dirtyClusters.isEmpty() || System.nanoTime() > deadline)) return;
+
+            dirtySections.removeAll(toCompile);
 
             for (var sp : toCompile) {
                 if (System.nanoTime() > deadline) {
@@ -575,7 +580,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (!toCompile.isEmpty()) {
                 rebuildTileEntitiesForSections(toCompile);
             }
-            compileDirtyClusters(eyePos, focusPos, deadline, cameraMoving, brd, randomSource);
+            if (!clusterFirst) {
+                compileDirtyClusters(eyePos, focusPos, deadline, cameraMoving, brd, randomSource);
+            }
         } catch (Exception e) {
             LOG.warn("Section compilation error", e);
         } finally {
@@ -895,6 +902,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (System.nanoTime() > deadline) {
                 break;
             }
+            if (shouldSkipSectionCompileForCluster(sp)) {
+                continue;
+            }
             int insertAt = 0;
             while (insertAt < selected.size()
                     && compareCompilePriority(selected.get(insertAt), sp, eyePos, focusPos) <= 0) {
@@ -908,6 +918,22 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
         }
         return selected;
+    }
+
+    private boolean shouldPrioritizeClusterMeshes() {
+        return sectionBlocks.size() >= 512 && !dirtyClusters.isEmpty();
+    }
+
+    private boolean shouldSkipSectionCompileForCluster(SectionPos sp) {
+        if (sectionBlocks.size() < 512) {
+            return false;
+        }
+        var cp = ClusterPos.fromSection(sp);
+        var cluster = clusters.get(cp);
+        if (cluster != null && cluster.compiled && meshBucketHasRenderableLayer(cluster)) {
+            return true;
+        }
+        return dirtyClusters.contains(cp) && activeClusterSectionCount(cp) >= CLUSTER_SECTION_MIN;
     }
 
     private int sectionCompileBatchSize(boolean cameraMoving) {
@@ -1360,6 +1386,9 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private boolean isExactSectionDrawn(SectionPos sp) {
         if (exactSectionsThisFrame == null || !exactSectionsThisFrame.contains(sp)) {
             return false;
+        }
+        if (clusterCoveredSectionsThisFrame != null && clusterCoveredSectionsThisFrame.contains(sp)) {
+            return true;
         }
         var data = sections.get(sp);
         return data != null && data.compiled;
