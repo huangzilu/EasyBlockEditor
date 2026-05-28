@@ -1085,6 +1085,14 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         renderViewportLodBoxes(eyePos, cameraMoving);
     }
 
+    private void setProjectionLodShader() {
+        if (EBEViewportShaders.hasProjectionLodShader()) {
+            RenderSystem.setShader(EBEViewportShaders::projectionLodShader);
+        } else {
+            RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        }
+    }
+
     private void renderViewportShellMesh(Vector3f eyePos, boolean cameraMoving) {
         int maxFaces = lodFaceBudget(cameraMoving);
         var faces = viewportShellMesh.faces();
@@ -1095,7 +1103,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        setProjectionLodShader();
 
         BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
         int drawn = 0;
@@ -1134,7 +1142,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        setProjectionLodShader();
 
         BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
         int drawn = 0;
@@ -1351,7 +1359,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        setProjectionLodShader();
 
         BufferBuilder buffer = null;
         for (var sp : visibleSections) {
@@ -1620,7 +1628,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        setProjectionLodShader();
 
         BufferBuilder buffer = null;
         for (var sp : visibleSections) {

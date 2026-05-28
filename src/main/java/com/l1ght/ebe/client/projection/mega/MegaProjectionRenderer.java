@@ -1,6 +1,7 @@
 package com.l1ght.ebe.client.projection.mega;
 
 import com.l1ght.ebe.config.EBEClientConfig;
+import com.l1ght.ebe.client.renderer.EBEViewportShaders;
 import com.l1ght.ebe.projection.ProjectionData;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramid;
 import com.l1ght.ebe.projection.mega.ProjectionLodPyramidBuilder;
@@ -80,7 +81,11 @@ public final class MegaProjectionRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        if (EBEViewportShaders.hasProjectionLodShader()) {
+            RenderSystem.setShader(EBEViewportShaders::projectionLodShader);
+        } else {
+            RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        }
 
         BufferBuilder buffer = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
         int drawn = 0;
