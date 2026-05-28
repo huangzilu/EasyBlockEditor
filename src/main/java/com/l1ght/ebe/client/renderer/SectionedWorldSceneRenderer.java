@@ -52,7 +52,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private static final Logger LOG = LoggerFactory.getLogger("EBE/SectionedRenderer");
     private static final int SECTION_SIZE = 16;
+    private static final int CLUSTER_SECTION_SPAN = 2;
+    private static final int CLUSTER_SECTION_MIN = 2;
     private static final int DEFAULT_SECTION_COMPILE_BATCH_SIZE = 8;
+    private static final int DEFAULT_CLUSTER_COMPILE_BATCH_SIZE = 2;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
     private static final int QUALITY_STEADY_SECTION_LIMIT = 2048;
     private static final int BALANCED_STEADY_SECTION_LIMIT = 640;
@@ -103,6 +106,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private final Map<SectionPos, SectionData> sections = new LinkedHashMap<>();
     private final Map<SectionPos, LongArrayList> sectionBlocks = new LinkedHashMap<>();
     private final Set<SectionPos> dirtySections = new LinkedHashSet<>();
+    private final Map<ClusterPos, ClusterData> clusters = new LinkedHashMap<>();
+    private final Set<ClusterPos> dirtyClusters = new LinkedHashSet<>();
     private final Set<BlockPos> tileEntities = new LinkedHashSet<>();
     private ProjectionLodPyramid viewportLodPyramid = ProjectionLodPyramid.empty();
     private ProjectionShellMesh viewportShellMesh = ProjectionShellMesh.empty();
@@ -121,6 +126,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private int adaptiveCompileScale = ADAPTIVE_SCALE_MAX;
     private int adaptiveLodScale = ADAPTIVE_SCALE_MAX;
     private int adaptiveRecoveryFrames;
+    private Set<SectionPos> clusterCoveredSectionsThisFrame = Set.of();
 
     public record SectionPos(int x, int y, int z) {
         public static SectionPos fromBlock(BlockPos pos) {
@@ -132,12 +138,22 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
     }
 
-    public static class SectionData {
+    private record ClusterPos(int x, int y, int z) {
+        private static ClusterPos fromSection(SectionPos section) {
+            return new ClusterPos(
+                    Math.floorDiv(section.x(), CLUSTER_SECTION_SPAN),
+                    Math.floorDiv(section.y(), CLUSTER_SECTION_SPAN),
+                    Math.floorDiv(section.z(), CLUSTER_SECTION_SPAN)
+            );
+        }
+    }
+
+    private static class MeshBucket {
         public final VertexBuffer[] vertexBuffers;
         public final boolean[] hasData;
         public volatile boolean compiled = false;
 
-        public SectionData() {
+        public MeshBucket() {
             vertexBuffers = new VertexBuffer[LAYERS.size()];
             hasData = new boolean[LAYERS.size()];
         }
@@ -156,6 +172,12 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
             return vb;
         }
+    }
+
+    public static class SectionData extends MeshBucket {
+    }
+
+    private static class ClusterData extends MeshBucket {
     }
 
     public SectionedWorldSceneRenderer(Level world) {
@@ -188,6 +210,15 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private void markSectionDirty(SectionPos sp) {
         dirtySections.add(sp);
         var data = sections.get(sp);
+        if (data != null) {
+            data.compiled = false;
+        }
+        markClusterDirty(ClusterPos.fromSection(sp));
+    }
+
+    private void markClusterDirty(ClusterPos cp) {
+        dirtyClusters.add(cp);
+        var data = clusters.get(cp);
         if (data != null) {
             data.compiled = false;
         }
@@ -230,6 +261,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             if (data != null) {
                 data.compiled = false;
             }
+            markClusterDirty(ClusterPos.fromSection(sp));
         }
     }
 
@@ -301,6 +333,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             for (var data : sections.values()) {
                 data.compiled = false;
             }
+            dirtyClusters.addAll(clusters.keySet());
+            for (var data : clusters.values()) {
+                data.compiled = false;
+            }
         }
     }
 
@@ -317,6 +353,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                     sectionBlocks.remove(sp);
                     var data = sections.remove(sp);
                     if (data != null) data.close();
+                    markClusterDirty(ClusterPos.fromSection(sp));
                 }
             }
         }
@@ -353,9 +390,14 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var data : sections.values()) {
             data.close();
         }
+        for (var data : clusters.values()) {
+            data.close();
+        }
         sections.clear();
+        clusters.clear();
         sectionBlocks.clear();
         dirtySections.clear();
+        dirtyClusters.clear();
         tileEntities.clear();
         needsFullRebuild = true;
         super.deleteCacheBuffer();
@@ -389,6 +431,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                         sectionBlocks.remove(sp);
                         var data = sections.remove(sp);
                         if (data != null) data.close();
+                        markClusterDirty(ClusterPos.fromSection(sp));
                     } else {
                         markSectionDirty(sp);
                     }
@@ -403,11 +446,16 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     public WorldSceneRenderer removeAllRenderedBlocks() {
         sectionBlocks.clear();
         dirtySections.clear();
+        dirtyClusters.clear();
         tileEntities.clear();
         for (var data : sections.values()) {
             data.close();
         }
+        for (var data : clusters.values()) {
+            data.close();
+        }
         sections.clear();
+        clusters.clear();
         return super.removeAllRenderedBlocks();
     }
 
@@ -436,14 +484,37 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         for (var sp : activeSections) {
             sections.computeIfAbsent(sp, k -> new SectionData());
         }
+        rebuildClusters(activeSections);
 
         dirtySections.clear();
         dirtySections.addAll(activeSections);
         for (var data : sections.values()) {
             data.compiled = false;
         }
+        dirtyClusters.clear();
+        dirtyClusters.addAll(clusters.keySet());
+        for (var data : clusters.values()) {
+            data.compiled = false;
+        }
         rebuildAllTileEntities();
         needsFullRebuild = false;
+    }
+
+    private void rebuildClusters(Set<SectionPos> activeSections) {
+        Set<ClusterPos> activeClusters = new HashSet<>();
+        for (var sp : activeSections) {
+            activeClusters.add(ClusterPos.fromSection(sp));
+        }
+        clusters.entrySet().removeIf(entry -> {
+            if (!activeClusters.contains(entry.getKey())) {
+                entry.getValue().close();
+                return true;
+            }
+            return false;
+        });
+        for (var cp : activeClusters) {
+            clusters.computeIfAbsent(cp, ignored -> new ClusterData());
+        }
     }
 
     private LongArrayList newSectionBlockList() {
@@ -463,7 +534,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             rebuildSectionBlocks();
         }
 
-        if (dirtySections.isEmpty() || compiling.get()) return;
+        if ((dirtySections.isEmpty() && dirtyClusters.isEmpty()) || compiling.get()) return;
 
         long budgetNanos = compileBudgetNanos(cameraMoving);
         if (budgetNanos <= 0L) {
@@ -471,8 +542,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
         long deadline = System.nanoTime() + budgetNanos;
 
-        List<SectionPos> toCompile = selectDirtySectionsForCompile(eyePos, focusPos, deadline, cameraMoving);
-        if (toCompile.isEmpty()) return;
+        List<SectionPos> toCompile = dirtySections.isEmpty()
+                ? List.of()
+                : selectDirtySectionsForCompile(eyePos, focusPos, deadline, cameraMoving);
+        if (toCompile.isEmpty() && dirtyClusters.isEmpty()) return;
 
         dirtySections.removeAll(toCompile);
 
@@ -491,7 +564,10 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
                 compileSection(sp, brd, randomSource);
             }
 
-            rebuildTileEntitiesForSections(toCompile);
+            if (!toCompile.isEmpty()) {
+                rebuildTileEntitiesForSections(toCompile);
+            }
+            compileDirtyClusters(eyePos, focusPos, deadline, cameraMoving, brd, randomSource);
         } catch (Exception e) {
             LOG.warn("Section compilation error", e);
         } finally {
@@ -611,6 +687,174 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         data.compiled = true;
     }
 
+    private void compileDirtyClusters(Vector3f eyePos, Vector3f focusPos, long deadline, boolean cameraMoving,
+                                      BlockRenderDispatcher brd, RandomSource randomSource) {
+        if (sectionBlocks.size() < 512 || dirtyClusters.isEmpty() || System.nanoTime() > deadline) {
+            return;
+        }
+        int max = Math.min(clusterCompileBatchSize(cameraMoving), dirtyClusters.size());
+        var selected = new ArrayList<ClusterPos>(max);
+        for (var cp : dirtyClusters) {
+            if (System.nanoTime() > deadline) {
+                break;
+            }
+            int insertAt = 0;
+            while (insertAt < selected.size()
+                    && compareClusterCompilePriority(selected.get(insertAt), cp, eyePos, focusPos) <= 0) {
+                insertAt++;
+            }
+            if (insertAt < max) {
+                selected.add(insertAt, cp);
+                if (selected.size() > max) {
+                    selected.remove(selected.size() - 1);
+                }
+            }
+        }
+        dirtyClusters.removeAll(selected);
+        for (var cp : selected) {
+            if (System.nanoTime() > deadline) {
+                dirtyClusters.add(cp);
+                continue;
+            }
+            compileCluster(cp, brd, randomSource);
+        }
+    }
+
+    private void compileCluster(ClusterPos cp, BlockRenderDispatcher brd, RandomSource randomSource) {
+        var data = clusters.get(cp);
+        if (data == null) return;
+
+        var childSections = clusterSections(cp);
+        int activeChildren = 0;
+        int totalBlocks = 0;
+        for (var sp : childSections) {
+            var blocks = sectionBlocks.get(sp);
+            if (blocks != null && !blocks.isEmpty()) {
+                activeChildren++;
+                totalBlocks += blocks.size();
+            }
+        }
+        if (activeChildren < CLUSTER_SECTION_MIN || totalBlocks <= 0) {
+            clearMeshBucket(data);
+            data.compiled = false;
+            return;
+        }
+
+        compileMeshBucket(data, childSections, brd, randomSource, "cluster " + cp);
+    }
+
+    private void compileMeshBucket(MeshBucket data, Collection<SectionPos> sourceSections,
+                                   BlockRenderDispatcher brd, RandomSource randomSource, String label) {
+        BufferBuilder[] builders = new BufferBuilder[LAYERS.size()];
+        ByteBufferBuilder[] byteBuilders = new ByteBufferBuilder[LAYERS.size()];
+        VertexConsumerWrapper[] wrappers = new VertexConsumerWrapper[LAYERS.size()];
+
+        boolean compileFailed = false;
+        try {
+            PoseStack poseStack = new PoseStack();
+            ISceneBlockRenderHook renderHook = currentRenderHook();
+            for (var sp : sourceSections) {
+                var blocks = sectionBlocks.get(sp);
+                if (blocks == null || blocks.isEmpty()) {
+                    continue;
+                }
+                for (long packed : blocks) {
+                    if (Thread.interrupted()) return;
+                    var pos = BlockPos.of(packed);
+                    var state = world.getBlockState(pos);
+                    if (state == null || state.isAir()) continue;
+
+                    var fluidState = state.getFluidState();
+                    var block = state.getBlock();
+                    if (block == Blocks.AIR) continue;
+
+                    if (state.getRenderShape() != INVISIBLE) {
+                        var model = brd.getBlockModel(state);
+                        var modelData = world.getModelData(pos);
+                        modelData = model.getModelData(world, pos, state, modelData);
+                        long seed = state.getSeed(pos);
+                        randomSource.setSeed(seed);
+                        var renderTypes = model.getRenderTypes(state, randomSource, modelData);
+
+                        for (int i = 0; i < LAYERS.size(); i++) {
+                            RenderType layer = LAYERS.get(i);
+                            if (!renderTypes.contains(layer)) {
+                                continue;
+                            }
+                            var wrapper = wrapperForLayer(i, builders, byteBuilders, wrappers);
+                            randomSource.setSeed(seed);
+                            poseStack.pushPose();
+                            poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
+                            if (renderHook != null) {
+                                renderHook.applyVertexConsumerWrapper(world, pos, state, wrapper, layer, 0);
+                            }
+                            brd.renderBatched(state, pos, world, poseStack, wrapper, false, randomSource, modelData, layer);
+                            poseStack.popPose();
+                            wrapper.clearOffset();
+                            wrapper.clearColor();
+                        }
+                    }
+
+                    if (!fluidState.isEmpty()) {
+                        RenderType fluidLayer = ItemBlockRenderTypes.getRenderLayer(fluidState);
+                        Integer layerIndex = LAYER_INDICES.get(fluidLayer);
+                        if (layerIndex != null) {
+                            var wrapper = wrapperForLayer(layerIndex, builders, byteBuilders, wrappers);
+                            wrapper.addOffset(pos.getX() - (pos.getX() & 15), pos.getY() - (pos.getY() & 15), pos.getZ() - (pos.getZ() & 15));
+                            if (renderHook != null) {
+                                renderHook.applyVertexConsumerWrapper(world, pos, state, wrapper, fluidLayer, 0);
+                            }
+                            brd.renderLiquid(pos, world, wrapper, state, fluidState);
+                            wrapper.clearOffset();
+                            wrapper.clearColor();
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            compileFailed = true;
+            LOG.warn("Failed to compile {}", label, e);
+            clearMeshBucket(data);
+        }
+
+        uploadMeshBucket(data, builders, compileFailed, label);
+    }
+
+    private void uploadMeshBucket(MeshBucket data, BufferBuilder[] builders, boolean compileFailed, String label) {
+        for (int i = 0; i < LAYERS.size(); i++) {
+            try {
+                if (builders[i] == null) {
+                    data.hasData[i] = false;
+                    continue;
+                }
+                MeshData meshData = builders[i].build();
+                if (compileFailed) {
+                    data.hasData[i] = false;
+                } else if (meshData != null) {
+                    data.hasData[i] = true;
+                    var vertexBuffer = data.vertexBuffer(i);
+                    if (!vertexBuffer.isInvalid()) {
+                        vertexBuffer.bind();
+                        vertexBuffer.upload(meshData);
+                        VertexBuffer.unbind();
+                    }
+                } else {
+                    data.hasData[i] = false;
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to upload {} layer {}", label, i, e);
+                data.hasData[i] = false;
+            }
+        }
+        data.compiled = true;
+    }
+
+    private void clearMeshBucket(MeshBucket data) {
+        for (int i = 0; i < LAYERS.size(); i++) {
+            data.hasData[i] = false;
+        }
+    }
+
     private VertexConsumerWrapper wrapperForLayer(int layerIndex, BufferBuilder[] builders,
                                                   ByteBufferBuilder[] byteBuilders,
                                                   VertexConsumerWrapper[] wrappers) {
@@ -673,11 +917,26 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return Math.max(1, (base * adaptiveCompileScale) / ADAPTIVE_SCALE_MAX);
     }
 
+    private int clusterCompileBatchSize(boolean cameraMoving) {
+        int base = cameraMoving ? 1 : DEFAULT_CLUSTER_COMPILE_BATCH_SIZE;
+        if ("quality".equals(performanceMode()) && !cameraMoving) {
+            base++;
+        }
+        return Math.max(1, (base * adaptiveCompileScale) / ADAPTIVE_SCALE_MAX);
+    }
+
     private int compareCompilePriority(SectionPos a, SectionPos b, Vector3f eyePos, Vector3f focusPos) {
         boolean av = isSectionVisible(a, focusPos);
         boolean bv = isSectionVisible(b, focusPos);
         if (av != bv) return av ? -1 : 1;
         return Double.compare(distanceToSectionSqr(a, eyePos), distanceToSectionSqr(b, eyePos));
+    }
+
+    private int compareClusterCompilePriority(ClusterPos a, ClusterPos b, Vector3f eyePos, Vector3f focusPos) {
+        boolean av = isClusterVisible(a, focusPos);
+        boolean bv = isClusterVisible(b, focusPos);
+        if (av != bv) return av ? -1 : 1;
+        return Double.compare(distanceToClusterSqr(a, eyePos), distanceToClusterSqr(b, eyePos));
     }
 
     private void rebuildAllTileEntities() {
@@ -739,6 +998,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         List<SectionPos> visibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
         visibleSections = limitExactSectionsForFrame(visibleSections, cameraMoving, eyePos);
         exactSectionsThisFrame = visibleSections.isEmpty() ? Set.of() : new HashSet<>(visibleSections);
+        List<ClusterPos> visibleClusters = collectDrawableClusters(visibleSections, focusPos, eyePos, sortVisibleSections);
+        clusterCoveredSectionsThisFrame = collectClusterCoveredSections(visibleClusters);
         Set<BlockPos> visibleTileEntities = collectVisibleTileEntities(visibleSections);
 
         compileDirtySections(eyePos, focusPos, cameraMoving);
@@ -775,6 +1036,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             setDefaultRenderLayerState(layer);
             layer.setupRenderState();
 
+            drawCompiledClusterVBOs(i, visibleClusters);
             drawCompiledSectionVBOs(i, visibleSections);
 
             if (!uncompiledBlocks.isEmpty()) {
@@ -812,6 +1074,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         }
         recordViewportFrameCost(System.nanoTime() - frameStarted, visibleSections.size());
         exactSectionsThisFrame = Set.of();
+        clusterCoveredSectionsThisFrame = Set.of();
     }
 
     private void renderViewportLod(Vector3f eyePos, boolean cameraMoving) {
@@ -1235,9 +1498,97 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return visible;
     }
 
+    private List<ClusterPos> collectDrawableClusters(List<SectionPos> visibleSections, Vector3f focusPos,
+                                                     Vector3f eyePos, boolean sort) {
+        if (visibleSections.isEmpty() || clusters.isEmpty()) {
+            return List.of();
+        }
+        Set<ClusterPos> candidates = new LinkedHashSet<>();
+        for (var sp : visibleSections) {
+            candidates.add(ClusterPos.fromSection(sp));
+        }
+        var drawable = new ArrayList<ClusterPos>(candidates.size());
+        for (var cp : candidates) {
+            var data = clusters.get(cp);
+            if (data == null || !data.compiled || !clusterHasRenderableLayer(data) || !isClusterVisible(cp, focusPos)) {
+                continue;
+            }
+            if (activeClusterSectionCount(cp) < CLUSTER_SECTION_MIN) {
+                continue;
+            }
+            drawable.add(cp);
+        }
+        if (sort) {
+            drawable.sort(Comparator.comparingDouble(cp -> distanceToClusterSqr(cp, eyePos)));
+        }
+        return drawable;
+    }
+
+    private boolean clusterHasRenderableLayer(ClusterData data) {
+        for (boolean has : data.hasData) {
+            if (has) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int activeClusterSectionCount(ClusterPos cp) {
+        int count = 0;
+        for (var sp : clusterSections(cp)) {
+            var blocks = sectionBlocks.get(sp);
+            if (blocks != null && !blocks.isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private Set<SectionPos> collectClusterCoveredSections(List<ClusterPos> visibleClusters) {
+        if (visibleClusters.isEmpty()) {
+            return Set.of();
+        }
+        Set<SectionPos> covered = new HashSet<>();
+        for (var cp : visibleClusters) {
+            for (var sp : clusterSections(cp)) {
+                if (sectionBlocks.containsKey(sp)) {
+                    covered.add(sp);
+                }
+            }
+        }
+        return covered;
+    }
+
+    private void drawCompiledClusterVBOs(int layerIndex, List<ClusterPos> visibleClusters) {
+        boolean anyDrawn = false;
+        for (var cp : visibleClusters) {
+            var data = clusters.get(cp);
+            if (data == null) continue;
+            if (!data.compiled || !data.hasData[layerIndex]) continue;
+            var vb = data.vertexBuffers[layerIndex];
+            if (vb == null || vb.isInvalid() || vb.getFormat() == null) continue;
+
+            if (!anyDrawn) {
+                setupVBODrawState();
+                anyDrawn = true;
+            }
+
+            vb.bind();
+            vb.draw();
+        }
+        if (anyDrawn) {
+            ShaderInstance shader = RenderSystem.getShader();
+            if (shader != null) shader.clear();
+            VertexBuffer.unbind();
+        }
+    }
+
     private void drawCompiledSectionVBOs(int layerIndex, List<SectionPos> visibleSections) {
         boolean anyDrawn = false;
         for (var sp : visibleSections) {
+            if (clusterCoveredSectionsThisFrame.contains(sp)) {
+                continue;
+            }
             var data = sections.get(sp);
             if (data == null) continue;
             if (!data.compiled || !data.hasData[layerIndex]) continue;
@@ -1440,6 +1791,14 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         return true;
     }
 
+    private boolean isClusterVisible(ClusterPos cp, Vector3f focusPos) {
+        int renderDistance = viewportRenderDistance();
+        if (renderDistance > 0 && distanceToClusterSqr(cp, focusPos) > (double) renderDistance * renderDistance) {
+            return false;
+        }
+        return true;
+    }
+
     private double distanceToSectionSqr(SectionPos sp, Vector3f eyePos) {
         double cx = sp.x() * SECTION_SIZE + SECTION_SIZE * 0.5D;
         double cy = sp.y() * SECTION_SIZE + SECTION_SIZE * 0.5D;
@@ -1448,6 +1807,32 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         double dy = cy - eyePos.y;
         double dz = cz - eyePos.z;
         return dx * dx + dy * dy + dz * dz;
+    }
+
+    private double distanceToClusterSqr(ClusterPos cp, Vector3f eyePos) {
+        double size = SECTION_SIZE * CLUSTER_SECTION_SPAN;
+        double cx = cp.x() * size + size * 0.5D;
+        double cy = cp.y() * size + size * 0.5D;
+        double cz = cp.z() * size + size * 0.5D;
+        double dx = cx - eyePos.x;
+        double dy = cy - eyePos.y;
+        double dz = cz - eyePos.z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private List<SectionPos> clusterSections(ClusterPos cp) {
+        var result = new ArrayList<SectionPos>(CLUSTER_SECTION_SPAN * CLUSTER_SECTION_SPAN * CLUSTER_SECTION_SPAN);
+        int baseX = cp.x() * CLUSTER_SECTION_SPAN;
+        int baseY = cp.y() * CLUSTER_SECTION_SPAN;
+        int baseZ = cp.z() * CLUSTER_SECTION_SPAN;
+        for (int y = 0; y < CLUSTER_SECTION_SPAN; y++) {
+            for (int z = 0; z < CLUSTER_SECTION_SPAN; z++) {
+                for (int x = 0; x < CLUSTER_SECTION_SPAN; x++) {
+                    result.add(new SectionPos(baseX + x, baseY + y, baseZ + z));
+                }
+            }
+        }
+        return result;
     }
 
     private long compileBudgetNanos(boolean cameraMoving) {
