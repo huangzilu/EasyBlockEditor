@@ -15,7 +15,6 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
     private final boolean sparseStorage;
     private final Long2ObjectOpenHashMap<BlockInfo> sparseBlocks;
     private final Long2ObjectOpenHashMap<BlockEntity> sparseBlockEntities;
-    private final Long2ObjectOpenHashMap<BlockState> sparseOccluders;
 
     public FastTrackedDummyWorld() {
         this(false);
@@ -26,7 +25,6 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
         this.sparseStorage = sparseStorage;
         this.sparseBlocks = sparseStorage ? new Long2ObjectOpenHashMap<>() : null;
         this.sparseBlockEntities = sparseStorage ? new Long2ObjectOpenHashMap<>() : null;
-        this.sparseOccluders = sparseStorage ? new Long2ObjectOpenHashMap<>() : null;
     }
 
     public boolean isSparseStorage() {
@@ -41,7 +39,6 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
         if (sparseStorage) {
             long key = pos.asLong();
             sparseBlocks.put(key, info);
-            sparseOccluders.remove(key);
             addFilledBlock(pos);
             BlockEntity blockEntity = createSparseBlockEntity(pos, state, info);
             if (blockEntity != null) {
@@ -85,7 +82,6 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
         if (sparseStorage) {
             sparseBlocks.clear();
             sparseBlockEntities.clear();
-            sparseOccluders.clear();
             filledBlocks.clear();
         } else {
             super.clear();
@@ -96,11 +92,7 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
     public BlockState getBlockState(BlockPos pos) {
         if (sparseStorage) {
             BlockInfo info = sparseBlocks.get(pos.asLong());
-            if (info != null) {
-                return info.getBlockState();
-            }
-            BlockState occluder = sparseOccluders.get(pos.asLong());
-            return occluder == null ? Blocks.AIR.defaultBlockState() : occluder;
+            return info == null ? Blocks.AIR.defaultBlockState() : info.getBlockState();
         }
         return super.getBlockState(pos);
     }
@@ -133,16 +125,5 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
         blockEntity.setBlockState(state);
         info.postEntity(blockEntity);
         return blockEntity;
-    }
-
-    public void addOccluderBlock(BlockPos pos, BlockState state) {
-        if (!sparseStorage || pos == null || state == null || state.isAir()) {
-            return;
-        }
-        long key = pos.asLong();
-        if (sparseBlocks.containsKey(key)) {
-            return;
-        }
-        sparseOccluders.put(key, state);
     }
 }
