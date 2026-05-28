@@ -629,7 +629,10 @@ public class ViewportFactory {
     }
 
     public static boolean shouldLoadModelProgressively(BuildingModel model, ProjectionLoadProfile profile) {
-        if (profile != null) return profile.shouldPreferProgressiveViewport();
+        if (profile != null) {
+            if (isUnderUserSyncThreshold(profile)) return false;
+            return profile.shouldPreferProgressiveViewport();
+        }
         if (model == null) return false;
         long volume = 0L;
         for (var region : model.getRegions()) {
@@ -644,7 +647,10 @@ public class ViewportFactory {
     }
 
     public static boolean shouldLoadComputedProgressively(ComputedProjection computed, ProjectionLoadProfile profile) {
-        if (profile != null) return profile.shouldPreferProgressiveViewport();
+        if (profile != null) {
+            if (isUnderUserSyncThreshold(profile)) return false;
+            return profile.shouldPreferProgressiveViewport();
+        }
         return computed != null && computed.blockCount() > SYNC_COMPUTED_LOAD_BLOCK_LIMIT;
     }
 
@@ -1215,6 +1221,7 @@ public class ViewportFactory {
 
     private static boolean shouldUseDynamicExactViewport(ProjectionLoadProfile profile) {
         return profile != null
+                && !isUnderUserSyncThreshold(profile)
                 && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()
                 && sectionedRenderer != null
                 && !shouldUseIrisOffscreenRenderer();
