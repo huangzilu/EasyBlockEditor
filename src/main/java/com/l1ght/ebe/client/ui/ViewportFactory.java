@@ -34,6 +34,7 @@ import dev.vfyjxf.taffy.style.TaffyPosition;
 import com.lowdragmc.lowdraglib2.client.utils.RenderUtils;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -57,6 +58,7 @@ import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -94,6 +96,7 @@ public class ViewportFactory {
     private static final int EXTREME_LOD_SAMPLE_CAP = 60_000;
     private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 320_000;
     private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 240_000;
+    private static final long EXTERIOR_SHELL_FLOOD_SECTION_LIMIT = 2_000_000L;
     private static final double MESH_ONLY_SOURCE_RELEASE_TARGET = 0.65D;
     private static final double MESH_ONLY_SOURCE_REHYDRATE_TARGET = 0.85D;
     private static final int IRIS_VIEWPORT_FBO_DEFAULT_SIZE = 1080;
@@ -200,13 +203,20 @@ public class ViewportFactory {
         final ProjectionLoadProfile profile;
         final List<ExactPatch> patches;
         final List<ExactPatch> coveragePatches;
+        final Set<ExactPatchKey> exteriorShellPatchKeys;
+        final List<ExactPatch> exteriorShellPatches;
+        final Map<ExactPatchKey, ExactPatch> patchesByKey;
         final Map<ExactPatchKey, LoadedPatch> loadedPatches = new HashMap<>();
         final Set<ExactPatchKey> emptyPatches = new HashSet<>();
+        final Set<ExactPatchKey> emptyExteriorShellPatches = new HashSet<>();
+        final Map<ExactPatchKey, LongOpenHashSet> computedPatchOccupancy = new HashMap<>();
         final int maxExactBlocks;
         int exactBlocks;
         int tickCounter;
         int coverageCursor;
+        int exteriorShellCursor;
         int focusLoadsSinceCoverage;
+        boolean exteriorShellComplete;
         boolean capReached;
 
         DynamicExactViewportWindow(BuildingModel model, ComputedProjection computed, ProjectionLoadProfile profile) {
@@ -216,6 +226,9 @@ public class ViewportFactory {
             this.maxExactBlocks = progressiveExactViewportBlockLimit(profile);
             this.patches = model != null ? createModelExactPatches(model) : createComputedExactPatches(computed);
             this.coveragePatches = createRadialCoverageOrder(this.patches);
+            this.exteriorShellPatchKeys = createExteriorShellPatchKeys(this.patches, profile);
+            this.exteriorShellPatches = createRadialCoverageOrder(filterExactPatches(this.patches, this.exteriorShellPatchKeys));
+            this.patchesByKey = createExactPatchLookup(this.patches);
         }
 
         boolean isActive() {
@@ -224,6 +237,12 @@ public class ViewportFactory {
     }
 
     private record ExactPatchKey(int source, int sectionX, int sectionY, int sectionZ) {
+    }
+
+    private record SectionCoord(int x, int y, int z) {
+        long packed() {
+            return SectionPos.asLong(x, y, z);
+        }
     }
 
     private static final class ExactPatch {
@@ -287,7 +306,8 @@ public class ViewportFactory {
         }
     }
 
-    private record LoadedPatch(ExactPatch patch, List<BlockPos> blocks, int blockCount, boolean sourceReleased) {
+    private record LoadedPatch(ExactPatch patch, List<BlockPos> blocks, int blockCount, boolean sourceReleased,
+                               boolean complete) {
         int size() {
             return blockCount;
         }
@@ -1248,8 +1268,9 @@ public class ViewportFactory {
         EditorUI.markMaterialListStale();
         EditorUI.updateStatusBar();
         EditorUI.setStatus(Component.translatable("ebe.editor.loading.dynamic_exact", dynamicExactWindow.maxExactBlocks));
-        LOG.info("Dynamic exact viewport started: patches={}, exactCap={}, entities={}, profile={}",
-                dynamicExactWindow.patches.size(), dynamicExactWindow.maxExactBlocks, entitiesAdded,
+        LOG.info("Dynamic exact viewport started: patches={}, exteriorShellPatches={}, exactCap={}, entities={}, profile={}",
+                dynamicExactWindow.patches.size(), dynamicExactWindow.exteriorShellPatches.size(),
+                dynamicExactWindow.maxExactBlocks, entitiesAdded,
                 profile == null ? "none" : profile.risk());
 
         if (autoCamera) {
@@ -1590,6 +1611,166 @@ public class ViewportFactory {
         return List.copyOf(ordered);
     }
 
+    private static List<ExactPatch> filterExactPatches(List<ExactPatch> patches, Set<ExactPatchKey> keys) {
+        if (patches == null || patches.isEmpty() || keys == null || keys.isEmpty()) return List.of();
+        var filtered = new ArrayList<ExactPatch>();
+        for (var patch : patches) {
+            if (keys.contains(patch.key)) {
+                filtered.add(patch);
+            }
+        }
+        return List.copyOf(filtered);
+    }
+
+    private static Map<ExactPatchKey, ExactPatch> createExactPatchLookup(List<ExactPatch> patches) {
+        if (patches == null || patches.isEmpty()) return Map.of();
+        var lookup = new HashMap<ExactPatchKey, ExactPatch>();
+        for (var patch : patches) {
+            lookup.putIfAbsent(patch.key, patch);
+        }
+        return Map.copyOf(lookup);
+    }
+
+    private static Set<ExactPatchKey> createExteriorShellPatchKeys(List<ExactPatch> patches, ProjectionLoadProfile profile) {
+        if (patches == null || patches.isEmpty()
+                || profile == null
+                || profile.risk().ordinal() < ProjectionLoadProfile.Risk.HUGE.ordinal()) {
+            return Set.of();
+        }
+
+        var keysBySection = new HashMap<Long, List<ExactPatchKey>>();
+        var occupied = new HashSet<Long>();
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+
+        for (var patch : patches) {
+            long sectionKey = SectionPos.asLong(patch.key.sectionX(), patch.key.sectionY(), patch.key.sectionZ());
+            occupied.add(sectionKey);
+            keysBySection.computeIfAbsent(sectionKey, ignored -> new ArrayList<>()).add(patch.key);
+            minX = Math.min(minX, patch.key.sectionX());
+            minY = Math.min(minY, patch.key.sectionY());
+            minZ = Math.min(minZ, patch.key.sectionZ());
+            maxX = Math.max(maxX, patch.key.sectionX());
+            maxY = Math.max(maxY, patch.key.sectionY());
+            maxZ = Math.max(maxZ, patch.key.sectionZ());
+        }
+
+        if (occupied.isEmpty()) {
+            return Set.of();
+        }
+
+        long floodCells = boundedSectionCellCount(minX, minY, minZ, maxX, maxY, maxZ);
+        Set<ExactPatchKey> shellKeys = floodCells > 0L && floodCells <= EXTERIOR_SHELL_FLOOD_SECTION_LIMIT
+                ? floodExteriorShellSections(occupied, keysBySection, minX, minY, minZ, maxX, maxY, maxZ)
+                : boundaryExteriorShellSections(keysBySection, minX, minY, minZ, maxX, maxY, maxZ);
+
+        if (shellKeys.isEmpty()) {
+            return Set.of();
+        }
+        LOG.info("Viewport exterior shell priority ready: shellPatches={}, occupiedSections={}, floodSections={}",
+                shellKeys.size(), occupied.size(), floodCells);
+        return Set.copyOf(shellKeys);
+    }
+
+    private static long boundedSectionCellCount(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+        long cellsX = (long) maxX - minX + 3L;
+        long cellsY = (long) maxY - minY + 3L;
+        long cellsZ = (long) maxZ - minZ + 3L;
+        if (cellsX <= 0L || cellsY <= 0L || cellsZ <= 0L) {
+            return Long.MAX_VALUE;
+        }
+        if (cellsX > Long.MAX_VALUE / cellsY) {
+            return Long.MAX_VALUE;
+        }
+        long xy = cellsX * cellsY;
+        if (xy > Long.MAX_VALUE / cellsZ) {
+            return Long.MAX_VALUE;
+        }
+        return xy * cellsZ;
+    }
+
+    private static Set<ExactPatchKey> floodExteriorShellSections(Set<Long> occupied,
+                                                                 Map<Long, List<ExactPatchKey>> keysBySection,
+                                                                 int minX, int minY, int minZ,
+                                                                 int maxX, int maxY, int maxZ) {
+        int floodMinX = minX - 1;
+        int floodMinY = minY - 1;
+        int floodMinZ = minZ - 1;
+        int floodMaxX = maxX + 1;
+        int floodMaxY = maxY + 1;
+        int floodMaxZ = maxZ + 1;
+
+        var shellKeys = new HashSet<ExactPatchKey>();
+        var visitedAir = new HashSet<Long>();
+        var queue = new ArrayDeque<SectionCoord>();
+        enqueueExteriorAir(queue, visitedAir, new SectionCoord(floodMinX, floodMinY, floodMinZ));
+
+        while (!queue.isEmpty()) {
+            SectionCoord air = queue.removeFirst();
+            visitExteriorNeighbor(air.x() + 1, air.y(), air.z(), floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+            visitExteriorNeighbor(air.x() - 1, air.y(), air.z(), floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+            visitExteriorNeighbor(air.x(), air.y() + 1, air.z(), floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+            visitExteriorNeighbor(air.x(), air.y() - 1, air.z(), floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+            visitExteriorNeighbor(air.x(), air.y(), air.z() + 1, floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+            visitExteriorNeighbor(air.x(), air.y(), air.z() - 1, floodMinX, floodMinY, floodMinZ, floodMaxX, floodMaxY, floodMaxZ,
+                    occupied, keysBySection, visitedAir, queue, shellKeys);
+        }
+        return shellKeys;
+    }
+
+    private static void visitExteriorNeighbor(int x, int y, int z,
+                                              int minX, int minY, int minZ,
+                                              int maxX, int maxY, int maxZ,
+                                              Set<Long> occupied,
+                                              Map<Long, List<ExactPatchKey>> keysBySection,
+                                              Set<Long> visitedAir,
+                                              ArrayDeque<SectionCoord> queue,
+                                              Set<ExactPatchKey> shellKeys) {
+        if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) {
+            return;
+        }
+        long packed = SectionPos.asLong(x, y, z);
+        if (occupied.contains(packed)) {
+            var keys = keysBySection.get(packed);
+            if (keys != null) {
+                shellKeys.addAll(keys);
+            }
+            return;
+        }
+        enqueueExteriorAir(queue, visitedAir, new SectionCoord(x, y, z));
+    }
+
+    private static void enqueueExteriorAir(ArrayDeque<SectionCoord> queue, Set<Long> visitedAir, SectionCoord coord) {
+        if (visitedAir.add(coord.packed())) {
+            queue.addLast(coord);
+        }
+    }
+
+    private static Set<ExactPatchKey> boundaryExteriorShellSections(Map<Long, List<ExactPatchKey>> keysBySection,
+                                                                    int minX, int minY, int minZ,
+                                                                    int maxX, int maxY, int maxZ) {
+        var shellKeys = new HashSet<ExactPatchKey>();
+        for (var entry : keysBySection.entrySet()) {
+            for (var key : entry.getValue()) {
+                if (key.sectionX() == minX || key.sectionX() == maxX
+                        || key.sectionY() == minY || key.sectionY() == maxY
+                        || key.sectionZ() == minZ || key.sectionZ() == maxZ) {
+                    shellKeys.add(key);
+                }
+            }
+        }
+        return shellKeys;
+    }
+
     private static void tickDynamicExactViewport() {
         var window = dynamicExactWindow;
         if (window == null || !window.isActive() || currentWorld == null || currentScene == null) {
@@ -1610,12 +1791,19 @@ public class ViewportFactory {
             if (patch == null) {
                 break;
             }
-            LoadedPatch loadedPatch = loadExactPatch(window, patch, focus);
+            boolean exteriorShellOnly = window.exteriorShellPatchKeys.contains(patch.key)
+                    && !window.loadedPatches.containsKey(patch.key)
+                    && !window.exteriorShellComplete;
+            LoadedPatch loadedPatch = loadExactPatch(window, patch, focus, exteriorShellOnly);
             if (loadedPatch == null) {
                 if (window.capReached) {
                     break;
                 }
-                window.emptyPatches.add(patch.key);
+                if (exteriorShellOnly) {
+                    window.emptyExteriorShellPatches.add(patch.key);
+                } else {
+                    window.emptyPatches.add(patch.key);
+                }
                 continue;
             }
             loaded++;
@@ -1650,6 +1838,12 @@ public class ViewportFactory {
             return null;
         }
 
+        ExactPatch shellPatch = selectExteriorShellPatch(window);
+        if (shellPatch != null) {
+            window.focusLoadsSinceCoverage = 0;
+            return shellPatch;
+        }
+
         ExactPatch coveragePatch = selectCoverageExactPatch(window);
         if (coveragePatch != null && shouldLoadCoveragePatch(window)) {
             window.focusLoadsSinceCoverage = 0;
@@ -1659,7 +1853,7 @@ public class ViewportFactory {
         ExactPatch best = null;
         double bestDistance = Double.MAX_VALUE;
         for (var patch : window.patches) {
-            if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
+            if (isPatchComplete(window, patch.key) || window.emptyPatches.contains(patch.key)) {
                 continue;
             }
             double distance = patch.distanceSqr(focus);
@@ -1673,6 +1867,25 @@ public class ViewportFactory {
             return best;
         }
         return coveragePatch;
+    }
+
+    private static ExactPatch selectExteriorShellPatch(DynamicExactViewportWindow window) {
+        if (window.exteriorShellComplete || window.exteriorShellPatches.isEmpty()) {
+            return null;
+        }
+        int size = window.exteriorShellPatches.size();
+        int start = Math.floorMod(window.exteriorShellCursor, size);
+        for (int i = 0; i < size; i++) {
+            int index = Math.floorMod(start + i, size);
+            var patch = window.exteriorShellPatches.get(index);
+            if (window.loadedPatches.containsKey(patch.key) || window.emptyExteriorShellPatches.contains(patch.key)) {
+                continue;
+            }
+            window.exteriorShellCursor = Math.floorMod(index + 1, size);
+            return patch;
+        }
+        window.exteriorShellComplete = true;
+        return null;
     }
 
     private static boolean shouldLoadCoveragePatch(DynamicExactViewportWindow window) {
@@ -1689,7 +1902,7 @@ public class ViewportFactory {
         for (int i = 0; i < size; i++) {
             int index = Math.floorMod(start + i, size);
             var patch = window.coveragePatches.get(index);
-            if (window.loadedPatches.containsKey(patch.key) || window.emptyPatches.contains(patch.key)) {
+            if (isPatchComplete(window, patch.key) || window.emptyPatches.contains(patch.key)) {
                 continue;
             }
             window.coverageCursor = Math.floorMod(index + 1, size);
@@ -1698,33 +1911,71 @@ public class ViewportFactory {
         return null;
     }
 
-    private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus) {
-        var blocks = collectExactPatchBlocks(window, patch);
-        window.loadedPatches.put(patch.key, new LoadedPatch(patch, List.of(), 0, false));
+    private static boolean isPatchComplete(DynamicExactViewportWindow window, ExactPatchKey key) {
+        LoadedPatch loaded = window.loadedPatches.get(key);
+        return loaded != null && loaded.complete();
+    }
+
+    private static LoadedPatch loadExactPatch(DynamicExactViewportWindow window, ExactPatch patch, Vector3f focus,
+                                              boolean exteriorShellOnly) {
+        LoadedPatch previous = window.loadedPatches.get(patch.key);
+        var blocks = collectExactPatchBlocks(window, patch, exteriorShellOnly);
         if (blocks.isEmpty()) {
-            window.loadedPatches.remove(patch.key);
             return null;
         }
 
-        releaseCompiledPatchSources(window, focus, blocks.size());
-        if (window.exactBlocks + blocks.size() > window.maxExactBlocks) {
-            window.loadedPatches.remove(patch.key);
+        Set<Long> previousSourcePositions = sourcePositionSet(previous);
+        var blocksToAdd = new ArrayList<ExactBlock>(blocks.size());
+        for (var entry : blocks) {
+            if (previousSourcePositions.contains(entry.pos().asLong())) {
+                continue;
+            }
+            blocksToAdd.add(entry);
+        }
+
+        if (blocksToAdd.isEmpty()) {
+            if (previous != null && !exteriorShellOnly && !previous.complete()) {
+                var completed = new LoadedPatch(patch, previous.blocks(), previous.blockCount(), previous.sourceReleased(), true);
+                window.loadedPatches.put(patch.key, completed);
+                return completed;
+            }
+            return previous;
+        }
+
+        releaseCompiledPatchSources(window, focus, blocksToAdd.size());
+        if (window.exactBlocks + blocksToAdd.size() > window.maxExactBlocks) {
             window.capReached = true;
             return null;
         }
 
         var core = getSceneCore();
-        for (var entry : blocks) {
+        for (var entry : blocksToAdd) {
             addBlockToViewportWorld(entry.pos(), entry.state());
             if (core != null) {
                 core.add(entry.pos().immutable());
             }
         }
-        var positions = blocks.stream().map(ExactBlock::pos).map(BlockPos::immutable).toList();
-        var loaded = new LoadedPatch(patch, positions, positions.size(), false);
+        var positions = new ArrayList<BlockPos>((previous == null || previous.blocks() == null ? 0 : previous.blocks().size()) + blocksToAdd.size());
+        if (previous != null && previous.blocks() != null && !previous.sourceReleased()) {
+            positions.addAll(previous.blocks());
+        }
+        positions.addAll(blocksToAdd.stream().map(ExactBlock::pos).map(BlockPos::immutable).toList());
+        int blockCount = previous == null ? positions.size() : Math.max(previous.blockCount(), positions.size());
+        var loaded = new LoadedPatch(patch, List.copyOf(positions), blockCount, false, !exteriorShellOnly);
         window.loadedPatches.put(patch.key, loaded);
-        window.exactBlocks += positions.size();
+        window.exactBlocks += blocksToAdd.size();
         return loaded;
+    }
+
+    private static Set<Long> sourcePositionSet(LoadedPatch previous) {
+        if (previous == null || previous.sourceReleased() || previous.blocks() == null || previous.blocks().isEmpty()) {
+            return Set.of();
+        }
+        var positions = new HashSet<Long>();
+        for (var pos : previous.blocks()) {
+            positions.add(pos.asLong());
+        }
+        return positions;
     }
 
     private static void releaseCompiledPatchSources(DynamicExactViewportWindow window, Vector3f focus, int incomingBlocks) {
@@ -1768,7 +2019,7 @@ public class ViewportFactory {
                 currentWorld.removeBlock(pos);
             }
             window.loadedPatches.put(loaded.patch().key,
-                    new LoadedPatch(loaded.patch(), List.of(), loaded.blockCount(), true));
+                    new LoadedPatch(loaded.patch(), List.of(), loaded.blockCount(), true, loaded.complete()));
             window.exactBlocks = Math.max(0, window.exactBlocks - loaded.sourceBlocks());
         }
         if (window.capReached && window.exactBlocks + incomingBlocks <= window.maxExactBlocks) {
@@ -1791,6 +2042,9 @@ public class ViewportFactory {
         LoadedPatch nearest = null;
         double nearestDistance = Double.MAX_VALUE;
         for (var loaded : window.loadedPatches.values()) {
+            if (!loaded.complete()) {
+                continue;
+            }
             if (!loaded.sourceReleased()) {
                 continue;
             }
@@ -1829,7 +2083,7 @@ public class ViewportFactory {
             return;
         }
         window.loadedPatches.put(nearest.patch().key,
-                new LoadedPatch(nearest.patch(), List.copyOf(positions), nearest.blockCount(), false));
+                new LoadedPatch(nearest.patch(), List.copyOf(positions), nearest.blockCount(), false, nearest.complete()));
         window.exactBlocks += positions.size();
     }
 
@@ -1846,16 +2100,21 @@ public class ViewportFactory {
     }
 
     private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch) {
+        return collectExactPatchBlocks(window, patch, false);
+    }
+
+    private static List<ExactBlock> collectExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch,
+                                                            boolean exteriorOnly) {
         if (window.model != null) {
-            return collectModelExactPatchBlocks(window.model, patch);
+            return collectModelExactPatchBlocks(window.model, patch, exteriorOnly);
         }
         if (window.computed != null) {
-            return collectComputedExactPatchBlocks(patch);
+            return collectComputedExactPatchBlocks(window, patch, exteriorOnly);
         }
         return List.of();
     }
 
-    private static List<ExactBlock> collectModelExactPatchBlocks(BuildingModel model, ExactPatch patch) {
+    private static List<ExactBlock> collectModelExactPatchBlocks(BuildingModel model, ExactPatch patch, boolean exteriorOnly) {
         if (patch.regionIndex < 0 || patch.regionIndex >= model.getRegions().size()) return List.of();
         Region region = model.getRegions().get(patch.regionIndex);
         var container = region.getBlocks();
@@ -1875,6 +2134,7 @@ public class ViewportFactory {
                     int wz = lz + region.getOffsetZ();
                     if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                     if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
+                    if (exteriorOnly && !isExteriorModelBlock(model, wx, wy, wz)) continue;
                     blocks.add(new ExactBlock(new BlockPos(wx, wy, wz), state));
                 }
             }
@@ -1882,7 +2142,8 @@ public class ViewportFactory {
         return blocks;
     }
 
-    private static List<ExactBlock> collectComputedExactPatchBlocks(ExactPatch patch) {
+    private static List<ExactBlock> collectComputedExactPatchBlocks(DynamicExactViewportWindow window, ExactPatch patch,
+                                                                    boolean exteriorOnly) {
         if (patch.computedEntries == null || patch.computedEntries.isEmpty()) return List.of();
         var displayFilter = EditorUI.getState().getDisplayFilter();
         var blocks = new ArrayList<ExactBlock>(patch.computedEntries.size());
@@ -1891,9 +2152,79 @@ public class ViewportFactory {
             BlockState state = entry.getState();
             if (state == null || state.isAir()) continue;
             if (!displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) continue;
+            if (exteriorOnly && !isExteriorComputedBlock(window, pos)) continue;
             blocks.add(new ExactBlock(pos.immutable(), state));
         }
         return blocks;
+    }
+
+    private static boolean isExteriorModelBlock(BuildingModel model, int x, int y, int z) {
+        return !hasVisibleModelBlockAt(model, x + 1, y, z)
+                || !hasVisibleModelBlockAt(model, x - 1, y, z)
+                || !hasVisibleModelBlockAt(model, x, y + 1, z)
+                || !hasVisibleModelBlockAt(model, x, y - 1, z)
+                || !hasVisibleModelBlockAt(model, x, y, z + 1)
+                || !hasVisibleModelBlockAt(model, x, y, z - 1);
+    }
+
+    private static boolean hasVisibleModelBlockAt(BuildingModel model, int wx, int wy, int wz) {
+        if (model == null) return false;
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        for (var region : model.getRegions()) {
+            if (!region.containsWorldPos(wx, wy, wz)) {
+                continue;
+            }
+            Object obj = region.getWorldBlock(wx, wy, wz);
+            BlockState state = resolveBlockState(obj);
+            if (state == null || state.isAir()) {
+                continue;
+            }
+            if (!model.isLayerVisibleAt(region, wx, wy, wz)) {
+                continue;
+            }
+            if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isExteriorComputedBlock(DynamicExactViewportWindow window, BlockPos pos) {
+        return !hasVisibleComputedBlockAt(window, pos.getX() + 1, pos.getY(), pos.getZ())
+                || !hasVisibleComputedBlockAt(window, pos.getX() - 1, pos.getY(), pos.getZ())
+                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY() + 1, pos.getZ())
+                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY() - 1, pos.getZ())
+                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY(), pos.getZ() + 1)
+                || !hasVisibleComputedBlockAt(window, pos.getX(), pos.getY(), pos.getZ() - 1);
+    }
+
+    private static boolean hasVisibleComputedBlockAt(DynamicExactViewportWindow window, int x, int y, int z) {
+        if (window == null || window.computed == null) return false;
+        var key = new ExactPatchKey(0, Math.floorDiv(x, 16), Math.floorDiv(y, 16), Math.floorDiv(z, 16));
+        ExactPatch patch = window.patchesByKey.get(key);
+        if (patch == null) {
+            return false;
+        }
+        LongOpenHashSet occupied = window.computedPatchOccupancy.computeIfAbsent(key,
+                ignored -> buildComputedPatchOccupancy(patch));
+        return occupied.contains(new BlockPos(x, y, z).asLong());
+    }
+
+    private static LongOpenHashSet buildComputedPatchOccupancy(ExactPatch patch) {
+        var occupied = new LongOpenHashSet(patch.computedEntries == null ? 0 : patch.computedEntries.size());
+        if (patch.computedEntries == null || patch.computedEntries.isEmpty()) {
+            return occupied;
+        }
+        var displayFilter = EditorUI.getState().getDisplayFilter();
+        for (ViewportEntry entry : patch.computedEntries) {
+            BlockPos pos = entry.getPos();
+            BlockState state = entry.getState();
+            if (state == null || state.isAir()) continue;
+            if (!displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) continue;
+            occupied.add(pos.asLong());
+        }
+        return occupied;
     }
 
     private record ExactBlock(BlockPos pos, BlockState state) {
