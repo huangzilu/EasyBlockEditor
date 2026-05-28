@@ -28,20 +28,11 @@ public final class ProjectionShellMeshBuilder {
             faces.addAll(meshDirection(direction, cells, cellSize));
         }
         faces.sort(Comparator
-                .comparingInt((ProjectionShellMesh.Face face) -> directionRainPriority(face.direction()))
-                .thenComparingInt((ProjectionShellMesh.Face face) -> -Math.max(face.minY(), face.maxY()))
-                .thenComparingInt((ProjectionShellMesh.Face face) -> -Math.min(face.minY(), face.maxY()))
+                .comparing((ProjectionShellMesh.Face face) -> face.direction().ordinal())
+                .thenComparingInt(ProjectionShellMesh.Face::minY)
                 .thenComparingInt(ProjectionShellMesh.Face::minZ)
                 .thenComparingInt(ProjectionShellMesh.Face::minX));
         return new ProjectionShellMesh(cellSize, List.copyOf(faces));
-    }
-
-    private static int directionRainPriority(ProjectionShellMesh.Direction direction) {
-        return switch (direction) {
-            case UP -> 0;
-            case NORTH, SOUTH, WEST, EAST -> 1;
-            case DOWN -> 2;
-        };
     }
 
     private static Map<CellKey, Cell> expandCells(ProjectionLodPyramid.LodLevel level, int cellSize) {

@@ -95,7 +95,6 @@ public class ViewportFactory {
     private static final int PROGRESSIVE_OUTLINE_MOVING_CAP = 320;
     private static final int HUGE_LOD_SAMPLE_CAP = 120_000;
     private static final int EXTREME_LOD_SAMPLE_CAP = 60_000;
-    private static final int LOD_RAIN_COLUMN_SIZE = 8;
     private static final int HUGE_EXACT_VIEWPORT_BLOCK_CAP = 320_000;
     private static final int EXTREME_EXACT_VIEWPORT_BLOCK_CAP = 240_000;
     private static final long EXTERIOR_SHELL_FLOOD_SECTION_LIMIT = 2_000_000L;
@@ -1183,14 +1182,6 @@ public class ViewportFactory {
         var builder = ProjectionSparseStore.builder(Math.min(sampleCap, Math.max(1024,
                 profile == null ? sampleCap : profile.nonAirBlocks() / Math.max(1, sampleStride) + 1)), 0, 0);
         var displayFilter = EditorUI.getState().getDisplayFilter();
-        var usedPositions = new HashSet<Long>(Math.min(sampleCap * 2, 262_144));
-
-        addRainSurfaceLodSamples(builder, usedPositions,
-                collectModelRainSurfaceSamples(model, displayFilter), sampleCap);
-        if (builder.size() >= sampleCap) {
-            return builder.build();
-        }
-
         int visibleNonAir = 0;
         for (var region : model.getRegions()) {
             var container = region.getBlocks();
@@ -1206,7 +1197,7 @@ public class ViewportFactory {
                         if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
                         if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
                         if (visibleNonAir++ % sampleStride == 0) {
-                            addLodSample(builder, usedPositions, new BlockPos(wx, wy, wz), state, sampleCap);
+                            builder.add(new BlockPos(wx, wy, wz), state, null);
                             if (builder.size() >= sampleCap) {
                                 return builder.build();
                             }
@@ -1225,14 +1216,6 @@ public class ViewportFactory {
         var builder = ProjectionSparseStore.builder(Math.min(sampleCap, Math.max(1024,
                 computed.blockCount() / sampleStride + 1)), 0, 0);
         var displayFilter = EditorUI.getState().getDisplayFilter();
-        var usedPositions = new HashSet<Long>(Math.min(sampleCap * 2, 262_144));
-
-        addRainSurfaceLodSamples(builder, usedPositions,
-                collectComputedRainSurfaceSamples(computed, displayFilter), sampleCap);
-        if (builder.size() >= sampleCap) {
-            return builder.build();
-        }
-
         int visibleNonAir = 0;
         if (!computed.getViewportBatches().isEmpty()) {
             for (var batch : computed.getViewportBatches()) {
@@ -1240,7 +1223,7 @@ public class ViewportFactory {
                     var pos = entry.getPos();
                     if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
                         if (visibleNonAir++ % sampleStride == 0) {
-                            addLodSample(builder, usedPositions, pos, entry.getState(), sampleCap);
+                            builder.add(pos, entry.getState(), null);
                             if (builder.size() >= sampleCap) {
                                 return builder.build();
                             }
@@ -1251,7 +1234,7 @@ public class ViewportFactory {
         } else {
             for (var entry : computed.getBlocks()) {
                 if (visibleNonAir++ % sampleStride == 0) {
-                    addLodSample(builder, usedPositions, entry.getPos(), entry.getState(), sampleCap);
+                    builder.add(entry.getPos(), entry.getState(), null);
                     if (builder.size() >= sampleCap) {
                         return builder.build();
                     }
@@ -1259,99 +1242,6 @@ public class ViewportFactory {
             }
         }
         return builder.build();
-    }
-
-    private static List<ExactBlock> collectModelRainSurfaceSamples(BuildingModel model, DisplayFilter displayFilter) {
-        var topByColumn = new LinkedHashMap<Long, ExactBlock>();
-        for (var region : model.getRegions()) {
-            var container = region.getBlocks();
-            for (int y = 0; y < region.getSizeY(); y++) {
-                for (int z = 0; z < region.getSizeZ(); z++) {
-                    for (int x = 0; x < region.getSizeX(); x++) {
-                        Object obj = container.get(x, y, z);
-                        BlockState state = resolveBlockState(obj);
-                        if (state == null || state.isAir()) continue;
-                        int wx = x + region.getOffsetX();
-                        int wy = y + region.getOffsetY();
-                        int wz = z + region.getOffsetZ();
-                        if (!model.isLayerVisibleAt(region, wx, wy, wz)) continue;
-                        if (!displayFilter.shouldDisplay(wx, wy, wz, obj)) continue;
-                        putRainSurfaceSample(topByColumn, new BlockPos(wx, wy, wz), state);
-                    }
-                }
-            }
-        }
-        return orderedRainSurfaceSamples(topByColumn);
-    }
-
-    private static List<ExactBlock> collectComputedRainSurfaceSamples(ComputedProjection computed, DisplayFilter displayFilter) {
-        var topByColumn = new LinkedHashMap<Long, ExactBlock>();
-        if (!computed.getViewportBatches().isEmpty()) {
-            for (var batch : computed.getViewportBatches()) {
-                for (var entry : batch.getEntries()) {
-                    var pos = entry.getPos();
-                    if (displayFilter.shouldDisplay(pos.getX(), pos.getY(), pos.getZ(), entry.getSource())) {
-                        putRainSurfaceSample(topByColumn, pos, entry.getState());
-                    }
-                }
-            }
-        } else {
-            for (var entry : computed.getBlocks()) {
-                putRainSurfaceSample(topByColumn, entry.getPos(), entry.getState());
-            }
-        }
-        return orderedRainSurfaceSamples(topByColumn);
-    }
-
-    private static void putRainSurfaceSample(Map<Long, ExactBlock> topByColumn, BlockPos pos, BlockState state) {
-        if (pos == null || state == null || state.isAir()) {
-            return;
-        }
-        long key = packLodRainColumn(pos.getX(), pos.getZ());
-        ExactBlock previous = topByColumn.get(key);
-        if (previous == null || pos.getY() > previous.pos().getY()) {
-            topByColumn.put(key, new ExactBlock(pos.immutable(), state));
-        }
-    }
-
-    private static long packLodRainColumn(int x, int z) {
-        int columnX = Math.floorDiv(x, LOD_RAIN_COLUMN_SIZE);
-        int columnZ = Math.floorDiv(z, LOD_RAIN_COLUMN_SIZE);
-        return ((long) columnX << 32) ^ (columnZ & 0xFFFFFFFFL);
-    }
-
-    private static List<ExactBlock> orderedRainSurfaceSamples(Map<Long, ExactBlock> topByColumn) {
-        if (topByColumn.isEmpty()) {
-            return List.of();
-        }
-        var samples = new ArrayList<>(topByColumn.values());
-        samples.sort(Comparator
-                .comparingInt((ExactBlock block) -> block.pos().getY()).reversed()
-                .thenComparingLong(block -> (long) block.pos().getX() * block.pos().getX()
-                        + (long) block.pos().getZ() * block.pos().getZ())
-                .thenComparingInt(block -> block.pos().getZ())
-                .thenComparingInt(block -> block.pos().getX()));
-        return samples;
-    }
-
-    private static void addRainSurfaceLodSamples(ProjectionSparseStore.Builder builder, Set<Long> usedPositions,
-                                                 List<ExactBlock> samples, int sampleCap) {
-        for (var sample : samples) {
-            addLodSample(builder, usedPositions, sample.pos(), sample.state(), sampleCap);
-            if (builder.size() >= sampleCap) {
-                return;
-            }
-        }
-    }
-
-    private static void addLodSample(ProjectionSparseStore.Builder builder, Set<Long> usedPositions,
-                                     BlockPos pos, BlockState state, int sampleCap) {
-        if (builder.size() >= sampleCap || pos == null || state == null || state.isAir()) {
-            return;
-        }
-        if (usedPositions.add(pos.asLong())) {
-            builder.add(pos, state, null);
-        }
     }
 
     private static void clearViewportLod() {
@@ -1365,7 +1255,6 @@ public class ViewportFactory {
 
     private static boolean shouldUseDynamicExactViewport(ProjectionLoadProfile profile) {
         return profile != null
-                && !isUnderUserSyncThreshold(profile)
                 && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()
                 && sectionedRenderer != null
                 && !shouldUseIrisOffscreenRenderer();
@@ -1390,7 +1279,6 @@ public class ViewportFactory {
         currentScene.useCacheBuffer(true);
         currentScene.setOnSelected((pos, face) -> handleBlockClick(pos, face));
         if (sectionedRenderer != null) {
-            sectionedRenderer.setTopDownCompilePriority(dynamicExactWindow.shellExactMode);
             sectionedRenderer.finishProgressiveLoad();
             sectionedRenderer.rebuildTileEntities();
         }
@@ -3720,7 +3608,6 @@ public class ViewportFactory {
 
     private static void configureSectionedRenderer(SectionedWorldSceneRenderer renderer) {
         renderer.useCacheBuffer(true);
-        renderer.setTopDownCompilePriority(dynamicExactWindow != null && dynamicExactWindow.shellExactMode);
         renderer.useOrtho(currentScene.isUseOrtho());
         renderer.setOnLookingAt(ray -> {});
         renderer.setAfterWorldRender(currentScene::renderBlockOverLay);
