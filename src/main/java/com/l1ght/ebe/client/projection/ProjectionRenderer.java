@@ -54,6 +54,9 @@ public class ProjectionRenderer {
     private static final int SECTION_SIZE = 16;
     private static final int SECTION_MESH_BUILDS_PER_FRAME = 3;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
+    private static final int MEGA_EXACT_SECTION_CAP = 192;
+    private static final int MEGA_SECTION_MESH_BUILDS_PER_FRAME = 1;
+    private static final int MEGA_IMMEDIATE_FALLBACK_BLOCKS = 512;
     private static final float PROJECTION_FOG_START = 1_000_000.0F;
     private static final float PROJECTION_FOG_END = 1_000_001.0F;
     private static final Map<RenderType, RenderType> TRANSLUCENT_ENTITY_TYPES = new HashMap<>();
@@ -87,11 +90,8 @@ public class ProjectionRenderer {
         List<ProjectionData.ProjectionBlock> blocks = projection.getBlocks();
         boolean hasEntities = projection.getModel() != null && !projection.getModel().getEntities().isEmpty();
         if (blocks.isEmpty() && !hasEntities) return;
-        if (MegaProjectionRenderer.shouldUse(projection)
-                && MegaProjectionRenderer.renderProjection(poseStack, projectionMatrix, frustum, projection)) {
-            renderProjectionEntitiesStandalone(poseStack, projection, opacity);
-            return;
-        }
+        boolean megaShellRendered = MegaProjectionRenderer.shouldUse(projection)
+                && MegaProjectionRenderer.renderProjection(poseStack, projectionMatrix, frustum, projection);
         ProjectionRenderCache renderCache = getRenderCache(projection);
 
         var camera = mc.gameRenderer.getMainCamera();
@@ -128,8 +128,13 @@ public class ProjectionRenderer {
             visibleSections.add(section);
         }
         visibleSections.sort(java.util.Comparator.comparingDouble(section -> section.bounds().distanceToSqr(camPos)));
+        if (megaShellRendered && visibleSections.size() > MEGA_EXACT_SECTION_CAP) {
+            visibleSections = new java.util.ArrayList<>(visibleSections.subList(0, MEGA_EXACT_SECTION_CAP));
+        }
 
-        buildVisibleSectionMeshes(visibleSections, meshCache, projectionView, brd, randomSource, opacity);
+        int sectionBuildsPerFrame = megaShellRendered ? MEGA_SECTION_MESH_BUILDS_PER_FRAME : SECTION_MESH_BUILDS_PER_FRAME;
+        int immediateFallbackLimit = megaShellRendered ? MEGA_IMMEDIATE_FALLBACK_BLOCKS : MAX_IMMEDIATE_FALLBACK_BLOCKS;
+        buildVisibleSectionMeshes(visibleSections, meshCache, projectionView, brd, randomSource, opacity, sectionBuildsPerFrame);
         drawCompiledSectionMeshes(visibleSections, meshCache, poseStack, projection.getOrigin());
 
         RenderType projectionLayer = RenderType.translucent();
@@ -140,7 +145,7 @@ public class ProjectionRenderer {
             SectionMesh sectionMesh = meshCache.meshes().get(section.key());
             boolean renderImmediateBlocks = sectionMesh == null || !sectionMesh.compiled() || sectionMesh.failed();
             boolean waitingForCompile = sectionMesh == null || !sectionMesh.compiled();
-            if (waitingForCompile && immediateFallbackBlocks >= MAX_IMMEDIATE_FALLBACK_BLOCKS) {
+            if (waitingForCompile && immediateFallbackBlocks >= immediateFallbackLimit) {
                 continue;
             }
             for (var pb : section.blocks()) {
@@ -156,7 +161,7 @@ public class ProjectionRenderer {
                     if (!renderImmediateBlocks) {
                         continue;
                     }
-                    if (waitingForCompile && immediateFallbackBlocks >= MAX_IMMEDIATE_FALLBACK_BLOCKS) {
+                    if (waitingForCompile && immediateFallbackBlocks >= immediateFallbackLimit) {
                         break;
                     }
                     if (waitingForCompile) {
@@ -190,30 +195,6 @@ public class ProjectionRenderer {
         RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
         RenderSystem.polygonOffset(0f, 0f);
         RenderSystem.disablePolygonOffset();
-        RenderSystem.depthMask(true);
-        RenderSystem.disableBlend();
-    }
-
-    private static void renderProjectionEntitiesStandalone(PoseStack poseStack, ProjectionData projection, float opacity) {
-        var mc = Minecraft.getInstance();
-        if (mc.level == null) return;
-        var camera = mc.gameRenderer.getMainCamera();
-        Vec3 camPos = camera.getPosition();
-        var bufferSource = mc.renderBuffers().bufferSource();
-
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.enableDepthTest();
-        RenderSystem.depthMask(false);
-        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, opacity);
-
-        poseStack.pushPose();
-        poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
-        renderProjectionEntities(projection, poseStack, bufferSource);
-        poseStack.popPose();
-        bufferSource.endBatch();
-
-        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
         RenderSystem.depthMask(true);
         RenderSystem.disableBlend();
     }
@@ -326,11 +307,12 @@ public class ProjectionRenderer {
             BlockAndTintGetter projectionView,
             BlockRenderDispatcher brd,
             RandomSource randomSource,
-            float opacity
+            float opacity,
+            int maxBuilds
     ) {
         int builds = 0;
         for (var section : visibleSections) {
-            if (builds >= SECTION_MESH_BUILDS_PER_FRAME) {
+            if (builds >= maxBuilds) {
                 return;
             }
             SectionMesh mesh = meshCache.meshes().get(section.key());
