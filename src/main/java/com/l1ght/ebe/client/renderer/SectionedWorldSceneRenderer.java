@@ -1030,8 +1030,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         boolean cameraMoving = updateCameraMoving(eyePos);
         boolean sortVisibleSections = !cameraMoving || "quality".equals(performanceMode());
         List<SectionPos> allVisibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
-        List<SectionPos> visibleSections = limitExactSectionsForFrame(allVisibleSections, cameraMoving, eyePos);
-        List<ClusterPos> visibleClusters = collectDrawableClusters(allVisibleSections, focusPos, eyePos, sortVisibleSections, cameraMoving);
+        List<SectionPos> visibleSections = allVisibleSections;
+        List<ClusterPos> visibleClusters = collectDrawableClusters(allVisibleSections, focusPos, eyePos, sortVisibleSections);
         clusterCoveredSectionsThisFrame = collectClusterCoveredSections(visibleClusters);
         exactSectionsThisFrame = visibleSections.isEmpty() && clusterCoveredSectionsThisFrame.isEmpty()
                 ? Set.of()
@@ -1639,7 +1639,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     }
 
     private List<ClusterPos> collectDrawableClusters(List<SectionPos> visibleSections, Vector3f focusPos,
-                                                     Vector3f eyePos, boolean sort, boolean cameraMoving) {
+                                                     Vector3f eyePos, boolean sort) {
         if (visibleSections.isEmpty() || clusters.isEmpty()) {
             return List.of();
         }
@@ -1661,33 +1661,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         if (sort) {
             drawable.sort(Comparator.comparingDouble(cp -> distanceToClusterSqr(cp, eyePos)));
         }
-        int limit = clusterDrawLimit(cameraMoving, drawable.size());
-        if (limit > 0 && drawable.size() > limit) {
-            if (!sort) {
-                drawable.sort(Comparator.comparingDouble(cp -> distanceToClusterSqr(cp, eyePos)));
-            }
-            return drawable.subList(0, limit);
-        }
         return drawable;
-    }
-
-    private int clusterDrawLimit(boolean cameraMoving, int visibleClusterCount) {
-        if (visibleClusterCount <= 96) {
-            return visibleClusterCount;
-        }
-        String mode = performanceMode();
-        int base;
-        if (cameraMoving) {
-            if ("quality".equals(mode)) base = 192;
-            else if ("performance".equals(mode)) base = 40;
-            else base = 80;
-        } else {
-            if ("quality".equals(mode)) base = 512;
-            else if ("performance".equals(mode)) base = 96;
-            else base = 192;
-        }
-        int min = cameraMoving ? 24 : 48;
-        return Math.max(min, (base * adaptiveDrawScale) / ADAPTIVE_SCALE_MAX);
     }
 
     private boolean meshBucketHasRenderableLayer(MeshBucket data) {
@@ -1920,17 +1894,6 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             visible.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
         }
         return visible;
-    }
-
-    private List<SectionPos> limitExactSectionsForFrame(List<SectionPos> visibleSections, boolean cameraMoving, Vector3f eyePos) {
-        int limit = exactSectionDrawLimit(cameraMoving, visibleSections.size());
-        if (limit <= 0 || visibleSections.size() <= limit) {
-            return visibleSections;
-        }
-
-        var limited = new ArrayList<>(visibleSections);
-        limited.sort(Comparator.comparingDouble(sp -> distanceToSectionSqr(sp, eyePos)));
-        return limited.subList(0, limit);
     }
 
     private int exactSectionDrawLimit(boolean cameraMoving, int visibleSectionCount) {
