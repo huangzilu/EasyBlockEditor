@@ -97,10 +97,10 @@ public class EBEClientConfig {
                 .defineInRange("moving_load_budget_ms", 0.75, 0.0, 20.0);
         viewportSynchronousLoadBelowMb = builder
                 .comment("Use synchronous viewport loading for projection files at or below this size in MB. 0 = always use synchronous loading.")
-                .defineInRange("sync_load_below_mb", 0.5, 0.0, 1024.0);
+                .defineInRange("sync_load_below_mb", 1.0, 0.0, 1024.0);
         viewportMegaExactBlockCap = builder
-                .comment("Maximum exact blocks loaded into the 3D viewport for huge projections. 0 = automatic. Lower values improve FPS and memory use; higher values preserve more detail.")
-                .defineInRange("mega_exact_block_cap", 0, 0, 1_000_000);
+                .comment("Maximum exact blocks loaded into the 3D viewport for huge projections. 0 = no limit. Lower values improve FPS and memory use; higher values preserve more detail.")
+                .defineInRange("mega_exact_block_cap", 0, 0, 100_000_000);
         viewportLoadBlocksPerFrame = builder
                 .comment("Maximum blocks inserted into the editor viewport per frame")
                 .defineInRange("load_blocks_per_frame", 2048, 128, 16384);

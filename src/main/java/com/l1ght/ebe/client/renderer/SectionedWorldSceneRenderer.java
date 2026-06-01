@@ -11,6 +11,10 @@ import com.lowdragmc.lowdraglib2.client.scene.ImmediateWorldSceneRenderer;
 import com.lowdragmc.lowdraglib2.client.scene.WorldSceneRenderer;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import com.l1ght.ebe.data.BuildingModel;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import net.minecraft.client.Minecraft;
@@ -24,6 +28,7 @@ import net.minecraft.client.renderer.block.BlockRenderDispatcher;
 import net.minecraft.client.renderer.block.ModelBlockRenderer;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
@@ -41,7 +46,9 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -131,6 +138,29 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private int adaptiveRecoveryFrames;
     private Set<SectionPos> clusterCoveredSectionsThisFrame = Set.of();
 
+    // === MDI: Model-Direct Rendering for large projections ===
+    private static final int MDI_BLOCK_THRESHOLD = 8192;
+    private static final long MDI_COMPILE_BUDGET_NANOS = 12_000_000L;
+    private static final int MDI_MAX_COMPILED_BLOCKS = 2_000_000; // Cap to keep GPU happy
+    private static final int MDI_THREAD_COUNT = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
+    private static final ExecutorService MDI_EXECUTOR = Executors.newFixedThreadPool(MDI_THREAD_COUNT, r -> {
+        Thread t = new Thread(r, "EBE-MDI-Compile");
+        t.setDaemon(true);
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        return t;
+    });
+    private BuildingModel mdiModel;
+    private VertexBuffer[] mdiVBOs;
+    private boolean[] mdiHasData;
+    private boolean mdiCompiling;
+    private boolean mdiComplete;
+    private Future<MdiCompileResult> mdiCompileFuture;
+    private int mdiCompiledBlocks;
+    private List<Map.Entry<SectionPos, LongArrayList>> mdiSnapshot;
+    private static final Map<String, BlockState> mdiBlockStateCache = new HashMap<>(4096);
+    // O(1) dedup for addBlockToSection
+    private final Map<SectionPos, LongOpenHashSet> sectionBlockSets = new LinkedHashMap<>();
+
     public record SectionPos(int x, int y, int z) {
         public static SectionPos fromBlock(BlockPos pos) {
             return new SectionPos(
@@ -203,6 +233,12 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         compiling.set(false);
         needsFullRebuild = true;
         return this;
+    }
+
+    public void setModel(BuildingModel model) {
+        this.mdiModel = model;
+        this.mdiComplete = false;
+        this.mdiCompiling = false;
     }
 
     public void markSectionDirty(BlockPos pos) {
@@ -403,6 +439,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         sections.clear();
         clusters.clear();
         sectionBlocks.clear();
+        sectionBlockSets.clear();
+        mdiClose();
         dirtySections.clear();
         dirtyClusters.clear();
         tileEntities.clear();
@@ -452,6 +490,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     @Override
     public WorldSceneRenderer removeAllRenderedBlocks() {
         sectionBlocks.clear();
+        sectionBlockSets.clear();
+        mdiClose();
         dirtySections.clear();
         dirtyClusters.clear();
         tileEntities.clear();
@@ -474,6 +514,7 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
 
     private void rebuildSectionBlocks() {
         sectionBlocks.clear();
+        sectionBlockSets.clear();
         for (var entry : renderedBlocksMap.entrySet()) {
             for (var pos : entry.getKey()) {
                 var sp = SectionPos.fromBlock(pos);
@@ -532,7 +573,8 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
     private void addBlockToSection(SectionPos sp, BlockPos pos) {
         var blocks = sectionBlocks.computeIfAbsent(sp, ignored -> newSectionBlockList());
         long packed = pos.asLong();
-        if (blocks.isEmpty() || !blocks.contains(packed)) {
+        var set = sectionBlockSets.computeIfAbsent(sp, ignored -> new LongOpenHashSet());
+        if (set.add(packed)) {
             blocks.add(packed);
         }
     }
@@ -1028,6 +1070,17 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
         var eyePos = safeEyePos();
         var focusPos = safeFocusPos();
         boolean cameraMoving = updateCameraMoving(eyePos);
+
+        // MDI: compile in background, only take over rendering when VBO is ready.
+        if (mdiModel != null) {
+            mdiCompileTick();
+        }
+        if (mdiModel != null && mdiComplete && mdiHasData != null) {
+            drawWorldMDI(mc, buffers, eyePos, cameraMoving, particleTicks,
+                    entityHook, beforeBE, afterWR, endBatchLastVal, frameStarted);
+            return;
+        }
+
         boolean sortVisibleSections = !cameraMoving || "quality".equals(performanceMode());
         List<SectionPos> allVisibleSections = collectVisibleSections(focusPos, eyePos, sortVisibleSections);
         List<SectionPos> visibleSections = allVisibleSections;
@@ -2194,5 +2247,517 @@ public class SectionedWorldSceneRenderer extends ImmediateWorldSceneRenderer {
             }
             poseStack.popPose();
         }
+    }
+
+    // ======================== MDI Methods ========================
+
+    private void drawWorldMDI(Minecraft mc, MultiBufferSource.BufferSource buffers,
+                              Vector3f eyePos, boolean cameraMoving, float particleTicks,
+                              ISceneEntityRenderHook entityHook,
+                              BiConsumer<MultiBufferSource, Float> beforeBE,
+                              Consumer<WorldSceneRenderer> afterWR, boolean endBatchLastVal,
+                              long frameStarted) {
+        renderViewportLod(eyePos, cameraMoving);
+        mdiCompileTick();
+
+        PoseStack poseStack = new PoseStack();
+
+        // TESR
+        setDefaultRenderLayerState(null);
+        renderTESRInternal(tileEntities, poseStack, buffers, particleTicks);
+        if (!endBatchLastVal) buffers.endBatch();
+
+        if (particleManager != null) {
+            poseStack.pushPose();
+            poseStack.setIdentity();
+            poseStack.translate(cameraEntity.getX(), cameraEntity.getY(), cameraEntity.getZ());
+            particleManager.render(poseStack, camera, particleTicks, type -> !type.isTranslucent());
+            poseStack.popPose();
+        }
+
+        // Draw merged VBOs (multiple per layer due to multi-threading)
+        if (mdiHasData != null) {
+            for (int i = 0; i < LAYERS.size(); i++) {
+                RenderType layer = LAYERS.get(i);
+                boolean layerSetup = false;
+                for (int t = 0; t < MDI_THREAD_COUNT; t++) {
+                    int idx = i * MDI_THREAD_COUNT + t;
+                    if (idx >= mdiHasData.length || !mdiHasData[idx]) continue;
+                    var vb = mdiVBOs[idx];
+                    if (vb == null || vb.isInvalid() || vb.getFormat() == null) continue;
+                    if (!layerSetup) {
+                        setDefaultRenderLayerState(layer);
+                        layer.setupRenderState();
+                        setupVBODrawState();
+                        layerSetup = true;
+                    }
+                    vb.bind();
+                    vb.draw();
+                }
+                if (layerSetup) {
+                    ShaderInstance shader = RenderSystem.getShader();
+                    if (shader != null) shader.clear();
+                    VertexBuffer.unbind();
+                    if (!endBatchLastVal) buffers.endBatch();
+                    layer.clearRenderState();
+                }
+            }
+        }
+
+        // Entities
+        if (world instanceof TrackedDummyWorld level) {
+            renderEntitiesInternal(level, poseStack, buffers, entityHook, particleTicks);
+        }
+        if (beforeBE != null) beforeBE.accept(buffers, particleTicks);
+        buffers.endBatch();
+
+        if (particleManager != null) {
+            poseStack.pushPose();
+            poseStack.setIdentity();
+            poseStack.translate(cameraEntity.getX(), cameraEntity.getY(), cameraEntity.getZ());
+            particleManager.render(poseStack, camera, particleTicks, ParticleRenderType::isTranslucent);
+            poseStack.popPose();
+        }
+
+        if (afterWR != null) afterWR.accept(this);
+        recordViewportFrameCost(System.nanoTime() - frameStarted, mdiCompiledBlocks);
+        exactSectionsThisFrame = Set.of();
+        clusterCoveredSectionsThisFrame = Set.of();
+    }
+
+    private record MdiCompileResult(MeshData[][] meshes, int blockCount) {}
+
+    private void mdiCompileTick() {
+        if (mdiModel == null) return;
+
+        // Check if background compile finished
+        if (mdiCompileFuture != null && mdiCompileFuture.isDone()) {
+            try {
+                var result = mdiCompileFuture.get();
+                mdiUploadResult(result);
+                mdiCompiledBlocks = result.blockCount();
+                LOG.info("[MDI] FINISH compile: {} blocks compiled", mdiCompiledBlocks);
+            } catch (Exception e) {
+                LOG.warn("[MDI] compile failed", e);
+            }
+            mdiCompileFuture = null;
+            mdiCompiling = false;
+            mdiComplete = true;
+            return;
+        }
+
+        // Don't start new compile while one is running
+        if (mdiCompiling) return;
+
+        // First compile: start immediately (scan model directly, don't wait for sectionBlocks)
+        if (!mdiComplete) {
+            mdiCompiling = true;
+            var model = mdiModel;
+            LOG.info("[MDI] START full model compile: threads={}", MDI_THREAD_COUNT);
+            mdiCompileFuture = MDI_EXECUTOR.submit(() -> mdiCompileFromModel(model));
+            return;
+        }
+
+        // Subsequent recompiles: only if sectionBlocks grew significantly
+        int totalBlocks = 0;
+        for (var bl : sectionBlocks.values()) totalBlocks += bl.size();
+        int diff = totalBlocks - mdiCompiledBlocks;
+        if (diff < 50000 && totalBlocks < mdiCompiledBlocks * 2) return;
+
+        mdiCompiling = true;
+        var snapshot = new ArrayList<>(sectionBlocks.entrySet());
+        var model = mdiModel;
+        int snapshotBlocks = 0;
+        for (var e : snapshot) snapshotBlocks += e.getValue().size();
+        LOG.info("[MDI] START incremental compile: sections={} blocks={} threads={}",
+                snapshot.size(), snapshotBlocks, MDI_THREAD_COUNT);
+        mdiCompileFuture = MDI_EXECUTOR.submit(() -> mdiCompileAll(snapshot, model));
+    }
+
+    /** Scan model directly for all non-air blocks and compile them. Bypasses sectionBlocks entirely. */
+    private MdiCompileResult mdiCompileFromModel(BuildingModel model) {
+        // Phase 1: scan all non-air block positions (fast, no rendering)
+        var regions = model.getRegions();
+        var allPositions = new ArrayList<long[]>(MDI_THREAD_COUNT);
+        for (int i = 0; i < MDI_THREAD_COUNT; i++) allPositions.add(null);
+
+        // Count total volume for splitting
+        long totalVolume = 0;
+        for (var region : regions) {
+            totalVolume += (long) region.getSizeX() * region.getSizeY() * region.getSizeZ();
+        }
+
+        // Scan in parallel - each thread scans a portion of the volume
+        long volumePerThread = (totalVolume + MDI_THREAD_COUNT - 1) / MDI_THREAD_COUNT;
+        var scanFutures = new ArrayList<Future<long[]>>(MDI_THREAD_COUNT);
+
+        long volumeOffset = 0;
+        for (int t = 0; t < MDI_THREAD_COUNT; t++) {
+            long scanStart = volumeOffset;
+            long scanEnd = Math.min(volumeOffset + volumePerThread, totalVolume);
+            volumeOffset = scanEnd;
+            scanFutures.add(MDI_EXECUTOR.submit(() -> mdiScanModelRange(model, scanStart, scanEnd)));
+        }
+
+        var blockLists = new ArrayList<long[]>(MDI_THREAD_COUNT);
+        for (var f : scanFutures) {
+            try { blockLists.add(f.get()); }
+            catch (Exception e) { LOG.warn("[MDI] scan error", e); }
+        }
+
+        int totalBlocks = 0;
+        for (var arr : blockLists) if (arr != null) totalBlocks += arr.length;
+        LOG.info("[MDI] Scan complete: {} non-air blocks found", totalBlocks);
+
+        // Phase 2: compile in parallel
+        var compileFutures = new ArrayList<Future<MdiThreadResult>>(MDI_THREAD_COUNT);
+        for (var positions : blockLists) {
+            if (positions == null || positions.length == 0) continue;
+            final long[] pos = positions;
+            compileFutures.add(MDI_EXECUTOR.submit(() -> mdiCompilePositions(model, pos)));
+        }
+
+        var threadResults = new ArrayList<MdiThreadResult>();
+        for (var f : compileFutures) {
+            try { threadResults.add(f.get()); }
+            catch (Exception e) { LOG.warn("[MDI] compile thread error", e); }
+        }
+
+        MeshData[][] allMeshes = new MeshData[LAYERS.size()][threadResults.size()];
+        int compiledCount = 0;
+        for (int t = 0; t < threadResults.size(); t++) {
+            var tr = threadResults.get(t);
+            compiledCount += tr.blockCount;
+            for (int i = 0; i < LAYERS.size(); i++) {
+                allMeshes[i][t] = tr.meshData[i];
+            }
+        }
+        return new MdiCompileResult(allMeshes, compiledCount);
+    }
+
+    /** Scan a range of the model volume and return packed positions of non-air blocks. */
+    private long[] mdiScanModelRange(BuildingModel model, long startVolume, long endVolume) {
+        var regions = model.getRegions();
+        var result = new it.unimi.dsi.fastutil.longs.LongArrayList(8192);
+        long volumeOffset = 0;
+
+        for (var region : regions) {
+            int sx = region.getSizeX(), sy = region.getSizeY(), sz = region.getSizeZ();
+            long regionVolume = (long) sx * sy * sz;
+            long regionEnd = volumeOffset + regionVolume;
+
+            if (regionEnd <= startVolume) { volumeOffset = regionEnd; continue; }
+            if (volumeOffset >= endVolume) break;
+
+            int offX = region.getOffsetX(), offY = region.getOffsetY(), offZ = region.getOffsetZ();
+            var blocks = region.getBlocks();
+
+            long localStart = Math.max(0, startVolume - volumeOffset);
+            long localEnd = Math.min(regionVolume, endVolume - volumeOffset);
+
+            for (long idx = localStart; idx < localEnd; idx++) {
+                int z = (int) (idx % sz);
+                int y = (int) ((idx / sz) % sy);
+                int x = (int) (idx / sz / sy);
+                Object obj = blocks.get(x, y, z);
+                if (obj == null) continue;
+                if (obj instanceof String s && (s.isEmpty() || s.equals("minecraft:air") || s.equals("air"))) continue;
+                result.add(BlockPos.asLong(x + offX, y + offY, z + offZ));
+            }
+            volumeOffset = regionEnd;
+        }
+        return result.toLongArray();
+    }
+
+    /** Compile a list of block positions into mesh data. */
+    private MdiThreadResult mdiCompilePositions(BuildingModel model, long[] positions) {
+        var mc = Minecraft.getInstance();
+        var brd = mc.getBlockRenderer();
+        var randomSource = RandomSource.createNewThreadLocalInstance();
+        ByteBufferBuilder[] byteBuilders = new ByteBufferBuilder[LAYERS.size()];
+        BufferBuilder[] builders = new BufferBuilder[LAYERS.size()];
+        PoseStack poseStack = new PoseStack();
+        int compiled = 0;
+
+        for (long packed : positions) {
+            var pos = BlockPos.of(packed);
+            Object obj = model.getBlockAt(pos.getX(), pos.getY(), pos.getZ());
+            BlockState state = mdiResolveBlockState(obj);
+            if (state == null || state.isAir()) continue;
+            if (state.getRenderShape() == INVISIBLE) continue;
+
+            compiled++;
+            var bakedModel = brd.getBlockModel(state);
+            long seed = state.getSeed(pos);
+            randomSource.setSeed(seed);
+            var renderTypes = bakedModel.getRenderTypes(state, randomSource, ModelData.EMPTY);
+
+            boolean[] faceVisible = new boolean[6];
+            for (var dir : Direction.values()) {
+                BlockPos neighbor = pos.relative(dir);
+                Object nObj = model.getBlockAt(neighbor.getX(), neighbor.getY(), neighbor.getZ());
+                BlockState nState = mdiResolveBlockState(nObj);
+                faceVisible[dir.ordinal()] = (nState == null || nState.isAir() || !nState.canOcclude());
+            }
+
+            for (int i = 0; i < LAYERS.size(); i++) {
+                RenderType layer = LAYERS.get(i);
+                if (!renderTypes.contains(layer)) continue;
+                if (builders[i] == null) {
+                    byteBuilders[i] = new ByteBufferBuilder(layer.bufferSize() * 8);
+                    builders[i] = new BufferBuilder(byteBuilders[i], VertexFormat.Mode.QUADS, DefaultVertexFormat.BLOCK);
+                }
+                poseStack.pushPose();
+                poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
+                var pose = poseStack.last();
+                randomSource.setSeed(seed);
+                for (var quad : bakedModel.getQuads(state, null, randomSource, ModelData.EMPTY, layer)) {
+                    builders[i].putBulkData(pose, quad, 1f, 1f, 1f, 1f, 15728880, OverlayTexture.NO_OVERLAY);
+                }
+                for (var dir : Direction.values()) {
+                    if (!faceVisible[dir.ordinal()]) continue;
+                    randomSource.setSeed(seed);
+                    for (var quad : bakedModel.getQuads(state, dir, randomSource, ModelData.EMPTY, layer)) {
+                        builders[i].putBulkData(pose, quad, 1f, 1f, 1f, 1f, 15728880, OverlayTexture.NO_OVERLAY);
+                    }
+                }
+                poseStack.popPose();
+            }
+        }
+
+        MeshData[] meshes = new MeshData[LAYERS.size()];
+        for (int i = 0; i < LAYERS.size(); i++) {
+            if (builders[i] != null) meshes[i] = builders[i].build();
+        }
+        return new MdiThreadResult(meshes, compiled);
+    }
+
+    private MdiCompileResult mdiCompileAll(List<Map.Entry<SectionPos, LongArrayList>> snapshot, BuildingModel model) {
+        int totalBlocks = 0;
+        for (var e : snapshot) totalBlocks += e.getValue().size();
+
+        int blocksPerThread = (totalBlocks + MDI_THREAD_COUNT - 1) / MDI_THREAD_COUNT;
+        var futures = new ArrayList<Future<MdiThreadResult>>(MDI_THREAD_COUNT);
+
+        int offset = 0;
+        for (int t = 0; t < MDI_THREAD_COUNT; t++) {
+            int start = offset;
+            int end = Math.min(offset + blocksPerThread, totalBlocks);
+            offset = end;
+            final int threadStart = start;
+            final int threadEnd = end;
+            futures.add(MDI_EXECUTOR.submit(() -> mdiCompileRange(snapshot, model, threadStart, threadEnd)));
+        }
+
+        var threadResults = new ArrayList<MdiThreadResult>(MDI_THREAD_COUNT);
+        for (var f : futures) {
+            try {
+                threadResults.add(f.get());
+            } catch (Exception e) {
+                LOG.warn("[MDI] thread compile error", e);
+            }
+        }
+
+        // Collect all MeshData per layer per thread
+        MeshData[][] allMeshes = new MeshData[LAYERS.size()][threadResults.size()];
+        int compiledCount = 0;
+        for (int t = 0; t < threadResults.size(); t++) {
+            var tr = threadResults.get(t);
+            compiledCount += tr.blockCount;
+            for (int i = 0; i < LAYERS.size(); i++) {
+                allMeshes[i][t] = tr.meshData[i];
+            }
+        }
+
+        return new MdiCompileResult(allMeshes, compiledCount);
+    }
+
+    private record MdiThreadResult(MeshData[] meshData, int blockCount) {}
+
+    private MdiThreadResult mdiCompileRange(List<Map.Entry<SectionPos, LongArrayList>> snapshot, BuildingModel model, int startBlock, int endBlock) {
+        var mc = Minecraft.getInstance();
+        var brd = mc.getBlockRenderer();
+        var randomSource = RandomSource.createNewThreadLocalInstance();
+        ByteBufferBuilder[] byteBuilders = new ByteBufferBuilder[LAYERS.size()];
+        BufferBuilder[] builders = new BufferBuilder[LAYERS.size()];
+        PoseStack poseStack = new PoseStack();
+        int compiled = 0;
+
+        int blockIdx = 0;
+        int sectionIdx = 0;
+        int localIdx = 0;
+        for (sectionIdx = 0; sectionIdx < snapshot.size(); sectionIdx++) {
+            int sectionSize = snapshot.get(sectionIdx).getValue().size();
+            if (blockIdx + sectionSize > startBlock) {
+                localIdx = startBlock - blockIdx;
+                break;
+            }
+            blockIdx += sectionSize;
+        }
+
+        int processed = startBlock;
+        while (processed < endBlock && sectionIdx < snapshot.size()) {
+            var blocks = snapshot.get(sectionIdx).getValue();
+            while (localIdx < blocks.size() && processed < endBlock) {
+                long packed = blocks.getLong(localIdx);
+                localIdx++;
+                processed++;
+
+                var pos = BlockPos.of(packed);
+                Object obj = model.getBlockAt(pos.getX(), pos.getY(), pos.getZ());
+                BlockState state = mdiResolveBlockState(obj);
+                if (state == null || state.isAir()) continue;
+                if (state.getRenderShape() == INVISIBLE) continue;
+
+                compiled++;
+                var bakedModel = brd.getBlockModel(state);
+                long seed = state.getSeed(pos);
+                randomSource.setSeed(seed);
+                var renderTypes = bakedModel.getRenderTypes(state, randomSource, ModelData.EMPTY);
+
+                boolean[] faceVisible = new boolean[6];
+                for (var dir : Direction.values()) {
+                    BlockPos neighbor = pos.relative(dir);
+                    Object nObj = model.getBlockAt(neighbor.getX(), neighbor.getY(), neighbor.getZ());
+                    BlockState nState = mdiResolveBlockState(nObj);
+                    faceVisible[dir.ordinal()] = (nState == null || nState.isAir() || !nState.canOcclude());
+                }
+
+                for (int i = 0; i < LAYERS.size(); i++) {
+                    RenderType layer = LAYERS.get(i);
+                    if (!renderTypes.contains(layer)) continue;
+                    if (builders[i] == null) {
+                        byteBuilders[i] = new ByteBufferBuilder(layer.bufferSize() * 8);
+                        builders[i] = new BufferBuilder(byteBuilders[i], VertexFormat.Mode.QUADS, DefaultVertexFormat.BLOCK);
+                    }
+
+                    poseStack.pushPose();
+                    poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
+                    var pose = poseStack.last();
+
+                    randomSource.setSeed(seed);
+                    for (var quad : bakedModel.getQuads(state, null, randomSource, ModelData.EMPTY, layer)) {
+                        builders[i].putBulkData(pose, quad, 1f, 1f, 1f, 1f, 15728880, OverlayTexture.NO_OVERLAY);
+                    }
+                    for (var dir : Direction.values()) {
+                        if (!faceVisible[dir.ordinal()]) continue;
+                        randomSource.setSeed(seed);
+                        for (var quad : bakedModel.getQuads(state, dir, randomSource, ModelData.EMPTY, layer)) {
+                            builders[i].putBulkData(pose, quad, 1f, 1f, 1f, 1f, 15728880, OverlayTexture.NO_OVERLAY);
+                        }
+                    }
+                    poseStack.popPose();
+                }
+            }
+            localIdx = 0;
+            sectionIdx++;
+        }
+
+        MeshData[] meshes = new MeshData[LAYERS.size()];
+        for (int i = 0; i < LAYERS.size(); i++) {
+            if (builders[i] != null) {
+                meshes[i] = builders[i].build();
+            }
+        }
+        return new MdiThreadResult(meshes, compiled);
+    }
+
+    private void mdiUploadResult(MdiCompileResult result) {
+        // Each layer gets multiple VBOs (one per thread that produced data)
+        int vboCount = LAYERS.size() * MDI_THREAD_COUNT;
+        if (mdiVBOs == null || mdiVBOs.length != vboCount) {
+            if (mdiVBOs != null) for (var vb : mdiVBOs) { if (vb != null) vb.close(); }
+            mdiVBOs = new VertexBuffer[vboCount];
+            mdiHasData = new boolean[vboCount];
+            for (int i = 0; i < vboCount; i++) {
+                mdiVBOs[i] = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            }
+        }
+        Arrays.fill(mdiHasData, false);
+
+        for (int layer = 0; layer < LAYERS.size(); layer++) {
+            for (int t = 0; t < result.meshes()[layer].length; t++) {
+                var mesh = result.meshes()[layer][t];
+                if (mesh == null) continue;
+                int idx = layer * MDI_THREAD_COUNT + t;
+                try {
+                    mdiHasData[idx] = true;
+                    mdiVBOs[idx].bind();
+                    mdiVBOs[idx].upload(mesh);
+                    VertexBuffer.unbind();
+                } catch (Exception e) {
+                    LOG.warn("[MDI] upload error layer={} thread={}", layer, t, e);
+                }
+            }
+        }
+    }
+    // MDI_PLACEHOLDER_4
+
+    private void mdiClose() {
+        if (mdiVBOs != null) {
+            for (var vb : mdiVBOs) { if (vb != null) vb.close(); }
+            mdiVBOs = null;
+            mdiHasData = null;
+        }
+        mdiCompiling = false;
+        mdiComplete = false;
+        mdiModel = null;
+        mdiCompiledBlocks = 0;
+        if (mdiCompileFuture != null) {
+            mdiCompileFuture.cancel(true);
+            mdiCompileFuture = null;
+        }
+    }
+
+    private static BlockState mdiResolveBlockState(Object obj) {
+        if (obj instanceof BlockState bs) return bs;
+        if (obj instanceof String s) {
+            if (s.isEmpty() || s.equals("minecraft:air") || s.equals("air")) return null;
+            BlockState cached = mdiBlockStateCache.get(s);
+            if (cached != null) return cached;
+            try {
+                String idStr = s;
+                String propsStr = null;
+                int bracketIdx = s.indexOf('[');
+                if (bracketIdx >= 0) {
+                    idStr = s.substring(0, bracketIdx);
+                    int endBracket = s.indexOf(']', bracketIdx);
+                    if (endBracket > bracketIdx + 1) {
+                        propsStr = s.substring(bracketIdx + 1, endBracket);
+                    }
+                }
+                if (idStr.startsWith("Block{")) {
+                    idStr = idStr.substring(6, idStr.length() - 1);
+                }
+                var loc = ResourceLocation.parse(idStr);
+                var block = BuiltInRegistries.BLOCK.getOptional(loc);
+                if (block.isEmpty()) return Blocks.STONE.defaultBlockState();
+                var state = block.get().defaultBlockState();
+                if (propsStr != null) {
+                    for (var pair : propsStr.split(",")) {
+                        var kv = pair.split("=");
+                        if (kv.length == 2) {
+                            state = mdiApplyProperty(state, kv[0].trim(), kv[1].trim());
+                        }
+                    }
+                }
+                mdiBlockStateCache.put(s, state);
+                return state;
+            } catch (Exception e) {
+                return Blocks.STONE.defaultBlockState();
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static BlockState mdiApplyProperty(BlockState state, String key, String value) {
+        var prop = state.getBlock().getStateDefinition().getProperty(key);
+        if (prop == null) return state;
+        var parsed = prop.getValue(value);
+        if (parsed.isPresent()) {
+            return state.setValue((Property) prop, (Comparable) parsed.get());
+        }
+        return state;
     }
 }

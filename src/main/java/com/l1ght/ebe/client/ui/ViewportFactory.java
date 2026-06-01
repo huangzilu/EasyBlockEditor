@@ -688,6 +688,9 @@ public class ViewportFactory {
         progressiveLoad = new ProgressiveModelLoad(model, autoCamera, profile);
         progressiveOutlineSamples = shouldShowProgressiveOutline(profile) ? createModelOutlineSamples(model) : List.of();
         startViewportLodBuild(model, null, profile);
+        if (sectionedRenderer != null) {
+            sectionedRenderer.setModel(model);
+        }
         progressiveStatusCooldown = 0;
         LOG.info("Progressive model load started: {} regions, volume={}, profile={}, exactCap={}",
                 model.getRegions().size(), progressiveLoad.totalVolume, profile == null ? "none" : profile.risk(),
@@ -1054,14 +1057,11 @@ public class ViewportFactory {
             return 0;
         }
         int configuredCap = Math.max(0, EBEClientConfig.viewportMegaExactBlockCap.get());
-        if (configuredCap > 0 && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal()) {
-            return configuredCap;
+        // Treat 0 and legacy 1000000 as "no limit"
+        if (configuredCap <= 0 || configuredCap >= 1_000_000) {
+            return Integer.MAX_VALUE;
         }
-        return switch (profile.risk()) {
-            case EXTREME -> EXTREME_EXACT_VIEWPORT_BLOCK_CAP;
-            case HUGE -> HUGE_EXACT_VIEWPORT_BLOCK_CAP;
-            default -> 0;
-        };
+        return configuredCap;
     }
 
     private static int viewportLodSampleCap(ProjectionLoadProfile profile) {
@@ -1248,6 +1248,14 @@ public class ViewportFactory {
         if (sectionedRenderer != null) {
             sectionedRenderer.finishProgressiveLoad();
             sectionedRenderer.rebuildTileEntities();
+            // Only set model for MDI on large projections (progressive/dynamic exact)
+            if (profile != null && profile.isHugeOrAbove()) {
+                if (model != null) {
+                    sectionedRenderer.setModel(model);
+                } else if (computed != null) {
+                    sectionedRenderer.setModel(computed.getModel());
+                }
+            }
         }
         hasLoadedModel = true;
         shaderProbeSceneActive = false;
