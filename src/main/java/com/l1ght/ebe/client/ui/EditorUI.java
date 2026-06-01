@@ -2008,6 +2008,29 @@ public class EditorUI {
         refreshPropertiesPanel();
     }
 
+    private static void deleteSelectedDecorativeEntity() {
+        if (selectedDecorativeEntityNbt == null) return;
+        var model = session.getModel();
+        if (model != null) {
+            model.removeEntity(selectedDecorativeEntityNbt);
+        }
+        // Remove from viewport world
+        var world = ViewportFactory.getCurrentWorld();
+        if (world != null) {
+            var nbt = selectedDecorativeEntityNbt;
+            for (var entity : world.getAllRenderedEntities()) {
+                CompoundTag entityTag = new CompoundTag();
+                entity.save(entityTag);
+                if (entityTag.equals(nbt)) {
+                    entity.discard();
+                    break;
+                }
+            }
+        }
+        clearSelectedDecorativeEntityInfo();
+        updateStatusBar();
+    }
+
     private static void updateIndicatorRow(String iconId, String nameId, String nbtId, net.minecraft.world.level.block.state.BlockState bs) {
         var iconWrap = UIUtils.findById(rootElement, iconId);
         var nameLabel = UIUtils.findById(rootElement, nameId);
@@ -3804,6 +3827,12 @@ public class EditorUI {
         nbtLabel.layout(l -> l.marginTop(4));
         parent.addChild(nbtLabel);
         addReadonlyNbtTree(parent, tag, 0);
+
+        var deleteBtn = new Button();
+        deleteBtn.setText(Component.translatable("ebe.entity.delete"));
+        deleteBtn.layout(l -> l.widthPercent(100).height(20).marginTop(8));
+        deleteBtn.setOnClick(e -> deleteSelectedDecorativeEntity());
+        parent.addChild(deleteBtn);
     }
 
     private static String summarizeItemTag(CompoundTag itemTag) {

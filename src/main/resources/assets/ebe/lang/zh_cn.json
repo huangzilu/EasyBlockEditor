@@ -368,6 +368,7 @@
   "ebe.settings.viewport_performance.mdi_full_detail_dist": "大型投影完整渲染距离",
   "ebe.settings.viewport_performance.mdi_lod_dist": "大型投影LOD渲染距离",
   "ebe.settings.viewport_performance.reset_defaults": "重置为默认值",
+  "ebe.entity.delete": "删除实体",
   "ebe.settings.shader_probe": "\u52a0\u8f7d\u5149\u5f71\u63a2\u9488\u573a\u666f",
   "ebe.settings.projection": "投影",
   "ebe.settings.opacity": "不透明度",

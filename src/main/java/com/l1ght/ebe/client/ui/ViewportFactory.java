@@ -304,6 +304,8 @@ public class ViewportFactory {
     private static TrackedDummyWorld currentWorld;
     private static Scene currentScene;
     private static SectionedWorldSceneRenderer sectionedRenderer;
+
+    public static TrackedDummyWorld getCurrentWorld() { return currentWorld; }
     private static final HeatmapRenderHook heatmapHook = new HeatmapRenderHook();
     private static boolean hasLoadedModel = false;
     private static boolean firstOpen = true;

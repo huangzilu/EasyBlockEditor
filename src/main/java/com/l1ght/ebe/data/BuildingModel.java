@@ -78,6 +78,10 @@ public class BuildingModel {
         entities.clear();
     }
 
+    public boolean removeEntity(CompoundTag entity) {
+        return entities.remove(entity);
+    }
+
     public List<Region> getRegionsForLayer(String layerId) {
         var result = new ArrayList<Region>();
         for (var r : regions) {
