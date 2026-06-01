@@ -32,6 +32,8 @@ public class EBEClientConfig {
     public static final ModConfigSpec.IntValue viewportMovingFallbackBlocks;
     public static final ModConfigSpec.BooleanValue viewportDynamicFboScale;
     public static final ModConfigSpec.DoubleValue viewportMovingFboScale;
+    public static final ModConfigSpec.IntValue viewportMdiFullDetailDist;
+    public static final ModConfigSpec.IntValue viewportMdiLodDist;
     public static final ModConfigSpec.IntValue printerRange;
     public static final ModConfigSpec.IntValue printerMaterialSourceRange;
     public static final ModConfigSpec.IntValue printerParallelism;
@@ -116,6 +118,12 @@ public class EBEClientConfig {
         viewportMovingFboScale = builder
                 .comment("Iris/FBO viewport resolution scale while the camera is moving")
                 .defineInRange("moving_fbo_scale", 0.65, 0.25, 1.0);
+        viewportMdiFullDetailDist = builder
+                .comment("Full detail render distance for large projections (blocks). Blocks within this distance render with full models.")
+                .defineInRange("mdi_full_detail_dist", 1024, 64, 4096);
+        viewportMdiLodDist = builder
+                .comment("LOD render distance for large projections (blocks). Blocks beyond this distance are covered by Shell LOD only.")
+                .defineInRange("mdi_lod_dist", 2048, 128, 8192);
         builder.pop();
         builder.pop();
 

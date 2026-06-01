@@ -1,4 +1,4 @@
-﻿{
+﻿﻿{
   "ebe.name": "EasyBlockEditor",
   "ebe.description": "建筑编辑器与建筑管理平台",
   "ebe.item.architect_toolbox": "建筑师工具箱",
@@ -365,6 +365,9 @@
   "ebe.settings.viewport_performance.moving_fallback_blocks": "移动时预览方块数",
   "ebe.settings.viewport_performance.dynamic_fbo": "动态FBO分辨率",
   "ebe.settings.viewport_performance.moving_fbo_scale": "移动时FBO缩放",
+  "ebe.settings.viewport_performance.mdi_full_detail_dist": "大型投影完整渲染距离",
+  "ebe.settings.viewport_performance.mdi_lod_dist": "大型投影LOD渲染距离",
+  "ebe.settings.viewport_performance.reset_defaults": "重置为默认值",
   "ebe.settings.shader_probe": "\u52a0\u8f7d\u5149\u5f71\u63a2\u9488\u573a\u666f",
   "ebe.settings.projection": "投影",
   "ebe.settings.opacity": "不透明度",

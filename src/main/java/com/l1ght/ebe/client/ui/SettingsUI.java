@@ -3,6 +3,7 @@ package com.l1ght.ebe.client.ui;
 import com.l1ght.ebe.client.keybind.EBEKeyBinding;
 import com.l1ght.ebe.client.keybind.EBEKeyBindings;
 import com.l1ght.ebe.client.keybind.KeyRecordingManager;
+import com.l1ght.ebe.client.renderer.SectionedWorldSceneRenderer;
 import com.l1ght.ebe.config.EBEClientConfig;
 import com.lowdragmc.lowdraglib2.configurator.ui.BooleanConfigurator;
 import com.lowdragmc.lowdraglib2.configurator.ui.ConfiguratorGroup;
@@ -289,7 +290,59 @@ public class SettingsUI {
                 0.65, true
         ).setRange(0.25, 1.0).setWheel(0.05));
 
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.mdi_full_detail_dist").getString(),
+                EBEClientConfig.viewportMdiFullDetailDist::get,
+                v -> {
+                    EBEClientConfig.viewportMdiFullDetailDist.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                    SectionedWorldSceneRenderer.setMdiRenderDistances(
+                            EBEClientConfig.viewportMdiFullDetailDist.get(),
+                            EBEClientConfig.viewportMdiLodDist.get());
+                },
+                1024, false
+        ).setRange(64, 4096).setWheel(64));
+
+        performanceGroup.addConfigurator(new NumberConfigurator(
+                Component.translatable("ebe.settings.viewport_performance.mdi_lod_dist").getString(),
+                EBEClientConfig.viewportMdiLodDist::get,
+                v -> {
+                    EBEClientConfig.viewportMdiLodDist.set(v.intValue());
+                    EBEClientConfig.SPEC.save();
+                    SectionedWorldSceneRenderer.setMdiRenderDistances(
+                            EBEClientConfig.viewportMdiFullDetailDist.get(),
+                            EBEClientConfig.viewportMdiLodDist.get());
+                },
+                2048, false
+        ).setRange(128, 8192).setWheel(128));
+
         scroller.addScrollViewChild(performanceGroup);
+
+        var resetButton = new Button()
+                .setText(Component.translatable("ebe.settings.viewport_performance.reset_defaults"))
+                .setOnClick(e -> {
+                    EBEClientConfig.viewportPerformanceMode.set("balanced");
+                    EBEClientConfig.viewportDegradeWhileMoving.set(true);
+                    EBEClientConfig.viewportRenderDistance.set(0);
+                    EBEClientConfig.viewportCompileBudgetMs.set(2.5);
+                    EBEClientConfig.viewportMovingCompileBudgetMs.set(0.25);
+                    EBEClientConfig.viewportLoadBudgetMs.set(2.0);
+                    EBEClientConfig.viewportMovingLoadBudgetMs.set(0.75);
+                    EBEClientConfig.viewportSynchronousLoadBelowMb.set(1.0);
+                    EBEClientConfig.viewportMegaExactBlockCap.set(0);
+                    EBEClientConfig.viewportLoadBlocksPerFrame.set(2048);
+                    EBEClientConfig.viewportFallbackBlocks.set(1536);
+                    EBEClientConfig.viewportMovingFallbackBlocks.set(128);
+                    EBEClientConfig.viewportDynamicFboScale.set(true);
+                    EBEClientConfig.viewportMovingFboScale.set(0.65);
+                    EBEClientConfig.viewportMdiFullDetailDist.set(1024);
+                    EBEClientConfig.viewportMdiLodDist.set(2048);
+                    EBEClientConfig.SPEC.save();
+                    SectionedWorldSceneRenderer.setMdiRenderDistances(1024, 2048);
+                    ViewportFactory.onViewportPerformanceSettingsChanged();
+                });
+        resetButton.layout(l -> l.widthPercent(100).height(24).marginTop(4));
+        scroller.addScrollViewChild(resetButton);
 
         var probeButton = new Button()
                 .setText(Component.translatable("ebe.settings.shader_probe"))
