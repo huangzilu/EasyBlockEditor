@@ -13,6 +13,7 @@ import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.data.io.SchematicWriters;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
 import com.l1ght.ebe.network.WorkgroupActionPayload;
+import com.l1ght.ebe.network.WorkgroupProjectionPayload;
 import com.l1ght.ebe.client.projection.PrinterController;
 import com.l1ght.ebe.projection.PrinterMode;
 import com.l1ght.ebe.projection.ProjectionEntityTransforms;
@@ -88,6 +89,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -828,6 +830,27 @@ public class EditorUI {
         }
         list.addChild(actions);
 
+        String groupId = string(group.get("id"), "");
+        var syncBtn = new Button();
+        syncBtn.setText(Component.translatable("ebe.workgroup.sync_projection"));
+        syncBtn.layout(l -> l.widthPercent(100).height(20).marginTop(4));
+        syncBtn.setOnClick(e -> syncCurrentProjection(groupId));
+        list.addChild(syncBtn);
+
+        if (isLeader) {
+            var pwRow = new UIElement();
+            pwRow.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.ROW).alignItems(AlignItems.CENTER).gapAll(4).marginTop(4));
+            var pwField = new TextField();
+            pwField.layout(l -> l.flex(1).height(20));
+            pwField.textFieldStyle(s -> s.placeholder(Component.translatable("ebe.workgroup.new_password")));
+            pwRow.addChild(pwField);
+            pwRow.addChild(workgroupSmallButton("ebe.workgroup.change_password", 64, () -> {
+                String pw = pwField.getText().trim();
+                if (!pw.isEmpty()) sendWorkgroupAction("change_password", groupName, pw, "");
+            }));
+            list.addChild(pwRow);
+        }
+
         list.addChild(workgroupSection("ebe.workgroup.members"));
         JsonArray members = arr(group.get("members"));
         for (JsonElement memberElem : members) {
@@ -905,6 +928,7 @@ public class EditorUI {
         label.textStyle(ts -> ts.textColor("leader".equals(role) ? 0xFFFFD166 : 0xFFDDDDDD).fontSize(8).textShadow(false));
         row.addChild(label);
         if (canManage && !"leader".equals(role)) {
+            row.addChild(workgroupSmallButton("ebe.workgroup.transfer", 50, () -> sendWorkgroupAction("transfer", groupName, "", memberName)));
             row.addChild(workgroupSmallButton("ebe.workgroup.kick", 44, () -> sendWorkgroupAction("kick", groupName, "", memberName)));
         }
         return row;
@@ -927,6 +951,18 @@ public class EditorUI {
 
     private static void sendWorkgroupAction(String action, String groupName, String password, String target) {
         PacketDistributor.sendToServer(new WorkgroupActionPayload(action, groupName, password, target));
+    }
+
+    private static void syncCurrentProjection(String groupIdStr) {
+        Path file = session.getCurrentFile();
+        if (file == null || groupIdStr.isEmpty()) return;
+        try {
+            UUID groupId = UUID.fromString(groupIdStr);
+            UUID projId = UUID.randomUUID();
+            String fileName = file.getFileName().toString();
+            BlockPos origin = BlockPos.ZERO;
+            PacketDistributor.sendToServer(new WorkgroupProjectionPayload("update", groupId, projId, fileName, origin, true));
+        } catch (Exception ignored) {}
     }
 
     private static JsonObject workgroupRootJson() {

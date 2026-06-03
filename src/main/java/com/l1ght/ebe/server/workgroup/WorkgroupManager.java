@@ -97,6 +97,25 @@ public class WorkgroupManager {
         return true;
     }
 
+    public static synchronized boolean changePassword(String name, String newPassword, ServerPlayer actor) {
+        Workgroup group = findByName(name);
+        if (group == null || (!group.isLeader(actor.getUUID()) && !actor.hasPermissions(2))) return false;
+        group.password = newPassword == null ? "" : newPassword;
+        saveAll();
+        return true;
+    }
+
+    public static synchronized boolean transfer(String name, String targetName, ServerPlayer actor) {
+        Workgroup group = findByName(name);
+        if (group == null || !group.isLeader(actor.getUUID())) return false;
+        UUID targetId = findMemberId(group, targetName);
+        if (targetId == null || group.isLeader(targetId)) return false;
+        group.leader = targetId;
+        group.leaderName = group.members.getOrDefault(targetId, "");
+        saveAll();
+        return true;
+    }
+
     public static synchronized boolean disband(String name, ServerPlayer player) {
         Workgroup group = findByName(name);
         if (group == null || (!group.isLeader(player.getUUID()) && !player.hasPermissions(2))) return false;

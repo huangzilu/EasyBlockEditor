@@ -66,6 +66,8 @@ public class WorkgroupActionPayload implements CustomPacketPayload {
                     case "leave" -> changed = WorkgroupManager.leave(payload.groupName, player);
                     case "disband" -> changed = WorkgroupManager.disband(payload.groupName, player);
                     case "kick" -> changed = WorkgroupManager.kick(payload.groupName, payload.target, player);
+                    case "change_password" -> changed = WorkgroupManager.changePassword(payload.groupName, payload.password, player);
+                    case "transfer" -> changed = WorkgroupManager.transfer(payload.groupName, payload.target, player);
                     case "chat" -> changed = WorkgroupManager.addChatMessage(player, payload.target);
                     case "sync" -> {
                     }

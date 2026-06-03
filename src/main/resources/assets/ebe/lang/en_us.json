@@ -624,6 +624,8 @@
   "ebe.workgroup.password_optional": "Password, optional",
   "ebe.workgroup.leader_value": "Leader: %s",
   "ebe.workgroup.synced_projections": "Synced Projections",
+  "ebe.workgroup.sync_projection": "Sync Projection",
+  "ebe.workgroup.new_password": "New Password",
   "ebe.workgroup.no_synced_projections": "No synced projections.",
   "ebe.workgroup.member_row": "%s  %s",
   "ebe.workgroup.role.leader": "Leader",

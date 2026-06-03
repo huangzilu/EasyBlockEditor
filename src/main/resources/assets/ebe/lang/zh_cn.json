@@ -624,6 +624,8 @@
   "ebe.workgroup.password_optional": "密码，可留空",
   "ebe.workgroup.leader_value": "组长：%s",
   "ebe.workgroup.synced_projections": "已同步投影",
+  "ebe.workgroup.sync_projection": "同步投影",
+  "ebe.workgroup.new_password": "新密码",
   "ebe.workgroup.no_synced_projections": "暂无已同步投影。",
   "ebe.workgroup.member_row": "%s  %s",
   "ebe.workgroup.role.leader": "组长",
