@@ -29,7 +29,7 @@ public final class EditorIcons {
     public static final SpriteTexture TAG = SpriteTexture.of("ebe:textures/gui/icon_tag.png");
     public static final SpriteTexture BRANCH = SpriteTexture.of("ebe:textures/gui/icon_branch.png");
     public static final SpriteTexture DIFF = SpriteTexture.of("ebe:textures/gui/icon_diff.png");
-    public static final SpriteTexture WORKGROUP = SpriteTexture.of("ebe:textures/gui/icon_branch.png");
+    public static final SpriteTexture WORKGROUP = SpriteTexture.of("ebe:textures/gui/icon_user_group.png");
 
     private EditorIcons() {}
 }
