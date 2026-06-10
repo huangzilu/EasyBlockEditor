@@ -54,7 +54,7 @@ public class EBEClientConfig {
                 .define("theme", "dark");
 
         splashMode = builder
-                .comment("Splash/intro animation: per_session (first open each launch), first_ever (only the very first time), off")
+                .comment("Splash/intro animation: always (every open), per_session (first open each launch), first_ever (only the very first time), off")
                 .define("splash_mode", "first_ever");
 
         builder.push("projection");

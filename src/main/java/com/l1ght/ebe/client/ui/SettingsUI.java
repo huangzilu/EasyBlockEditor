@@ -99,7 +99,7 @@ public class SettingsUI {
                 () -> normalizeSplashMode(EBEClientConfig.splashMode.get()),
                 v -> { EBEClientConfig.splashMode.set(v); EBEClientConfig.SPEC.save(); },
                 "first_ever", false,
-                List.of("per_session", "first_ever", "off"),
+                List.of("always", "per_session", "first_ever", "off"),
                 mode -> Component.translatable("ebe.settings.splash_mode." + mode).getString()
         ));
 
@@ -110,7 +110,7 @@ public class SettingsUI {
     private static String normalizeSplashMode(String mode) {
         if (mode == null) return "first_ever";
         return switch (mode) {
-            case "per_session", "first_ever", "off" -> mode;
+            case "always", "per_session", "first_ever", "off" -> mode;
             default -> "first_ever";
         };
     }

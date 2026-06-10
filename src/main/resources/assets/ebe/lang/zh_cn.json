@@ -370,6 +370,7 @@
   "ebe.settings.viewport_performance.reset_defaults": "重置为默认值",
   "ebe.entity.delete": "删除实体",
   "ebe.settings.splash_mode": "开屏动画",
+  "ebe.settings.splash_mode.always": "每次开启",
   "ebe.settings.splash_mode.per_session": "每次启动首次",
   "ebe.settings.splash_mode.first_ever": "仅首次启动",
   "ebe.settings.splash_mode.off": "始终关闭",

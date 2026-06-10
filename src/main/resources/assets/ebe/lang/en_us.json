@@ -370,6 +370,7 @@
   "ebe.settings.viewport_performance.reset_defaults": "Reset to Defaults",
   "ebe.entity.delete": "Delete Entity",
   "ebe.settings.splash_mode": "Intro Animation",
+  "ebe.settings.splash_mode.always": "Every time",
   "ebe.settings.splash_mode.per_session": "Once per launch",
   "ebe.settings.splash_mode.first_ever": "First time only",
   "ebe.settings.splash_mode.off": "Off",

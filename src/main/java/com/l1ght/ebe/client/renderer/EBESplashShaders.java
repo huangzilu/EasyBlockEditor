@@ -11,11 +11,6 @@ import net.neoforged.neoforge.client.event.RegisterShadersEvent;
 
 import java.io.IOException;
 
-/**
- * Registers the custom shaders used by the first-launch splash animation:
- * a full-screen background effect (scanlines / glowing border / CRT tear /
- * dust dissolve) and a logo effect (mosaic resolve / light scan / dissolve).
- */
 @EventBusSubscriber(modid = EBEMod.MOD_ID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class EBESplashShaders {
     private static ShaderInstance bgShader;
