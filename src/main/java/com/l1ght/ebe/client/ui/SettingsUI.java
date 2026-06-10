@@ -94,8 +94,25 @@ public class SettingsUI {
                 Object::toString
         ));
 
+        group.addConfigurator(new SelectorConfigurator<>(
+                Component.translatable("ebe.settings.splash_mode").getString(),
+                () -> normalizeSplashMode(EBEClientConfig.splashMode.get()),
+                v -> { EBEClientConfig.splashMode.set(v); EBEClientConfig.SPEC.save(); },
+                "first_ever", false,
+                List.of("per_session", "first_ever", "off"),
+                mode -> Component.translatable("ebe.settings.splash_mode." + mode).getString()
+        ));
+
         scroller.addScrollViewChild(group);
         return scroller;
+    }
+
+    private static String normalizeSplashMode(String mode) {
+        if (mode == null) return "first_ever";
+        return switch (mode) {
+            case "per_session", "first_ever", "off" -> mode;
+            default -> "first_ever";
+        };
     }
 
     private static UIElement createEditorTab() {

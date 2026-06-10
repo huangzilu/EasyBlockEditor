@@ -59,7 +59,17 @@ public final class ClientOnlyHooks {
     }
 
     public static void openEditorScreen() {
-        Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(new EditorScreen()));
+        Minecraft.getInstance().execute(() -> {
+            var mc = Minecraft.getInstance();
+            String mode = EBEClientConfig.splashMode.get();
+            if (SplashState.shouldPlay(mode)) {
+                SplashState.markPlayed();
+                mc.setScreen(new com.l1ght.ebe.client.ui.SplashScreen(
+                        () -> mc.setScreen(new EditorScreen())));
+            } else {
+                mc.setScreen(new EditorScreen());
+            }
+        });
     }
 
     public static void openAdminScreen() {

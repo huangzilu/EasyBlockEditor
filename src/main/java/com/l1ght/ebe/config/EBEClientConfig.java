@@ -38,6 +38,7 @@ public class EBEClientConfig {
     public static final ModConfigSpec.IntValue printerMaterialSourceRange;
     public static final ModConfigSpec.IntValue printerParallelism;
     public static final ModConfigSpec.ConfigValue<String> KEYBINDINGS;
+    public static final ModConfigSpec.ConfigValue<String> splashMode;
 
     static {
         var builder = new ModConfigSpec.Builder();
@@ -51,6 +52,10 @@ public class EBEClientConfig {
         theme = builder
                 .comment("UI theme: dark, mc, modern")
                 .define("theme", "dark");
+
+        splashMode = builder
+                .comment("Splash/intro animation: per_session (first open each launch), first_ever (only the very first time), off")
+                .define("splash_mode", "first_ever");
 
         builder.push("projection");
         projectionOpacity = builder
