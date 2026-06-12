@@ -52,10 +52,10 @@ import java.util.Set;
 @OnlyIn(Dist.CLIENT)
 public class ProjectionRenderer {
     private static final int SECTION_SIZE = 16;
-    private static final int SECTION_MESH_BUILDS_PER_FRAME = 3;
+    private static final int SECTION_MESH_BUILDS_PER_FRAME = 6;
     private static final int MAX_IMMEDIATE_FALLBACK_BLOCKS = 4096;
     private static final int MEGA_EXACT_SECTION_CAP = 192;
-    private static final int MEGA_SECTION_MESH_BUILDS_PER_FRAME = 1;
+    private static final int MEGA_SECTION_MESH_BUILDS_PER_FRAME = 2;
     private static final int MEGA_IMMEDIATE_FALLBACK_BLOCKS = 512;
     private static final float PROJECTION_FOG_START = 1_000_000.0F;
     private static final float PROJECTION_FOG_END = 1_000_001.0F;
@@ -70,6 +70,7 @@ public class ProjectionRenderer {
     private static int cachedEntityProjectionVersion = -1;
     private static Level cachedEntityLevel;
     private static List<Entity> cachedProjectionEntities = List.of();
+    private static final RandomSource SHARED_RANDOM = RandomSource.createNewThreadLocalInstance();
 
     public static void renderProjection(PoseStack poseStack, Matrix4f projectionMatrix) {
         renderProjection(poseStack, projectionMatrix, null);
@@ -109,27 +110,30 @@ public class ProjectionRenderer {
 
         var bufferSource = mc.renderBuffers().bufferSource();
         var brd = mc.getBlockRenderer();
-        var randomSource = RandomSource.createNewThreadLocalInstance();
+        var randomSource = SHARED_RANDOM;
         BlockAndTintGetter projectionView = new ProjectionBlockView(level, renderCache.states(), projection.getOrigin());
-        ImmediateAlphaBufferSource blockEntityBuffers = new ImmediateAlphaBufferSource(opacity);
+        ImmediateAlphaBufferSource blockEntityBuffers = ImmediateAlphaBufferSource.shared(opacity);
         ProjectionMeshCache meshCache = getMeshCache(projection, renderCache);
 
         poseStack.pushPose();
         poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
-        List<SectionBucket> visibleSections = new java.util.ArrayList<>();
+        List<ScoredSection> scored = new java.util.ArrayList<>();
         for (var section : renderCache.sections()) {
-            if (section.bounds().distanceToSqr(camPos) > maxDistanceSq) {
+            double distSq = section.bounds().distanceToSqr(camPos);
+            if (distSq > maxDistanceSq) {
                 continue;
             }
             if (frustum != null && !frustum.isVisible(section.bounds())) {
                 continue;
             }
-            visibleSections.add(section);
+            scored.add(new ScoredSection(section, distSq));
         }
-        visibleSections.sort(java.util.Comparator.comparingDouble(section -> section.bounds().distanceToSqr(camPos)));
-        if (megaShellRendered && visibleSections.size() > MEGA_EXACT_SECTION_CAP) {
-            visibleSections = new java.util.ArrayList<>(visibleSections.subList(0, MEGA_EXACT_SECTION_CAP));
+        scored.sort(java.util.Comparator.comparingDouble(ScoredSection::distSq));
+        int cap = (megaShellRendered && scored.size() > MEGA_EXACT_SECTION_CAP) ? MEGA_EXACT_SECTION_CAP : scored.size();
+        List<SectionBucket> visibleSections = new java.util.ArrayList<>(cap);
+        for (int i = 0; i < cap; i++) {
+            visibleSections.add(scored.get(i).section());
         }
 
         int sectionBuildsPerFrame = megaShellRendered ? MEGA_SECTION_MESH_BUILDS_PER_FRAME : SECTION_MESH_BUILDS_PER_FRAME;
@@ -143,35 +147,34 @@ public class ProjectionRenderer {
 
         for (var section : visibleSections) {
             SectionMesh sectionMesh = meshCache.meshes().get(section.key());
-            boolean renderImmediateBlocks = sectionMesh == null || !sectionMesh.compiled() || sectionMesh.failed();
-            boolean waitingForCompile = sectionMesh == null || !sectionMesh.compiled();
-            if (waitingForCompile && immediateFallbackBlocks >= immediateFallbackLimit) {
+            boolean compiled = sectionMesh != null && sectionMesh.compiled() && !sectionMesh.failed();
+
+            for (var animated : section.animatedBlocks()) {
+                renderAnimatedBlockEntity(animated.blockEntity(), animated.pos(), poseStack, blockEntityBuffers);
+            }
+
+            if (compiled) {
                 continue;
             }
+            if (immediateFallbackBlocks >= immediateFallbackLimit) {
+                continue;
+            }
+
             for (var pb : section.blocks()) {
                 BlockPos pos = pb.pos();
                 BlockState state = pb.state();
-                if (state.getRenderShape() == RenderShape.INVISIBLE) continue;
+                RenderShape shape = state.getRenderShape();
+                if (shape == RenderShape.INVISIBLE || shape == RenderShape.ENTITYBLOCK_ANIMATED) continue;
 
                 try {
-                    if (state.getRenderShape() == RenderShape.ENTITYBLOCK_ANIMATED) {
-                        renderBlockEntityProjection(state, pos, poseStack, blockEntityBuffers);
-                        continue;
-                    }
-                    if (!renderImmediateBlocks) {
-                        continue;
-                    }
-                    if (waitingForCompile && immediateFallbackBlocks >= immediateFallbackLimit) {
+                    if (immediateFallbackBlocks >= immediateFallbackLimit) {
                         break;
                     }
-                    if (waitingForCompile) {
-                        immediateFallbackBlocks++;
-                    }
+                    immediateFallbackBlocks++;
 
                     var model = brd.getBlockModel(state);
                     var modelData = projectionView.getModelData(pos);
                     modelData = model.getModelData(projectionView, pos, state, modelData);
-                    randomSource.setSeed(state.getSeed(pos));
 
                     for (var modelLayer : model.getRenderTypes(state, randomSource, modelData)) {
                         randomSource.setSeed(state.getSeed(pos));
@@ -352,7 +355,6 @@ public class ProjectionRenderer {
                 var model = brd.getBlockModel(state);
                 var modelData = projectionView.getModelData(pos);
                 modelData = model.getModelData(projectionView, pos, state, modelData);
-                randomSource.setSeed(state.getSeed(pos));
 
                 for (var modelLayer : model.getRenderTypes(state, randomSource, modelData)) {
                     randomSource.setSeed(state.getSeed(pos));
@@ -469,29 +471,36 @@ public class ProjectionRenderer {
         shader.apply();
     }
 
-    private static void renderBlockEntityProjection(
-            BlockState state,
+    private static BlockEntity createProjectionBlockEntity(BlockState state, BlockPos pos) {
+        if (!(state.getBlock() instanceof EntityBlock entityBlock)) {
+            return null;
+        }
+        try {
+            return entityBlock.newBlockEntity(pos, state);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void renderAnimatedBlockEntity(
+            BlockEntity blockEntity,
             BlockPos pos,
             PoseStack poseStack,
             MultiBufferSource bufferSource
     ) {
-        if (!(state.getBlock() instanceof EntityBlock entityBlock)) {
-            return;
-        }
-
-        BlockEntity blockEntity = entityBlock.newBlockEntity(pos, state);
         if (blockEntity == null) {
             return;
         }
-
         var renderer = Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(blockEntity);
         if (renderer == null) {
             return;
         }
-
         poseStack.pushPose();
         poseStack.translate(pos.getX(), pos.getY(), pos.getZ());
-        renderer.render(blockEntity, 0.0F, poseStack, bufferSource, LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY);
+        try {
+            renderer.render(blockEntity, 0.0F, poseStack, bufferSource, LightTexture.FULL_BRIGHT, OverlayTexture.NO_OVERLAY);
+        } catch (Exception ignored) {
+        }
         poseStack.popPose();
     }
 
@@ -521,6 +530,16 @@ public class ProjectionRenderer {
         }
 
         @Override
+        public int getBrightness(net.minecraft.world.level.LightLayer lightLayer, BlockPos pos) {
+            return 15;
+        }
+
+        @Override
+        public int getRawBrightness(BlockPos pos, int amount) {
+            return 15;
+        }
+
+        @Override
         public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
             return delegate.getBlockTint(pos, colorResolver);
         }
@@ -532,13 +551,14 @@ public class ProjectionRenderer {
 
         @Override
         public BlockState getBlockState(BlockPos pos) {
-            return projectionStates.getOrDefault(pos, delegate.getBlockState(pos));
+            BlockState state = projectionStates.get(pos);
+            return state == null ? net.minecraft.world.level.block.Blocks.AIR.defaultBlockState() : state;
         }
 
         @Override
         public FluidState getFluidState(BlockPos pos) {
             BlockState state = projectionStates.get(pos);
-            return state == null ? delegate.getFluidState(pos) : state.getFluidState();
+            return state == null ? net.minecraft.world.level.material.Fluids.EMPTY.defaultFluidState() : state.getFluidState();
         }
 
         @Override
@@ -553,13 +573,25 @@ public class ProjectionRenderer {
     }
 
     private static class ImmediateAlphaBufferSource implements MultiBufferSource, AutoCloseable {
+        private static ImmediateAlphaBufferSource SHARED;
+
         private final ByteBufferBuilder builder = new ByteBufferBuilder(786432);
         private final MultiBufferSource.BufferSource delegate = MultiBufferSource.immediate(builder);
-        private final float alpha;
+        private float alpha;
         private final Set<RenderType> usedTypes = new HashSet<>();
 
         private ImmediateAlphaBufferSource(float alpha) {
             this.alpha = alpha;
+        }
+
+        private static ImmediateAlphaBufferSource shared(float alpha) {
+            if (SHARED == null) {
+                SHARED = new ImmediateAlphaBufferSource(alpha);
+            } else {
+                SHARED.alpha = alpha;
+                SHARED.usedTypes.clear();
+            }
+            return SHARED;
         }
 
         @Override
@@ -579,7 +611,7 @@ public class ProjectionRenderer {
 
         @Override
         public void close() {
-            builder.close();
+            // Buffer is reused across frames; no per-frame teardown.
         }
     }
 
@@ -749,7 +781,14 @@ public class ProjectionRenderer {
         }
     }
 
-    private record SectionBucket(SectionKey key, List<ProjectionData.ProjectionBlock> blocks, AABB bounds) {
+    private record SectionBucket(SectionKey key, List<ProjectionData.ProjectionBlock> blocks,
+                                 List<AnimatedBlockEntity> animatedBlocks, AABB bounds) {
+    }
+
+    private record ScoredSection(SectionBucket section, double distSq) {
+    }
+
+    private record AnimatedBlockEntity(BlockPos pos, BlockEntity blockEntity) {
     }
 
     private record SectionBucketBuilder(SectionKey key, List<ProjectionData.ProjectionBlock> blocks) {
@@ -761,7 +800,18 @@ public class ProjectionRenderer {
             double minX = origin.getX() + key.x() * SECTION_SIZE;
             double minY = origin.getY() + key.y() * SECTION_SIZE;
             double minZ = origin.getZ() + key.z() * SECTION_SIZE;
-            return new SectionBucket(key, blocks, new AABB(minX, minY, minZ, minX + SECTION_SIZE, minY + SECTION_SIZE, minZ + SECTION_SIZE));
+            List<AnimatedBlockEntity> animated = null;
+            for (var block : blocks) {
+                if (block.state().getRenderShape() == RenderShape.ENTITYBLOCK_ANIMATED) {
+                    BlockEntity be = createProjectionBlockEntity(block.state(), block.pos());
+                    if (be != null) {
+                        if (animated == null) animated = new java.util.ArrayList<>();
+                        animated.add(new AnimatedBlockEntity(block.pos(), be));
+                    }
+                }
+            }
+            return new SectionBucket(key, blocks, animated == null ? List.of() : animated,
+                    new AABB(minX, minY, minZ, minX + SECTION_SIZE, minY + SECTION_SIZE, minZ + SECTION_SIZE));
         }
     }
 }

@@ -13,7 +13,7 @@ import com.l1ght.ebe.data.io.FileManager;
 import com.l1ght.ebe.data.io.SchematicWriters;
 import com.l1ght.ebe.editor.selection.DisplayFilter;
 import com.l1ght.ebe.network.WorkgroupActionPayload;
-import com.l1ght.ebe.network.WorkgroupProjectionPayload;
+import com.l1ght.ebe.network.WorkgroupProjectionUploadPayload;
 import com.l1ght.ebe.client.projection.PrinterController;
 import com.l1ght.ebe.projection.PrinterMode;
 import com.l1ght.ebe.projection.ProjectionEntityTransforms;
@@ -106,6 +106,7 @@ public class EditorUI {
     private static final EditorState state = new EditorState();
     private static final EditorSession session = new EditorSession();
     private static final com.l1ght.ebe.editor.selection.SelectionManager selection = new com.l1ght.ebe.editor.selection.SelectionManager();
+    private static final com.l1ght.ebe.editor.selection.BoxSelection boxSelection = new com.l1ght.ebe.editor.selection.BoxSelection();
     private static final com.l1ght.ebe.editor.ClipboardManager clipboard = new com.l1ght.ebe.editor.ClipboardManager();
     private static final com.l1ght.ebe.editor.history.HistoryManager history =
             new com.l1ght.ebe.editor.history.HistoryManager(
@@ -162,6 +163,9 @@ public class EditorUI {
     private static int convertPreviewYaw = -135;
     private static int convertPreviewPitch = 25;
     private static final int CONVERT_PREVIEW_BLOCK_LIMIT = 4096;
+    private static final int WORKGROUP_PROJECTION_UPLOAD_BATCH = 512;
+    private static final int WORKGROUP_PROJECTION_UPLOAD_MAX_NBT_CHARS = 64_000;
+    private static final int WORKGROUP_PROJECTION_UPLOAD_MAX_SINGLE_NBT_CHARS = 32_000;
 
     private static UIElement toolbarPanel;
     private static boolean toolbarExpanded = true;
@@ -281,6 +285,8 @@ public class EditorUI {
     }
     public static EditorSession getSession() { return session; }
     public static com.l1ght.ebe.editor.selection.SelectionManager getSelection() { return selection; }
+    public static com.l1ght.ebe.editor.selection.BoxSelection getBoxSelection() { return boxSelection; }
+    public static void onBoxSelectionChanged() { updateStatusBar(); }
     public static com.l1ght.ebe.editor.ClipboardManager getClipboard() { return clipboard; }
     public static com.l1ght.ebe.editor.history.HistoryManager getHistory() { return history; }
 
@@ -954,15 +960,67 @@ public class EditorUI {
     }
 
     private static void syncCurrentProjection(String groupIdStr) {
-        Path file = session.getCurrentFile();
-        if (file == null || groupIdStr.isEmpty()) return;
+        if (groupIdStr.isEmpty()) return;
+        var projection = ProjectionManager.getProjection();
+        if (projection == null) {
+            setStatus(Component.translatable("ebe.workgroup.sync_no_projection"));
+            return;
+        }
+        var blocks = projection.getBlocks();
+        if (blocks.isEmpty()) {
+            setStatus(Component.translatable("ebe.workgroup.sync_no_projection"));
+            return;
+        }
+        if (blocks.size() > com.l1ght.ebe.network.NetworkLimits.MAX_WORKGROUP_UPLOAD_TOTAL) {
+            setStatus(Component.translatable("ebe.workgroup.sync_too_large"));
+            return;
+        }
         try {
             UUID groupId = UUID.fromString(groupIdStr);
+            UUID uploadId = UUID.randomUUID();
             UUID projId = UUID.randomUUID();
-            String fileName = file.getFileName().toString();
-            BlockPos origin = BlockPos.ZERO;
-            PacketDistributor.sendToServer(new WorkgroupProjectionPayload("update", groupId, projId, fileName, origin, true));
-        } catch (Exception ignored) {}
+            String fileName = ProjectionManager.getProjectionSourceName();
+            if (fileName == null || fileName.isBlank()) {
+                Path file = session.getCurrentFile();
+                fileName = file == null ? "projection" : file.getFileName().toString();
+            }
+            BlockPos origin = ProjectionManager.getProjectionOrigin();
+            boolean visible = ProjectionManager.isProjectionVisible();
+            int total = blocks.size();
+            int start = 0;
+            while (start < total) {
+                int end = Math.min(total, start + WORKGROUP_PROJECTION_UPLOAD_BATCH);
+                List<WorkgroupProjectionUploadPayload.Entry> entries = new ArrayList<>(end - start);
+                int nbtChars = 0;
+                int i = start;
+                for (; i < end; i++) {
+                    var block = blocks.get(i);
+                    String nbt = encodeProjectionNbt(block.nbt());
+                    if (!entries.isEmpty() && nbtChars + nbt.length() > WORKGROUP_PROJECTION_UPLOAD_MAX_NBT_CHARS) {
+                        break;
+                    }
+                    nbtChars += nbt.length();
+                    entries.add(new WorkgroupProjectionUploadPayload.Entry(
+                            block.pos(),
+                            net.minecraft.world.level.block.Block.getId(block.state()),
+                            nbt));
+                }
+                int sentEnd = start + entries.size();
+                boolean done = sentEnd >= total;
+                PacketDistributor.sendToServer(new WorkgroupProjectionUploadPayload(
+                        uploadId, groupId, projId, fileName, origin, visible, total, start, done, entries));
+                start = sentEnd;
+            }
+            setStatus(Component.translatable("ebe.workgroup.sync_sent", total));
+        } catch (Exception e) {
+            EBEMod.LOGGER.warn("Failed to sync workgroup projection", e);
+        }
+    }
+
+    private static String encodeProjectionNbt(net.minecraft.nbt.CompoundTag tag) {
+        if (tag == null || tag.isEmpty()) return "";
+        String encoded = tag.toString();
+        return encoded.length() <= WORKGROUP_PROJECTION_UPLOAD_MAX_SINGLE_NBT_CHARS ? encoded : "";
     }
 
     private static JsonObject workgroupRootJson() {
@@ -1288,6 +1346,36 @@ public class EditorUI {
             });
             container.addChild(cornerBtn);
         }
+
+        var geoCenterBtn = new Button();
+        geoCenterBtn.setText(Component.translatable("ebe.projection.center_geometric"));
+        geoCenterBtn.layout(l -> l.widthPercent(100).height(16));
+        geoCenterBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        geoCenterBtn.setOnClick(e -> {
+            if (proj != null) {
+                // For an even span the midpoint falls between two blocks; floorDiv biases toward
+                // the lower (min / "top-left") block, matching the requested behaviour.
+                int cx = Math.floorDiv(proj.getMinX() + proj.getMaxX(), 2);
+                int cy = Math.floorDiv(proj.getMinY() + proj.getMaxY(), 2);
+                int cz = Math.floorDiv(proj.getMinZ() + proj.getMaxZ(), 2);
+                ProjectionManager.setProjectionCenter(new BlockPos(cx, cy, cz));
+            }
+            switchProjectionTab(currentProjectionTab);
+        });
+        container.addChild(geoCenterBtn);
+
+        var playerCenterBtn = new Button();
+        playerCenterBtn.setText(Component.translatable("ebe.projection.center_player"));
+        playerCenterBtn.layout(l -> l.widthPercent(100).height(16));
+        playerCenterBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+        playerCenterBtn.setOnClick(e -> {
+            var mc = Minecraft.getInstance();
+            if (proj != null && mc.player != null) {
+                ProjectionManager.setProjectionCenter(mc.player.blockPosition());
+            }
+            switchProjectionTab(currentProjectionTab);
+        });
+        container.addChild(playerCenterBtn);
 
         var customCenterLabel = new Label();
         customCenterLabel.setText(Component.translatable("ebe.projection.center_custom"));
@@ -5355,24 +5443,29 @@ public class EditorUI {
         executeBtn.layout(l -> l.widthPercent(100).height(22));
         executeBtn.setOnClick(e -> {
             if (replaceTargetState == null) return;
-            var selection = getSelection();
-            if (selection.isEmpty()) return;
             var model = session.getModel();
             var hist = getHistory();
-            var beforeLayerState = model.captureLayerState();
             int beforeUndo = hist.undoSize();
-            var snapshots = new ArrayList<Object[]>();
-            for (var p : selection.getPositions()) {
-                int x = (int) p[0], y = (int) p[1], z = (int) p[2];
-                var old = model.getBlockAt(x, y, z);
-                snapshots.add(nbtSnapshot(model, x, y, z, old, replaceTargetState, null));
-                model.setBlockAtWithNbt(x, y, z, replaceTargetState, null);
-            }
-            if (!snapshots.isEmpty()) {
-                pushModelEditHistory(hist, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
-                        snapshots, beforeLayerState, model,
-                        (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
-                        replaceTargetState);
+            if (boxSelection.isActive()) {
+                clipboard.replaceBox(model, boxSelection, replaceTargetState, hist);
+            } else {
+                var selection = getSelection();
+                if (selection.isEmpty()) return;
+                var beforeLayerState = model.captureLayerState();
+                var snapshots = new ArrayList<Object[]>();
+                for (var p : selection.getPositions()) {
+                    int x = (int) p[0], y = (int) p[1], z = (int) p[2];
+                    var old = model.getBlockAt(x, y, z);
+                    if (BuildingModel.isAirLike(old)) continue;
+                    snapshots.add(nbtSnapshot(model, x, y, z, old, replaceTargetState, null));
+                    model.setBlockAtWithNbt(x, y, z, replaceTargetState, null);
+                }
+                if (!snapshots.isEmpty()) {
+                    pushModelEditHistory(hist, com.l1ght.ebe.editor.history.HistoryActionType.REPLACE,
+                            snapshots, beforeLayerState, model,
+                            (int) snapshots.get(0)[0], (int) snapshots.get(0)[1], (int) snapshots.get(0)[2],
+                            replaceTargetState);
+                }
             }
             if (hist.undoSize() > beforeUndo) {
                 refreshViewportAfterHistoryEntry(hist.getLastEntry());
@@ -6518,10 +6611,14 @@ public class EditorUI {
 
     private static void executeFill() {
         if (session == null || fillBlockState == null) return;
-        var selection = getSelection();
-        if (selection.isEmpty()) return;
         int beforeUndo = history.undoSize();
-        clipboard.fill(session.getModel(), selection, fillBlockState, history);
+        if (boxSelection.isActive()) {
+            clipboard.fillBox(session.getModel(), boxSelection, fillBlockState, history);
+        } else {
+            var selection = getSelection();
+            if (selection.isEmpty()) return;
+            clipboard.fill(session.getModel(), selection, fillBlockState, history);
+        }
         finishClipboardMutation(beforeUndo);
     }
 
@@ -7324,6 +7421,10 @@ public class EditorUI {
         if (isTextFieldFocused()) return false;
         if (KeyRecordingManager.isRecording()) return true;
 
+        if (EBEKeyBindings.FLIGHT_TOGGLE.matchesKey(keyCode, modifiers)) {
+            ViewportFlightController.toggle();
+            return true;
+        }
         if (EBEKeyBindings.UNDO.matchesKey(keyCode, modifiers)) { undo(); return true; }
         if (EBEKeyBindings.REDO.matchesKey(keyCode, modifiers)) { redo(); return true; }
         if (EBEKeyBindings.COPY.matchesKey(keyCode, modifiers)) { clipboard.copy(session.getModel(), selection); return true; }

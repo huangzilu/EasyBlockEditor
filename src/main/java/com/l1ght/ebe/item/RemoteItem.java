@@ -20,12 +20,8 @@ public class RemoteItem extends Item {
 
     @Override
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand usedHand) {
-        if (level.isClientSide()) {
-            if (player.isShiftKeyDown()) {
-                EBEClientBridge.toggleProjectionRemoteMode();
-                return InteractionResultHolder.sidedSuccess(player.getItemInHand(usedHand), true);
-            }
-        }
+        // Litematica-style: the remote is live whenever it's held, so there is no mode to toggle.
+        // Holding Alt + scroll / arrows / R / M drives the projection (see ProjectionController).
         return InteractionResultHolder.pass(player.getItemInHand(usedHand));
     }
 

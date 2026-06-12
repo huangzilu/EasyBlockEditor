@@ -29,9 +29,7 @@ public class ClientEventHandler {
         ProjectionManager.tickPlaceAllUploads();
         com.l1ght.ebe.client.ui.EditorUI.pollFileTreeRefresh();
         PrinterController.tick();
-        if (ProjectionController.isControlMode()) {
-            ProjectionController.tick();
-        }
+        ProjectionController.tick();
     }
 
     @SubscribeEvent
@@ -62,10 +60,17 @@ public class ClientEventHandler {
             event.setCanceled(true);
             return;
         }
-        if (ProjectionController.isControlMode() && event.getAction() == 1) {
+        if (event.getAction() == GLFW.GLFW_PRESS) {
             if (ProjectionController.handleMouseClick(event.getButton(), event.getModifiers())) {
                 event.setCanceled(true);
             }
+        }
+    }
+
+    @SubscribeEvent
+    public static void onKeyPress(InputEvent.Key event) {
+        if (event.getAction() == GLFW.GLFW_PRESS || event.getAction() == GLFW.GLFW_REPEAT) {
+            ProjectionController.handleKeyPress(event.getKey());
         }
     }
 

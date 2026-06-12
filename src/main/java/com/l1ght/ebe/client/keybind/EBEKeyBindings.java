@@ -42,7 +42,8 @@ public class EBEKeyBindings {
     public static final EBEKeyBinding FLY_LEFT = register("ebe.key.fly_left", CAT_FLIGHT, GLFW.GLFW_KEY_A, 0, false);
     public static final EBEKeyBinding FLY_RIGHT = register("ebe.key.fly_right", CAT_FLIGHT, GLFW.GLFW_KEY_D, 0, false);
     public static final EBEKeyBinding FLY_UP = register("ebe.key.fly_up", CAT_FLIGHT, GLFW.GLFW_KEY_SPACE, 0, false);
-    public static final EBEKeyBinding FLY_DOWN = register("ebe.key.fly_down", CAT_FLIGHT, GLFW.GLFW_KEY_LEFT_ALT, 0, false);
+    public static final EBEKeyBinding FLY_DOWN = register("ebe.key.fly_down", CAT_FLIGHT, GLFW.GLFW_KEY_LEFT_SHIFT, 0, false);
+    public static final EBEKeyBinding FLIGHT_TOGGLE = register("ebe.key.flight_toggle", CAT_FLIGHT, GLFW.GLFW_KEY_CAPS_LOCK, 0, false);
 
     public static final EBEKeyBinding SELECT_MULTI = register("ebe.key.select_multi", CAT_MOUSE, 0, GLFW.GLFW_MOD_CONTROL, true);
     public static final EBEKeyBinding BOX_SELECT_SURFACE = register("ebe.key.box_surface", CAT_MOUSE, 0, GLFW.GLFW_MOD_SHIFT, true);

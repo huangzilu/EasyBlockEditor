@@ -4,12 +4,16 @@ import com.lowdragmc.lowdraglib2.utils.data.BlockInfo;
 import com.lowdragmc.lowdraglib2.utils.virtuallevel.TrackedDummyWorld;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.material.FluidState;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class FastTrackedDummyWorld extends TrackedDummyWorld {
     private final boolean sparseStorage;
@@ -29,6 +33,38 @@ public class FastTrackedDummyWorld extends TrackedDummyWorld {
 
     public boolean isSparseStorage() {
         return sparseStorage;
+    }
+
+    @Override
+    public void tickEntities() {
+        List<Entity> snapshot = new ArrayList<>();
+        try {
+            for (var entity : getEntities().getAll()) {
+                if (entity != null) {
+                    snapshot.add(entity);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        for (Entity entity : snapshot) {
+            if (entity == null || entity.isRemoved() || entity.isPassenger()) {
+                continue;
+            }
+            try {
+                if (!net.neoforged.neoforge.event.EventHooks.fireEntityTickPre(entity).isCanceled()) {
+                    entity.setOldPosAndRot();
+                    entity.tickCount++;
+                    entity.tick();
+                    net.neoforged.neoforge.event.EventHooks.fireEntityTickPost(entity);
+                }
+            } catch (Exception e) {
+                entity.discard();
+            }
+        }
+        try {
+            tickBlockEntities();
+        } catch (Exception ignored) {
+        }
     }
 
     public void addBlockFast(BlockPos pos, BlockInfo info) {

@@ -333,6 +333,20 @@ public class ViewportFactory {
     private static float savedZoom = 8;
     private static Vector3f savedCenter = new Vector3f(3, 2, 3);
 
+    // Some players hold the RIGHT shift/ctrl. Checking only LEFT_SHIFT/LEFT_CONTROL silently broke
+    // box-select and modifier-gated actions for them, so always accept either side.
+    private static boolean isShiftDown() {
+        long w = Minecraft.getInstance().getWindow().getWindow();
+        return org.lwjgl.glfw.GLFW.glfwGetKey(w, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS
+                || org.lwjgl.glfw.GLFW.glfwGetKey(w, org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+    }
+
+    private static boolean isCtrlDown() {
+        long w = Minecraft.getInstance().getWindow().getWindow();
+        return org.lwjgl.glfw.GLFW.glfwGetKey(w, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS
+                || org.lwjgl.glfw.GLFW.glfwGetKey(w, org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+    }
+
     private static Field sceneCoreField;
     private static Field sceneRendererField;
     private static Field rendererTraceField;
@@ -354,6 +368,24 @@ public class ViewportFactory {
     private static void setSceneDraggable(boolean value) {
         if (currentScene == null) return;
         currentScene.setDraggable(value);
+    }
+
+    public static Scene getScene() {
+        return currentScene;
+    }
+
+    public static void setSceneDraggableExternal(boolean value) {
+        setSceneDraggable(value);
+    }
+
+    public static net.minecraft.core.Direction getViewportFacing() {
+        if (currentScene == null) return net.minecraft.core.Direction.NORTH;
+        float yawRad = (float) Math.toRadians(currentScene.getRotationYaw());
+        double fx = -Math.cos(yawRad);
+        double fz = -Math.sin(yawRad);
+        return Math.abs(fx) >= Math.abs(fz)
+                ? (fx >= 0 ? net.minecraft.core.Direction.EAST : net.minecraft.core.Direction.WEST)
+                : (fz >= 0 ? net.minecraft.core.Direction.SOUTH : net.minecraft.core.Direction.NORTH);
     }
 
     @SuppressWarnings("unchecked")
@@ -509,6 +541,8 @@ public class ViewportFactory {
             }
         }
 
+        renderBoxSelectionOverlay();
+
         if (!pendingDeltas.isEmpty()) {
             renderPendingDeltasOverlay();
             pendingDeltaOverlayFrames++;
@@ -545,6 +579,26 @@ public class ViewportFactory {
             if (!irisFinalizeProbeLogged) {
                 irisFinalizeProbeLogged = true;
                 logShaderProbe("after-iris-finalize");
+            }
+        }
+    }
+
+    private static void renderBoxSelectionOverlay() {
+        var box = EditorUI.getBoxSelection();
+        if (!box.isActive()) return;
+        var poseStack = new PoseStack();
+        int minX = box.getMinX(), minY = box.getMinY(), minZ = box.getMinZ();
+        int maxX = box.getMaxX(), maxY = box.getMaxY(), maxZ = box.getMaxZ();
+        int drawn = 0;
+        final int cap = 20000;
+        for (int x = minX; x <= maxX && drawn < cap; x++) {
+            for (int y = minY; y <= maxY && drawn < cap; y++) {
+                for (int z = minZ; z <= maxZ && drawn < cap; z++) {
+                    boolean surface = x == minX || x == maxX || y == minY || y == maxY || z == minZ || z == maxZ;
+                    if (!surface) continue;
+                    RenderUtils.renderBlockOverLay(poseStack, new BlockPos(x, y, z), 0.95f, 0.75f, 0.15f, 1.004f);
+                    drawn++;
+                }
             }
         }
     }
@@ -845,17 +899,21 @@ public class ViewportFactory {
         ensureIrisViewportFboSize();
         if (EditorUI.isTextFieldFocused()) return;
 
-        var mc = Minecraft.getInstance();
-        long window = mc.getWindow().getWindow();
+        BoxSelectionController.tick();
+
+        if (!ViewportFlightController.isFlying()) {
+            setSceneDraggable(!isShiftDown());
+            return;
+        }
+
+        ViewportFlightController.tickMouseLook();
+
         double yawDeg = currentScene.getRotationYaw();
         double pitchDeg = currentScene.getRotationPitch();
         float yawRad = (float) Math.toRadians(yawDeg);
         float pitchRad = (float) Math.toRadians(pitchDeg);
         float speed = EBEClientConfig.flightSpeed.get().floatValue();
         var center = new Vector3f(currentScene.getCenter());
-
-        boolean shiftHeld = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
-        setSceneDraggable(!shiftHeld);
 
         float cp = (float) Math.cos(pitchRad);
         float fx = (float) (cp * Math.cos(yawRad));
@@ -1616,12 +1674,19 @@ public class ViewportFactory {
             return;
         }
 
+        // When MDI is the active renderer, streamed blocks are NOT displayed (MDI draws its own
+        // VBOs); they only back TESR and click-selection. So skip the per-tick release/rehydrate
+        // churn and the section-compile scheduling, and load only a small amount near the focus.
+        boolean mdiActive = sectionedRenderer != null && sectionedRenderer.isMdiRendering();
+
         long deadline = System.nanoTime() + progressiveLoadBudgetNanos();
-        int maxPatches = dynamicExactPatchesPerTick(window.profile);
+        int maxPatches = mdiActive ? 1 : dynamicExactPatchesPerTick(window.profile);
         int loaded = 0;
         Vector3f focus = new Vector3f(currentScene.getCenter());
-        releaseCompiledPatchSources(window, focus, 0);
-        rehydrateNearestReleasedPatchSources(window, focus, deadline);
+        if (!mdiActive) {
+            releaseCompiledPatchSources(window, focus, 0);
+            rehydrateNearestReleasedPatchSources(window, focus, deadline);
+        }
         while (!window.capReached && loaded < maxPatches && System.nanoTime() < deadline) {
             ExactPatch patch = selectNextExactPatch(window, focus);
             if (patch == null) {
@@ -1636,11 +1701,13 @@ public class ViewportFactory {
                 continue;
             }
             loaded++;
-            if (loadedPatch.size() > 0) {
+            if (loadedPatch.size() > 0 && !mdiActive) {
                 scheduleProgressiveLoadCompile(loadedPatch.blocks());
             }
         }
-        releaseCompiledPatchSources(window, focus, 0);
+        if (!mdiActive) {
+            releaseCompiledPatchSources(window, focus, 0);
+        }
 
         if (loaded > 0 && window.tickCounter++ % 10 == 0) {
             EditorUI.setStatus(Component.translatable(
@@ -2108,9 +2175,8 @@ public class ViewportFactory {
                 EditorUI.updateBlockInspection();
                 EditorUI.refreshPropertiesPanel();
 
-                long window = Minecraft.getInstance().getWindow().getWindow();
-                boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
-                boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+                boolean ctrl = isCtrlDown();
+                boolean shift = isShiftDown();
 
                 if (ctrl && shift) {
                     selectAllSameType(blockState);
@@ -2147,9 +2213,7 @@ public class ViewportFactory {
             var button = buttonField.getInt(rawEvent);
             if (button != 0) return;
 
-            long window = Minecraft.getInstance().getWindow().getWindow();
-            boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
-            if (shift) return;
+            if (isShiftDown()) return;
             if (EditorUI.getState().getActiveTool() != EditorTool.SELECT) return;
 
             var selected = pickDecorativeEntityUnderCursor();
@@ -2305,25 +2369,35 @@ public class ViewportFactory {
         if (scene == null) return;
         scene.addEventListener(UIEvents.MOUSE_DOWN, e -> {
             if (e.button != 2) return;
-            onSceneMiddleClick();
+            onSceneMiddleClick((int) e.x, (int) e.y);
         });
     }
 
-    private static void onSceneMiddleClick() {
+    private static void onSceneMiddleClick(int mouseX, int mouseY) {
         if (!sceneReflectionInit) initSceneReflection();
-        if (currentScene == null || sceneRendererField == null) return;
+        if (currentScene == null) return;
         try {
-            var renderer = sceneRendererField.get(currentScene);
-            if (renderer == null) return;
-            Object traceResult = null;
-            if (rendererTraceField != null) {
-                traceResult = rendererTraceField.get(renderer);
-            }
-            if (traceResult instanceof BlockHitResult bhr && bhr.getType() != HitResult.Type.MISS) {
-                handleMiddleClick(bhr.getBlockPos());
+            var renderer = sceneRendererField != null ? sceneRendererField.get(currentScene) : null;
+            if (renderer != null && rendererTraceField != null) {
+                Object traceResult = rendererTraceField.get(renderer);
+                if (traceResult instanceof BlockHitResult bhr && bhr.getType() != HitResult.Type.MISS) {
+                    handleMiddleClick(bhr.getBlockPos());
+                    return;
+                }
             }
         } catch (Exception ex) {
-            LOG.debug("Middle-click hit-test failed", ex);
+            LOG.debug("Middle-click reflection hit-test failed, falling back to manual raycast", ex);
+        }
+        // Fallback: the reflected renderer trace is unavailable on some setups (LDLib version /
+        // shader differences), which silently broke middle-click pick for a minority of players.
+        // Use the same manual screen raycast box-select uses.
+        try {
+            BlockHitResult hit = rayTraceBlock(mouseX, mouseY);
+            if (hit != null && hit.getType() != HitResult.Type.MISS) {
+                handleMiddleClick(hit.getBlockPos());
+            }
+        } catch (Exception ex) {
+            LOG.debug("Middle-click manual raycast failed", ex);
         }
     }
 
@@ -2947,9 +3021,6 @@ public class ViewportFactory {
         if (mode == HeatmapMode.OFF) {
             return sectionedRenderer.sectionCount() >= 256 || preferSectionedRendererForCurrentLoad;
         }
-        if (preferSectionedRendererForCurrentLoad || sectionedRenderer.sectionCount() >= 256) {
-            return true;
-        }
         ProjectionLoadProfile profile = profileForCurrentSession(EditorUI.getSession());
         return profile != null && profile.risk().ordinal() >= ProjectionLoadProfile.Risk.HUGE.ordinal();
     }
@@ -3451,9 +3522,8 @@ public class ViewportFactory {
 
     private static void setupDragSelection(Scene scene) {
         scene.addEventListener(UIEvents.MOUSE_DOWN, e -> {
-            long window = Minecraft.getInstance().getWindow().getWindow();
-            boolean shift = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
-            boolean ctrl = org.lwjgl.glfw.GLFW.glfwGetKey(window, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            boolean shift = isShiftDown();
+            boolean ctrl = isCtrlDown();
 
             if (e.button == 1 && shift) {
                 dragSelecting = true;
@@ -3575,13 +3645,49 @@ public class ViewportFactory {
             selection.add(x, y, z);
         }
 
+        seedBoxSelectionFromSelection();
+
         EditorUI.getState().setSelectedCount(selection.size());
         EditorUI.updateStatusBar();
     }
 
+    private static void seedBoxSelectionFromSelection() {
+        var selection = EditorUI.getSelection();
+        if (selection.isEmpty()) return;
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+        for (long packed : selection.getAllPacked()) {
+            int x = com.l1ght.ebe.editor.selection.SelectionManager.unpackX(packed);
+            int y = com.l1ght.ebe.editor.selection.SelectionManager.unpackY(packed);
+            int z = com.l1ght.ebe.editor.selection.SelectionManager.unpackZ(packed);
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+            if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+        }
+        EditorUI.getBoxSelection().set(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    public static int[] getViewportCenterScreen() {
+        if (currentScene == null) return null;
+        int cx = (int) (currentScene.getPositionX() + currentScene.getSizeWidth() / 2);
+        int cy = (int) (currentScene.getPositionY() + currentScene.getSizeHeight() / 2);
+        return new int[]{cx, cy};
+    }
+
+    public static void executeCrosshairAction(boolean rightClick) {
+        int[] c = getViewportCenterScreen();
+        if (c == null) return;
+        BlockHitResult hit = rayTraceBlock(c[0], c[1]);
+        if (hit == null) return;
+        if (rightClick) {
+            handleBlockClick(hit.getBlockPos(), hit.getDirection().getOpposite());
+        } else {
+            handleBlockClick(hit.getBlockPos(), hit.getDirection());
+        }
+    }
+
     private static BlockHitResult rayTraceBlock(int screenX, int screenY) {
-        if (currentScene == null || currentWorld == null) return null;
-        int sceneX = (int) currentScene.getPositionX();
+        if (currentScene == null || currentWorld == null) return null;        int sceneX = (int) currentScene.getPositionX();
         int sceneY = (int) currentScene.getPositionY();
         int sceneW = (int) currentScene.getSizeWidth();
         int sceneH = (int) currentScene.getSizeHeight();

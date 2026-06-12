@@ -58,6 +58,22 @@ public class BlockPaletteUI {
     private static final int SLOTS_PER_ROW = 9;
     private static final int GRID_WIDTH = SLOT_SIZE * SLOTS_PER_ROW + SLOTS_PER_ROW - 1;
 
+    // Building the full grid for a tab instantiates 2 UIElements + 1 ItemStackTexture per block.
+    // With many mods the "All" tab has thousands of blocks, so we render in batches and let the
+    // user pull more in with a button instead of freezing while 10k+ nodes lay out at once.
+    private static final int GRID_BATCH = 512;
+
+    // buildTabMap() calls CreativeModeTab.buildContents() for every category tab — expensive and
+    // pointless to repeat on every dialog open, since the registry doesn't change mid-session.
+    private static Map<CreativeModeTab, List<ItemStack>> cachedTabMap = null;
+
+    // One ItemStackTexture per Block, shared across every slot/tab/search result that shows it.
+    private static final Map<Block, ItemStackTexture> ICON_CACHE = new java.util.HashMap<>();
+
+    private static ItemStackTexture iconFor(BlockItem bi) {
+        return ICON_CACHE.computeIfAbsent(bi.getBlock(), b -> new ItemStackTexture(bi));
+    }
+
     private static List<ItemStack> getTabBlockItems(CreativeModeTab tab) {
         List<ItemStack> result = new ArrayList<>();
         try {
@@ -82,6 +98,7 @@ public class BlockPaletteUI {
     }
 
     private static Map<CreativeModeTab, List<ItemStack>> buildTabMap() {
+        if (cachedTabMap != null) return cachedTabMap;
         Map<CreativeModeTab, List<ItemStack>> tabMap = new LinkedHashMap<>();
 
         for (var tab : BuiltInRegistries.CREATIVE_MODE_TAB) {
@@ -104,6 +121,7 @@ public class BlockPaletteUI {
             tabMap.put(null, allBlocks);
         }
 
+        cachedTabMap = tabMap;
         return tabMap;
     }
 
@@ -212,7 +230,7 @@ public class BlockPaletteUI {
         if (!stack.isEmpty() && stack.getItem() instanceof BlockItem bi) {
             var icon = new UIElement();
             icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
-            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bi)));
+            icon.style(s -> s.backgroundTexture(iconFor(bi)));
             icon.addEventListener(UIEvents.CLICK, e -> {
                 if (e.button == 0) {
                     EditorUI.getState().setActiveBlockState(bi.getBlock().defaultBlockState());
@@ -332,6 +350,15 @@ public class BlockPaletteUI {
 
         var tabMap = buildTabMap();
 
+        // Lazy tab content: each tab starts with an empty container and its (batched) grid is built
+        // only the first time the tab is actually selected. Opening the dialog no longer eagerly
+        // builds every tab's grid — especially the giant "All" tab.
+        Map<Tab, Runnable> lazyBuilders = new java.util.HashMap<>();
+        tabView.setOnTabSelected(tab -> {
+            Runnable builder = lazyBuilders.remove(tab);
+            if (builder != null) builder.run();
+        });
+
         List<ItemStack> allBlocks = new ArrayList<>();
         for (var items : tabMap.values()) allBlocks.addAll(items);
         if (!allBlocks.isEmpty()) {
@@ -344,7 +371,10 @@ public class BlockPaletteUI {
                 allIcon.style(s2 -> s2.tooltips(Component.translatable("ebe.editor.palette.tab_all")));
             });
             allTab.addChild(allIcon);
-            tabView.addTab(allTab, buildScrolledGrid(allBlocks));
+            var allContent = new UIElement();
+            allContent.layout(l -> l.widthPercent(100).flex(1));
+            lazyBuilders.put(allTab, () -> allContent.addChild(buildScrolledGrid(allBlocks)));
+            tabView.addTab(allTab, allContent);
         }
 
         for (var entry : tabMap.entrySet()) {
@@ -369,8 +399,16 @@ public class BlockPaletteUI {
                 tabBtn.addChild(iconEl);
             }
 
-            var content = buildScrolledGrid(tabItems);
+            var content = new UIElement();
+            content.layout(l -> l.widthPercent(100).flex(1));
+            lazyBuilders.put(tabBtn, () -> content.addChild(buildScrolledGrid(tabItems)));
             tabView.addTab(tabBtn, content);
+        }
+
+        // Populate whichever tab is initially selected (otherwise its onTabSelected won't fire).
+        if (tabView.getSelectedTab() != null) {
+            Runnable initial = lazyBuilders.remove(tabView.getSelectedTab());
+            if (initial != null) initial.run();
         }
 
         var searchResultsContainer = new UIElement();
@@ -418,6 +456,19 @@ public class BlockPaletteUI {
     }
 
     private static UIElement buildScrolledGrid(List<ItemStack> items) {
+        return buildBatchedGrid(items, bi -> {
+            EditorUI.getState().setActiveBlockState(bi.getBlock().defaultBlockState());
+            updateCurrentBlockLabel();
+            EditorUI.updateActiveBlockIndicator();
+        });
+    }
+
+    /**
+     * Builds a scrollable block grid that materialises at most {@link #GRID_BATCH} slots up front
+     * and reveals the rest in batches via a "show more" button. This keeps the "All" tab from
+     * instantiating tens of thousands of UI nodes (and laying them all out) in a single frame.
+     */
+    private static UIElement buildBatchedGrid(List<ItemStack> items, Consumer<BlockItem> onPick) {
         var container = new UIElement();
         container.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
 
@@ -429,31 +480,63 @@ public class BlockPaletteUI {
         grid.layout(l -> l.width(GRID_WIDTH).flexDirection(FlexDirection.ROW)
                 .flexWrap(FlexWrap.WRAP).gapAll(1));
 
+        // Only BlockItems get a slot; pre-filter so batching counts real slots, not skipped items.
+        List<BlockItem> blockItems = new ArrayList<>();
         for (var stack : items) {
-            if (!(stack.getItem() instanceof BlockItem bi)) continue;
-            var slotEl = new UIElement();
-            slotEl.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
-            slotEl.style(s -> s.background(Sprites.RECT_DARK));
-
-            var icon = new UIElement();
-            icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
-            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bi)));
-            icon.addEventListener(UIEvents.CLICK, e -> {
-                EditorUI.getState().setActiveBlockState(bi.getBlock().defaultBlockState());
-                updateCurrentBlockLabel();
-                EditorUI.updateActiveBlockIndicator();
-            });
-            icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
-                icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
-            });
-            slotEl.addChild(icon);
-            grid.addChild(slotEl);
+            if (stack.getItem() instanceof BlockItem bi) blockItems.add(bi);
         }
+
+        int[] shown = {0};
+        var moreBtn = new Button();
+
+        Runnable[] revealMore = new Runnable[1];
+        revealMore[0] = () -> {
+            int end = Math.min(shown[0] + GRID_BATCH, blockItems.size());
+            for (int i = shown[0]; i < end; i++) {
+                grid.addChild(buildBlockSlot(blockItems.get(i), onPick));
+            }
+            shown[0] = end;
+            if (shown[0] >= blockItems.size()) {
+                moreBtn.setDisplay(false);
+            } else {
+                moreBtn.setText(Component.translatable("ebe.editor.palette.show_more",
+                        blockItems.size() - shown[0]));
+            }
+        };
+
+        revealMore[0].run();
 
         scroller.addScrollViewChild(grid);
         container.addChild(scroller);
 
+        if (shown[0] < blockItems.size()) {
+            moreBtn.setText(Component.translatable("ebe.editor.palette.show_more",
+                    blockItems.size() - shown[0]));
+            moreBtn.layout(l -> l.widthPercent(100).height(16));
+            moreBtn.textStyle(ts -> ts.fontSize(8).textShadow(false));
+            moreBtn.setOnClick(e -> revealMore[0].run());
+            container.addChild(moreBtn);
+        } else {
+            moreBtn.setDisplay(false);
+        }
+
         return container;
+    }
+
+    private static UIElement buildBlockSlot(BlockItem bi, Consumer<BlockItem> onPick) {
+        var slotEl = new UIElement();
+        slotEl.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+        slotEl.style(s -> s.background(Sprites.RECT_DARK));
+
+        var icon = new UIElement();
+        icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
+        icon.style(s -> s.backgroundTexture(iconFor(bi)));
+        icon.addEventListener(UIEvents.CLICK, e -> onPick.accept(bi));
+        icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
+            icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
+        });
+        slotEl.addChild(icon);
+        return slotEl;
     }
 
     public static void openWithCallback(UIElement parent, Consumer<BlockState> callback) {
@@ -481,6 +564,13 @@ public class BlockPaletteUI {
         tabView.tabScroller(s -> s.scrollerStyle(style -> style.horizontalScrollDisplay(com.lowdragmc.lowdraglib2.gui.ui.data.ScrollDisplay.ALWAYS)));
 
         var tabMap = buildTabMap();
+
+        Map<Tab, Runnable> lazyBuilders = new java.util.HashMap<>();
+        tabView.setOnTabSelected(tab -> {
+            Runnable builder = lazyBuilders.remove(tab);
+            if (builder != null) builder.run();
+        });
+
         List<ItemStack> allBlocks = new ArrayList<>();
         for (var items : tabMap.values()) allBlocks.addAll(items);
         if (!allBlocks.isEmpty()) {
@@ -493,7 +583,10 @@ public class BlockPaletteUI {
                 allIcon.style(s2 -> s2.tooltips(Component.translatable("ebe.editor.palette.tab_all")));
             });
             allTab.addChild(allIcon);
-            tabView.addTab(allTab, buildCallbackScrolledGrid(allBlocks));
+            var allContent = new UIElement();
+            allContent.layout(l -> l.widthPercent(100).flex(1));
+            lazyBuilders.put(allTab, () -> allContent.addChild(buildCallbackScrolledGrid(allBlocks)));
+            tabView.addTab(allTab, allContent);
         }
 
         for (var entry : tabMap.entrySet()) {
@@ -515,7 +608,15 @@ public class BlockPaletteUI {
                 });
                 tabBtn.addChild(iconEl);
             }
-            tabView.addTab(tabBtn, buildCallbackScrolledGrid(tabItems));
+            var content = new UIElement();
+            content.layout(l -> l.widthPercent(100).flex(1));
+            lazyBuilders.put(tabBtn, () -> content.addChild(buildCallbackScrolledGrid(tabItems)));
+            tabView.addTab(tabBtn, content);
+        }
+
+        if (tabView.getSelectedTab() != null) {
+            Runnable initial = lazyBuilders.remove(tabView.getSelectedTab());
+            if (initial != null) initial.run();
         }
 
         var searchResultsContainer = new UIElement();
@@ -562,40 +663,15 @@ public class BlockPaletteUI {
     }
 
     private static UIElement buildCallbackScrolledGrid(List<ItemStack> items) {
-        var container = new UIElement();
-        container.layout(l -> l.widthPercent(100).flexDirection(FlexDirection.COLUMN).gapAll(4));
-        var scroller = new ScrollerView();
-        scroller.layout(l -> l.widthPercent(100).maxHeight(200));
-        scroller.scrollerStyle(s -> s.verticalScrollDisplay(ScrollDisplay.ALWAYS));
-        var grid = new UIElement();
-        grid.layout(l -> l.width(GRID_WIDTH).flexDirection(FlexDirection.ROW)
-                .flexWrap(FlexWrap.WRAP).gapAll(1));
-        for (var stack : items) {
-            if (!(stack.getItem() instanceof BlockItem bi)) continue;
-            var slotEl = new UIElement();
-            slotEl.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
-            slotEl.style(s -> s.background(Sprites.RECT_DARK));
-            var icon = new UIElement();
-            icon.layout(l -> l.width(SLOT_SIZE).height(SLOT_SIZE));
-            icon.style(s -> s.backgroundTexture(new ItemStackTexture(bi)));
-            icon.addEventListener(UIEvents.CLICK, e -> {
-                if (pendingCallback != null) {
-                    pendingCallback.accept(bi.getBlock().defaultBlockState());
-                }
-                if (pendingCallbackDialog != null) {
-                    pendingCallbackDialog.close();
-                }
-                pendingCallback = null;
-                pendingCallbackDialog = null;
-            });
-            icon.addEventListener(UIEvents.MOUSE_ENTER, e -> {
-                icon.style(s -> s.tooltips(buildBlockTooltip(bi.getBlock())));
-            });
-            slotEl.addChild(icon);
-            grid.addChild(slotEl);
-        }
-        scroller.addScrollViewChild(grid);
-        container.addChild(scroller);
-        return container;
+        return buildBatchedGrid(items, bi -> {
+            if (pendingCallback != null) {
+                pendingCallback.accept(bi.getBlock().defaultBlockState());
+            }
+            if (pendingCallbackDialog != null) {
+                pendingCallbackDialog.close();
+            }
+            pendingCallback = null;
+            pendingCallbackDialog = null;
+        });
     }
 }

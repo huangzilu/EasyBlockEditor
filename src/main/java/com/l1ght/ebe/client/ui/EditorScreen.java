@@ -45,6 +45,7 @@ public class EditorScreen extends Screen {
             return;
         }
         closeHandled = true;
+        ViewportFlightController.disable();
         EditorUI.resetMouseCursor();
         ViewportFactory.saveCameraState();
         ViewportFactory.releaseViewportSession(stage);
@@ -69,6 +70,15 @@ public class EditorScreen extends Screen {
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         super.render(guiGraphics, mouseX, mouseY, partialTick);
+        if (ViewportFlightController.isFlying()) {
+            int[] c = ViewportFactory.getViewportCenterScreen();
+            if (c != null) {
+                int cx = c[0], cy = c[1];
+                int color = 0xFFFFFFFF;
+                guiGraphics.fill(cx - 5, cy - 1, cx + 5, cy + 1, color);
+                guiGraphics.fill(cx - 1, cy - 5, cx + 1, cy + 5, color);
+            }
+        }
         fpsFrames++;
         long now = System.nanoTime();
         long elapsed = now - fpsWindowStart;
@@ -104,6 +114,10 @@ public class EditorScreen extends Screen {
             KeyRecordingManager.onMousePress(button, getActiveModifiers());
             return true;
         }
+        if (ViewportFlightController.isFlying()) {
+            if (button == 0) { ViewportFactory.executeCrosshairAction(false); return true; }
+            if (button == 1) { ViewportFactory.executeCrosshairAction(true); return true; }
+        }
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
@@ -114,6 +128,14 @@ public class EditorScreen extends Screen {
             return true;
         }
         return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (BoxSelectionController.isActive() && BoxSelectionController.handleScroll(scrollY)) {
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     @Override

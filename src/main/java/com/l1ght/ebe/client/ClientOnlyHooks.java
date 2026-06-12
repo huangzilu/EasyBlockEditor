@@ -91,17 +91,10 @@ public final class ClientOnlyHooks {
     }
 
     public static void appendRemoteTooltip(ItemStack stack, TooltipFlag flag, List<Component> tooltip) {
-        String fwd = EBEKeyBindings.REMOTE_FORWARD.getDisplayName();
-        String back = EBEKeyBindings.REMOTE_BACK.getDisplayName();
-        String left = EBEKeyBindings.REMOTE_LEFT.getDisplayName();
-        String right = EBEKeyBindings.REMOTE_RIGHT.getDisplayName();
-        String ccw = EBEKeyBindings.REMOTE_ROTATE_CCW.getDisplayName();
-        String cw = EBEKeyBindings.REMOTE_ROTATE_CW.getDisplayName();
-
-        tooltip.add(Component.translatable("ebe.item.remote.desc.toggle").withStyle(s -> s.withColor(0xAAAAAA)));
-        tooltip.add(Component.translatable("ebe.item.remote.desc.move", fwd, back, left, right).withStyle(s -> s.withColor(0xAAAAAA)));
+        tooltip.add(Component.translatable("ebe.item.remote.desc.hold").withStyle(s -> s.withColor(0xAAAAAA)));
+        tooltip.add(Component.translatable("ebe.item.remote.desc.move").withStyle(s -> s.withColor(0xAAAAAA)));
         tooltip.add(Component.translatable("ebe.item.remote.desc.vertical").withStyle(s -> s.withColor(0xAAAAAA)));
-        tooltip.add(Component.translatable("ebe.item.remote.desc.rotate", ccw, cw).withStyle(s -> s.withColor(0xAAAAAA)));
+        tooltip.add(Component.translatable("ebe.item.remote.desc.rotate").withStyle(s -> s.withColor(0xAAAAAA)));
         tooltip.add(Component.translatable("ebe.item.remote.desc.fast").withStyle(s -> s.withColor(0x888888)));
     }
 
@@ -110,7 +103,14 @@ public final class ClientOnlyHooks {
     }
 
     public static void updateWorkgroups(String json) {
+        boolean wasInGroup = parseInWorkgroup(workgroupsJson);
         workgroupsJson = json == null ? "[]" : json;
+        boolean nowInGroup = parseInWorkgroup(workgroupsJson);
+        if (wasInGroup && !nowInGroup) {
+            // Left the workgroup: forget the synced projection id so a future re-join re-applies,
+            // and drop any half-buffered download.
+            com.l1ght.ebe.client.projection.WorkgroupProjectionReceiver.clearLoadedId();
+        }
         workgroupPrintActive = workgroupsJson.contains("\"printSession\":{");
         if (workgroupPrintActive) {
             workgroupPrintSessionId = extractSessionId(workgroupsJson);
@@ -125,7 +125,25 @@ public final class ClientOnlyHooks {
     }
 
     public static boolean isInWorkgroup() {
-        return workgroupsJson.contains("\"group\":{");
+        return parseInWorkgroup(workgroupsJson);
+    }
+
+    /**
+     * True when the synced workgroup JSON has a non-null "group" object. Parsed rather than
+     * substring-matched because the server serializes this with pretty-printing, so the text is
+     * {@code "group": {} } (note the space) — a {@code "group":{} } substring check never matches
+     * and would make every member silently drop their synced projection.
+     */
+    private static boolean parseInWorkgroup(String json) {
+        if (json == null || json.isEmpty()) return false;
+        try {
+            var root = com.google.gson.JsonParser.parseString(json);
+            if (!root.isJsonObject()) return false;
+            var group = root.getAsJsonObject().get("group");
+            return group != null && group.isJsonObject();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static boolean hasWorkgroupPrintSession() {

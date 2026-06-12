@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 public class ImportDialog {
@@ -39,26 +40,31 @@ public class ImportDialog {
             EBEMod.LOGGER.warn("Failed to create schematic import directory {}", dir, e);
         }
 
-        String selected;
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            var filters = stack.mallocPointer(PROJECTION_FILTERS.length);
-            for (String filter : PROJECTION_FILTERS) {
-                filters.put(stack.UTF8(filter));
+        CompletableFuture.supplyAsync(() -> {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                var filters = stack.mallocPointer(PROJECTION_FILTERS.length);
+                for (String filter : PROJECTION_FILTERS) {
+                    filters.put(stack.UTF8(filter));
+                }
+                filters.flip();
+                return TinyFileDialogs.tinyfd_openFileDialog(
+                        I18n.get("ebe.editor.import.file_picker"),
+                        dir.toAbsolutePath().toString(),
+                        filters,
+                        I18n.get("ebe.editor.import.supported_formats"),
+                        false
+                );
             }
-            filters.flip();
-            selected = TinyFileDialogs.tinyfd_openFileDialog(
-                    I18n.get("ebe.editor.import.file_picker"),
-                    dir.toAbsolutePath().toString(),
-                    filters,
-                    I18n.get("ebe.editor.import.supported_formats"),
-                    false
-            );
-        }
-        if (selected == null || selected.isBlank()) return;
-
-        File file = new File(selected);
-        if (!file.isFile()) return;
-        importFile(file.toPath(), onFileSelected);
+        }).whenComplete((selected, error) -> net.minecraft.client.Minecraft.getInstance().execute(() -> {
+            if (error != null) {
+                EBEMod.LOGGER.warn("Import file dialog failed", error);
+                return;
+            }
+            if (selected == null || selected.isBlank()) return;
+            File file = new File(selected);
+            if (!file.isFile()) return;
+            importFile(file.toPath(), onFileSelected);
+        }));
     }
 
     public static void importFile(Path source, Consumer<Path> onFileSelected) {

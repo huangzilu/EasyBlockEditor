@@ -57,6 +57,18 @@ public class EBENetwork {
         );
 
         registrar.playToServer(
+                WorkgroupProjectionUploadPayload.TYPE,
+                WorkgroupProjectionUploadPayload.STREAM_CODEC,
+                WorkgroupProjectionUploadPayload::handleServer
+        );
+
+        registrar.playToClient(
+                WorkgroupProjectionDownloadPayload.TYPE,
+                WorkgroupProjectionDownloadPayload.STREAM_CODEC,
+                WorkgroupProjectionDownloadPayload::handleClient
+        );
+
+        registrar.playToServer(
                 WorkgroupActionPayload.TYPE,
                 WorkgroupActionPayload.STREAM_CODEC,
                 WorkgroupActionPayload::handleServer

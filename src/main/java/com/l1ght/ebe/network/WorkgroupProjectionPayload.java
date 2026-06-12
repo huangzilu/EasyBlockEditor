@@ -63,6 +63,7 @@ public class WorkgroupProjectionPayload implements CustomPacketPayload {
             if (group == null || payload.groupId == null || !group.id.equals(payload.groupId)) return;
             if ("remove".equalsIgnoreCase(payload.action)) {
                 WorkgroupManager.removeProjection(payload.groupId, payload.projectionId);
+                WorkgroupProjectionStore.remove(payload.groupId, payload.projectionId);
             } else {
                 WorkgroupManager.upsertProjection(payload.groupId, new Workgroup.ProjectionState(
                         payload.projectionId,

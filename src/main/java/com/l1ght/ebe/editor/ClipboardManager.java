@@ -4,6 +4,7 @@ import com.l1ght.ebe.data.BuildingModel;
 import com.l1ght.ebe.editor.history.HistoryActionType;
 import com.l1ght.ebe.editor.history.HistoryEntry;
 import com.l1ght.ebe.editor.history.HistoryManager;
+import com.l1ght.ebe.editor.selection.BoxSelection;
 import com.l1ght.ebe.editor.selection.SelectionManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -463,6 +464,59 @@ public class ClipboardManager {
         if (!snapshots.isEmpty()) {
             pushHistory(history, HistoryActionType.FILL, snapshots, beforeLayerState, model,
                     repX, repY, repZ, fillState);
+        }
+    }
+
+    public void fillBox(BuildingModel model, BoxSelection box, Object fillState, HistoryManager history) {
+        if (box == null || !box.isActive() || fillState == null) return;
+
+        var beforeLayerState = model.captureLayerState();
+        List<Object[]> snapshots = new ArrayList<>();
+        int repX = 0, repY = 0, repZ = 0;
+        for (int x = box.getMinX(); x <= box.getMaxX(); x++) {
+            for (int y = box.getMinY(); y <= box.getMaxY(); y++) {
+                for (int z = box.getMinZ(); z <= box.getMaxZ(); z++) {
+                    if (!model.canEditAt(x, y, z)) continue;
+                    var oldState = model.getBlockAt(x, y, z);
+                    if (statesMatch(oldState, fillState)) continue;
+                    var oldNbt = model.copyBlockEntityNbt(x, y, z);
+                    snapshots.add(snapshot(x, y, z, oldState, fillState, oldNbt, null));
+                    model.setBlockAtWithNbt(x, y, z, fillState, null);
+                    if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
+                }
+            }
+        }
+
+        if (!snapshots.isEmpty()) {
+            pushHistory(history, HistoryActionType.FILL, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, fillState);
+        }
+    }
+
+    public void replaceBox(BuildingModel model, BoxSelection box, Object newState, HistoryManager history) {
+        if (box == null || !box.isActive() || newState == null) return;
+
+        var beforeLayerState = model.captureLayerState();
+        List<Object[]> snapshots = new ArrayList<>();
+        int repX = 0, repY = 0, repZ = 0;
+        for (int x = box.getMinX(); x <= box.getMaxX(); x++) {
+            for (int y = box.getMinY(); y <= box.getMaxY(); y++) {
+                for (int z = box.getMinZ(); z <= box.getMaxZ(); z++) {
+                    if (!model.canEditAt(x, y, z)) continue;
+                    var oldState = model.getBlockAt(x, y, z);
+                    if (BuildingModel.isAirLike(oldState)) continue;
+                    if (statesMatch(oldState, newState)) continue;
+                    var oldNbt = model.copyBlockEntityNbt(x, y, z);
+                    snapshots.add(snapshot(x, y, z, oldState, newState, oldNbt, null));
+                    model.setBlockAtWithNbt(x, y, z, newState, null);
+                    if (snapshots.size() == 1) { repX = x; repY = y; repZ = z; }
+                }
+            }
+        }
+
+        if (!snapshots.isEmpty()) {
+            pushHistory(history, HistoryActionType.REPLACE, snapshots, beforeLayerState, model,
+                    repX, repY, repZ, newState);
         }
     }
 
